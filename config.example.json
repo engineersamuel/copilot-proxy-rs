@@ -1,0 +1,14 @@
+{
+  "backend": "copilot",
+  "fallback_backend": "",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "allow_non_loopback_bind": false,
+  "container_loopback_only": false,
+  "copilot_timeout": 300,
+  "copilot_models_ttl": 300,
+  "copilot_retry_max": 3,
+  "copilot_retry_base_delay": 1.0,
+  "copilot_max_rate": 15,
+  "log_level": "INFO"
+}

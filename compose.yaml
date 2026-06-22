@@ -1,0 +1,16 @@
+services:
+  copilot-proxy-rs:
+    build: .
+    image: copilot-proxy-rs:local
+    user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      COPILOT_PROXY_RS_HOST: 0.0.0.0
+      COPILOT_PROXY_RS_PORT: 8080
+      COPILOT_PROXY_RS_CONFIG_DIR: /config
+      COPILOT_PROXY_RS_CONTAINER_LOOPBACK_ONLY: "true"
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ${HOME}/.config/copilot-proxy-rs:/config:ro
+    restart: unless-stopped
