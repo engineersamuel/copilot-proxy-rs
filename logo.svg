@@ -1,0 +1,25 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <defs>
+    <linearGradient id="grad-5" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b11f4b"/>
+      <stop offset="100%" stop-color="#fd8ea1"/>
+    </linearGradient>
+    <style>
+      .theme-fill { fill: #24292f; }
+      .theme-stroke { stroke: #24292f; }
+      @media (prefers-color-scheme: dark) {
+        .theme-fill { fill: #f0f6fc; }
+        .theme-stroke { stroke: #f0f6fc; }
+      }
+    </style>
+  </defs>
+  <!-- Dynamic pilot wings combined with a gear core -->
+  <circle cx="50" cy="50" r="14" fill="none" stroke="url(#grad-5)" stroke-width="5"/>
+  <circle cx="50" cy="50" r="6" class="theme-fill"/>
+  <!-- Left wing -->
+  <path d="M 36 50 C 20 40, 10 52, 16 58 C 22 62, 34 52, 36 50 Z" fill="url(#grad-5)" opacity="0.85"/>
+  <path d="M 34 54 C 22 46, 14 58, 20 62" fill="none" class="theme-stroke" stroke-width="2"/>
+  <!-- Right wing -->
+  <path d="M 64 50 C 80 40, 90 52, 84 58 C 78 62, 66 52, 64 50 Z" fill="url(#grad-5)" opacity="0.85"/>
+  <path d="M 66 54 C 78 46, 86 58, 80 62" fill="none" class="theme-stroke" stroke-width="2"/>
+</svg>

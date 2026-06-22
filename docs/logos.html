@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>copilot-proxy-rs Logo Selector</title>
+  <!-- Theme Detection Script (MANDATORY: MUST BE FIRST) -->
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    /* Clawpilot Theme Variables (MANDATORY EXACT MATCH) */
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+
+    /* Core Styles */
+    body {
+      background: var(--cp-bg);
+      color: var(--cp-text);
+      font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
+      margin: 0;
+      padding: 2rem;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 3rem;
+      max-width: 800px;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      margin: 0 0 0.5rem 0;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--cp-text-muted);
+      margin: 0;
+    }
+
+    /* Control Panel */
+    .controls {
+      display: flex;
+      gap: 1.5rem;
+      align-items: center;
+      background: var(--cp-surface);
+      border: 1px solid var(--cp-border);
+      border-radius: 0.625rem;
+      padding: 1rem 1.5rem;
+      margin-bottom: 3rem;
+      box-shadow: var(--cp-shadow);
+      flex-wrap: wrap;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    label {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--cp-text-soft);
+    }
+
+    select, input[type="color"] {
+      background: var(--cp-surface-soft);
+      border: 1px solid var(--cp-border);
+      border-radius: 0.375rem;
+      padding: 0.375rem 0.75rem;
+      font-family: inherit;
+      color: var(--cp-text);
+      cursor: pointer;
+      outline: none;
+    }
+
+    select:focus {
+      border-color: var(--cp-accent);
+    }
+
+    button {
+      background: var(--cp-accent);
+      color: var(--cp-accent-fg);
+      border: none;
+      border-radius: 0.375rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: var(--cp-accent-hover);
+    }
+
+    /* Grid Layout */
+    .logo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+      width: 100%;
+      max-width: 1200px;
+    }
+
+    /* Logo Card */
+    .logo-card {
+      background: var(--cp-surface);
+      border: 1px solid var(--cp-border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: var(--cp-shadow);
+      transition: transform 0.2s;
+    }
+
+    .logo-card:hover {
+      transform: translateY(-4px);
+    }
+
+    .logo-preview-container {
+      width: 100%;
+      aspect-ratio: 1;
+      background: var(--cp-surface-soft);
+      border-radius: 0.625rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+      position: relative;
+      border: 1px dashed var(--cp-border);
+    }
+
+    .logo-preview-container svg {
+      width: 60%;
+      height: 60%;
+      transition: all 0.3s;
+    }
+
+    .logo-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin: 0 0 0.5rem 0;
+      text-align: center;
+    }
+
+    .logo-desc {
+      font-size: 0.875rem;
+      color: var(--cp-text-muted);
+      text-align: center;
+      margin: 0 0 1.5rem 0;
+      line-height: 1.4;
+      flex-grow: 1;
+    }
+
+    .logo-actions {
+      display: flex;
+      gap: 0.75rem;
+      width: 100%;
+    }
+
+    .logo-actions button {
+      flex: 1;
+    }
+
+    .btn-secondary {
+      background: var(--cp-surface-soft);
+      color: var(--cp-text);
+      border: 1px solid var(--cp-border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--cp-border);
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: var(--cp-success);
+      color: white;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      box-shadow: var(--cp-shadow);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: transform 0.3s, opacity 0.3s;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>copilot-proxy-rs</h1>
+    <p class="subtitle">High-quality vector logos for your safe Rust GitHub Copilot API proxy.</p>
+  </header>
+
+  <div class="controls">
+    <div class="control-group">
+      <label for="theme-selector">Preview Background:</label>
+      <select id="theme-selector" onchange="togglePreviewBg(this.value)">
+        <option value="default">Default Theme</option>
+        <option value="light">Solid Light</option>
+        <option value="dark">Solid Dark</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="color-picker">Primary Accent:</label>
+      <input type="color" id="color-picker" value="#b11f4b" onchange="updateColors(this.value)">
+    </div>
+    <button onclick="resetConfigs()">Reset to Defaults</button>
+  </div>
+
+  <div class="logo-grid">
+
+    <!-- LOGO 1: The Rust Gear Tunnel -->
+    <div class="logo-card">
+      <div class="logo-preview-container" id="container-1">
+        <svg id="logo-1" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad-1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="var(--accent-override, var(--cp-accent))" />
+              <stop offset="100%" stop-color="#fd8ea1" />
+            </linearGradient>
+          </defs>
+          <!-- Hexagonal gear outline representing Rust -->
+          <path d="M 50 10 L 85 30 L 85 70 L 50 90 L 15 70 L 15 30 Z" fill="none" stroke="url(#grad-1)" stroke-width="6" stroke-linejoin="round" />
+          <path d="M 50 5 L 50 15 M 85 30 L 76 35 M 85 70 L 76 65 M 50 95 L 50 85 M 15 70 L 24 65 M 15 30 L 24 35" stroke="url(#grad-1)" stroke-width="6" stroke-linecap="round" />
+          <!-- Flowing proxy arrows -->
+          <path d="M 32 42 L 50 50 L 32 58" fill="none" stroke="var(--accent-override, var(--cp-accent))" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M 50 42 L 68 50 L 50 58" fill="none" stroke="var(--cp-text)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <h2 class="logo-title">The Gateway</h2>
+      <p class="logo-desc">Combines a solid hexagonal Rust cog layout with glowing, nested forwarding arrows representing high-performance proxy routing.</p>
+      <div class="logo-actions">
+        <button class="btn-secondary" onclick="copyRawSVG('logo-1')">Copy SVG</button>
+        <button onclick="downloadSVG('logo-1', 'copilot-proxy-rs-gateway')">Download</button>
+      </div>
+    </div>
+
+    <!-- LOGO 2: Ferris the Copilot -->
+    <div class="logo-card">
+      <div class="logo-preview-container" id="container-2">
+        <svg id="logo-2" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad-2" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="var(--accent-override, var(--cp-accent))" />
+              <stop offset="100%" stop-color="#fd8ea1" />
+            </linearGradient>
+          </defs>
+          <!-- Ferris body -->
+          <circle cx="50" cy="55" r="22" fill="url(#grad-2)" />
+          <!-- Ferris claws -->
+          <path d="M 24 45 C 18 35, 32 30, 32 40 C 32 32, 20 28, 20 42" fill="none" stroke="var(--accent-override, var(--cp-accent))" stroke-width="4.5" stroke-linecap="round" />
+          <path d="M 76 45 C 82 35, 68 30, 68 40 C 68 32, 80 28, 80 42" fill="none" stroke="var(--accent-override, var(--cp-accent))" stroke-width="4.5" stroke-linecap="round" />
+          <!-- Ferris legs -->
+          <path d="M 28 65 L 18 68 M 29 73 L 20 78 M 72 65 L 82 68 M 71 73 L 80 78" stroke="var(--accent-override, var(--cp-accent))" stroke-width="4" stroke-linecap="round" />
+          <!-- Pilot aviator goggles -->
+          <rect x="34" y="44" width="32" height="12" rx="6" fill="#1a1a1a" stroke="var(--cp-text)" stroke-width="1.5" />
+          <circle cx="41" cy="50" r="4.5" fill="none" stroke="white" stroke-width="2" />
+          <circle cx="59" cy="50" r="4.5" fill="none" stroke="white" stroke-width="2" />
+          <path d="M 48 50 L 52 50" stroke="white" stroke-width="2" />
+          <!-- Headset band -->
+          <path d="M 33 55 A 18 18 0 0 1 67 55" fill="none" stroke="var(--cp-text)" stroke-width="3" />
+          <circle cx="32" cy="55" r="4" fill="var(--cp-text)" />
+          <circle cx="68" cy="55" r="4" fill="var(--cp-text)" />
+          <!-- Mic boom -->
+          <path d="M 32 55 L 42 62" stroke="var(--cp-text)" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </div>
+      <h2 class="logo-title">Ferris the Copilot</h2>
+      <p class="logo-desc">Our lovable mascot Ferris wearing pilot goggles and a headset, representing a cute, direct, and completely custom identity.</p>
+      <div class="logo-actions">
+        <button class="btn-secondary" onclick="copyRawSVG('logo-2')">Copy SVG</button>
+        <button onclick="downloadSVG('logo-2', 'copilot-proxy-rs-ferris')">Download</button>
+      </div>
+    </div>
+
+    <!-- LOGO 3: The Proxy Shield -->
+    <div class="logo-card">
+      <div class="logo-preview-container" id="container-3">
+        <svg id="logo-3" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad-3" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="var(--accent-override, var(--cp-accent))" />
+              <stop offset="100%" stop-color="#fd8ea1" />
+            </linearGradient>
+          </defs>
+          <!-- Robust security shield representing safety / loopback validation -->
+          <path d="M 50 12 C 70 12, 82 20, 82 42 C 82 66, 62 82, 50 88 C 38 82, 18 66, 18 42 C 18 20, 30 12, 50 12 Z" fill="none" stroke="url(#grad-3)" stroke-width="6" stroke-linejoin="round" />
+          <!-- Code bracket and proxy arrow inside -->
+          <path d="M 38 38 L 28 48 L 38 58" fill="none" stroke="var(--accent-override, var(--cp-accent))" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M 45 35 L 55 61" stroke="var(--cp-text)" stroke-width="5" stroke-linecap="round" />
+          <path d="M 62 38 L 72 48 L 62 58" fill="none" stroke="var(--accent-override, var(--cp-accent))" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <h2 class="logo-title">Guarded Code</h2>
+      <p class="logo-desc">Features code brackets protected inside a clean security shield, symbolizing local security, request sanitization, and safety.</p>
+      <div class="logo-actions">
+        <button class="btn-secondary" onclick="copyRawSVG('logo-3')">Copy SVG</button>
+        <button onclick="downloadSVG('logo-3', 'copilot-proxy-rs-shield')">Download</button>
+      </div>
+    </div>
+
+    <!-- LOGO 4: The Infinity Stream -->
+    <div class="logo-card">
+      <div class="logo-preview-container" id="container-4">
+        <svg id="logo-4" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad-4" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="var(--accent-override, var(--cp-accent))" />
+              <stop offset="100%" stop-color="#fd8ea1" />
+            </linearGradient>
+          </defs>
+          <!-- Infinity symbol representing continuous loopback / streams / WebSocket proxy connection -->
+          <path d="M 30 50 C 30 38, 45 38, 50 50 C 55 62, 70 62, 70 50 C 70 38, 55 38, 50 50 C 45 62, 30 62, 30 50 Z" fill="none" stroke="url(#grad-4)" stroke-width="6" stroke-linecap="round" />
+          <!-- Mini cogs on the left side of infinity -->
+          <circle cx="30" cy="50" r="5" fill="var(--cp-text)" />
+          <path d="M 30 40 L 30 45 M 30 60 L 30 55 M 20 50 L 25 50 M 40 50 L 35 50" stroke="var(--cp-text)" stroke-width="3.5" stroke-linecap="round" />
+          <!-- Glow star representing Copilot connection -->
+          <path d="M 70 50 L 72 45 L 70 42 L 68 45 Z" fill="var(--accent-override, var(--cp-accent))" />
+          <circle cx="70" cy="50" r="3" fill="var(--accent-override, var(--cp-accent))" />
+        </svg>
+      </div>
+      <h2 class="logo-title">Infinity Stream</h2>
+      <p class="logo-desc">A gorgeous infinity bridge connecting a Rust gear component with the Copilot stream, representing WebSocket parity and retries.</p>
+      <div class="logo-actions">
+        <button class="btn-secondary" onclick="copyRawSVG('logo-4')">Copy SVG</button>
+        <button onclick="downloadSVG('logo-4', 'copilot-proxy-rs-infinity')">Download</button>
+      </div>
+    </div>
+
+    <!-- LOGO 5: The Pilot Wing -->
+    <div class="logo-card">
+      <div class="logo-preview-container" id="container-5">
+        <svg id="logo-5" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad-5" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="var(--accent-override, var(--cp-accent))" />
+              <stop offset="100%" stop-color="#fd8ea1" />
+            </linearGradient>
+          </defs>
+          <!-- Dynamic pilot wings combined with a gear core -->
+          <circle cx="50" cy="50" r="14" fill="none" stroke="url(#grad-5)" stroke-width="5" />
+          <circle cx="50" cy="50" r="6" fill="var(--cp-text)" />
+          <!-- Left wing -->
+          <path d="M 36 50 C 20 40, 10 52, 16 58 C 22 62, 34 52, 36 50 Z" fill="url(#grad-5)" opacity="0.85" />
+          <path d="M 34 54 C 22 46, 14 58, 20 62" fill="none" stroke="var(--cp-text)" stroke-width="2" />
+          <!-- Right wing -->
+          <path d="M 64 50 C 80 40, 90 52, 84 58 C 78 62, 66 52, 64 50 Z" fill="url(#grad-5)" opacity="0.85" />
+          <path d="M 66 54 C 78 46, 86 58, 80 62" fill="none" stroke="var(--cp-text)" stroke-width="2" />
+        </svg>
+      </div>
+      <h2 class="logo-title">The Pilot Wing</h2>
+      <p class="logo-desc">A highly-aesthetic, corporate-ready option representing navigation, guidance, flight-grade speed, and API scaling.</p>
+      <div class="logo-actions">
+        <button class="btn-secondary" onclick="copyRawSVG('logo-5')">Copy SVG</button>
+        <button onclick="downloadSVG('logo-5', 'copilot-proxy-rs-wing')">Download</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast">Copied to clipboard!</div>
+
+  <script>
+    function togglePreviewBg(val) {
+      const cards = document.querySelectorAll(".logo-preview-container");
+      cards.forEach(card => {
+        if (val === 'light') {
+          card.style.background = '#ffffff';
+          card.style.borderColor = '#dedede';
+        } else if (val === 'dark') {
+          card.style.background = '#1a1a1a';
+          card.style.borderColor = '#474747';
+        } else {
+          card.style.background = '';
+          card.style.borderColor = '';
+        }
+      });
+    }
+
+    function updateColors(color) {
+      document.querySelectorAll("svg").forEach(svg => {
+        svg.style.setProperty("--accent-override", color);
+      });
+    }
+
+    function resetConfigs() {
+      document.getElementById("color-picker").value = "#b11f4b";
+      document.getElementById("theme-selector").value = "default";
+      togglePreviewBg("default");
+      updateColors("");
+    }
+
+    function copyRawSVG(id) {
+      const svg = document.getElementById(id);
+      // Clean clone to remove styling overrides
+      const clone = svg.cloneNode(true);
+      clone.removeAttribute("style");
+      const serializer = new XMLSerializer();
+      const str = serializer.serializeToString(clone);
+
+      navigator.clipboard.writeText(str).then(() => {
+        const toast = document.getElementById("toast");
+        toast.classList.add("show");
+        setTimeout(() => toast.classList.remove("show"), 2000);
+      });
+    }
+
+    function downloadSVG(id, filename) {
+      const svg = document.getElementById(id);
+      const clone = svg.cloneNode(true);
+      clone.removeAttribute("style");
+      const serializer = new XMLSerializer();
+      const str = serializer.serializeToString(clone);
+
+      const blob = new Blob([str], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${filename}.svg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>

@@ -1,5 +1,9 @@
 # copilot-proxy-rs
 
+<p align="center">
+  <img src="logo.svg" width="160" alt="copilot-proxy-rs logo">
+</p>
+
 `copilot-proxy-rs` is an experimental local Rust proxy that exposes OpenAI,
 Anthropic Messages, and OpenAI Responses-style routes backed by GitHub Copilot.
 
