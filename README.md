@@ -4,13 +4,39 @@
   <img src="logo.svg" width="160" alt="copilot-proxy-rs logo">
 </p>
 
-`copilot-proxy-rs` is an experimental local Rust proxy that exposes OpenAI,
-Anthropic Messages, and OpenAI Responses-style routes backed by GitHub Copilot.
+`copilot-proxy-rs` is an experimental local Rust proxy that exposes OpenAI, Anthropic Messages, and OpenAI Responses-style routes backed by GitHub Copilot.
 
-> **Alpha status:** this project is intended for local development on trusted
-> machines. It forwards requests using your GitHub/Copilot credentials. Keep it
-> bound to loopback (`127.0.0.1`) unless you have added network controls and
-> understand the credential-exposure risk.
+> **Alpha status:** This project is intended for local development on trusted machines. Keep it bound to loopback (`127.0.0.1`) unless you have added network controls and understand the credential-exposure risk.
+
+## Quickstart & Installation
+
+### Option 1: Run with Cargo (Native)
+1. Ensure Rust 1.85+ is installed.
+2. Start the proxy server:
+   ```bash
+   cargo run
+   ```
+   *If you don't have a token saved yet, the terminal will prompt you to complete GitHub's browser-based device flow on first startup.*
+
+### Option 2: Run with Docker (Containerized)
+Run the proxy as a detached background container with your host-persisted GitHub token securely mounted:
+```bash
+docker run -d --name copilot-proxy-rs \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:8080:8080 \
+  -e COPILOT_PROXY_RS_HOST=0.0.0.0 \
+  -e COPILOT_PROXY_RS_CONFIG_DIR=/config \
+  -e COPILOT_PROXY_RS_CONTAINER_LOOPBACK_ONLY=true \
+  -e RUST_LOG=info \
+  -v "$HOME/.config/copilot-proxy-rs:/config:ro" \
+  copilot-proxy-rs
+```
+*(Or simply run `docker compose up -d`)*
+
+### Verify
+```bash
+curl -fsS http://127.0.0.1:8080/health
+```
 
 ## Features
 
@@ -48,35 +74,6 @@ cargo run
 
 After the browser device flow completes, future `cargo run`, Docker, and
 Compose runs can reuse the same file without setting `GITHUB_TOKEN`.
-
-## Quickstart
-
-Prerequisites:
-
-- Rust 1.85 or newer
-- A GitHub account with Copilot access
-
-Run locally:
-
-```bash
-git clone https://github.com/smendenhall/copilot-proxy-rs.git
-cd copilot-proxy-rs
-export GITHUB_TOKEN=your-token-with-copilot-access
-cargo run
-```
-
-Use an isolated config directory and port:
-
-```bash
-COPILOT_PROXY_RS_CONFIG_DIR=~/.config/copilot-proxy-rs-dev COPILOT_PROXY_RS_PORT=19090 cargo run
-```
-
-Verify:
-
-```bash
-curl -fsS http://127.0.0.1:8080/health
-curl -fsS http://127.0.0.1:8080/v1/models
-```
 
 ## Configuration
 
