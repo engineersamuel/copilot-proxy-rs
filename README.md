@@ -14,7 +14,7 @@
 1. Ensure Rust 1.85+ is installed.
 2. Start the proxy server:
    ```bash
-   cargo run
+   RUST_LOG=info cargo run
    ```
    *If you don't have a token saved yet, the terminal will prompt you to complete GitHub's browser-based device flow on first startup.*
 
