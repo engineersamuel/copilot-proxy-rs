@@ -34,8 +34,14 @@ docker run -d --name copilot-proxy-rs \
 *(Or simply run `docker compose up -d`)*
 
 ### Verify
+Check health:
 ```bash
 curl -fsS http://127.0.0.1:8080/health
+```
+
+Run a simple "Hello World" query (e.g., against `gpt-5.5`):
+```bash
+curl -fsS http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say Hello World!"}]}'
 ```
 
 ## Features
