@@ -8,6 +8,7 @@ use axum::Router;
 use axum::extract::{Request, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use bytes::Bytes;
 use copilot_proxy_rs::auth::CopilotAuth;
 use copilot_proxy_rs::config::{AppConfig, EnvSource};
 use copilot_proxy_rs::copilot::client::CopilotBackend;
@@ -238,13 +239,24 @@ async fn get_response_retries_timeout_then_returns_json() {
                 |State(attempts): State<Arc<AtomicUsize>>| async move {
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                     if attempt == 0 {
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        let stream = async_stream::stream! {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#"{"id":"demo","#));
+                            tokio::time::sleep(Duration::from_millis(1200)).await;
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#""ok":true}"#));
+                        };
+                        axum::response::Response::builder()
+                            .status(http::StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from_stream(stream))
+                            .unwrap()
+                            .into_response()
+                    } else {
+                        axum::response::Json(serde_json::json!({
+                            "id": "demo",
+                            "ok": true
+                        }))
+                        .into_response()
                     }
-                    axum::response::Json(serde_json::json!({
-                        "id": "demo",
-                        "ok": true
-                    }))
-                    .into_response()
                 },
             ),
         )

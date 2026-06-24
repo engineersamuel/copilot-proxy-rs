@@ -528,7 +528,30 @@ impl CopilotBackend {
             };
             if response.status().is_success() {
                 let status = response.status().as_u16();
-                let value = response.json().await.map_err(map_reqwest_error)?;
+                let value = match response.json().await {
+                    Ok(value) => value,
+                    Err(error) => match map_reqwest_error(error) {
+                        CopilotError::Transient(transient)
+                            if attempt < self.config.copilot_retry_max =>
+                        {
+                            let delay = retry_delay(
+                                &reqwest::header::HeaderMap::new(),
+                                attempt,
+                                self.config.copilot_retry_base_delay,
+                            );
+                            tracing::warn!(
+                                api.family = family,
+                                http.status_code = transient.status_code as u64,
+                                attempt = attempt as u64,
+                                retry.delay_ms = delay.as_millis() as u64,
+                                "copilot request retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        other => return Err(other),
+                    },
+                };
                 tracing::info!(
                     api.family = family,
                     http.status_code = status as u64,
