@@ -310,8 +310,10 @@ async fn count_tokens_non_object_json_returns_anthropic_error() {
 
 #[tokio::test]
 async fn chat_route_rejects_body_over_decoded_limit() {
-    let mut config = AppConfig::default();
-    config.max_decoded_body_bytes = 8;
+    let config = AppConfig {
+        max_decoded_body_bytes: 8,
+        ..Default::default()
+    };
     let app = router(AppState::new(config));
     let response = app
         .oneshot(
