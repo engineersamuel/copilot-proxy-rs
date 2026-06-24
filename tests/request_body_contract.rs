@@ -4,6 +4,7 @@ use std::io::Write;
 
 use copilot_proxy_rs::request_body::{
     RequestBodyError, decode_request_body, parse_json_request_body,
+    parse_json_request_body_with_limit,
 };
 
 fn gzip_bytes(input: &[u8]) -> Vec<u8> {
@@ -91,4 +92,28 @@ fn rejects_non_object_json() {
     assert!(
         matches!(err, RequestBodyError::InvalidJson { message } if message == "Top-level JSON body must be an object")
     );
+}
+
+#[test]
+fn identity_body_over_limit_is_rejected() {
+    let err =
+        parse_json_request_body_with_limit(br#"{"message":"hello"}"#, "identity", 8).unwrap_err();
+
+    assert!(matches!(err, RequestBodyError::DecodedBodyTooLarge { limit } if limit == 8));
+}
+
+#[test]
+fn gzip_body_over_decoded_limit_is_rejected() {
+    let payload = gzip_bytes(br#"{"message":"hello"}"#);
+    let err = parse_json_request_body_with_limit(&payload, "gzip", 8).unwrap_err();
+
+    assert!(matches!(err, RequestBodyError::DecodedBodyTooLarge { limit } if limit == 8));
+}
+
+#[test]
+fn zstd_body_over_decoded_limit_is_rejected() {
+    let payload = zstd::bulk::compress(br#"{"message":"hello"}"#, 0).unwrap();
+    let err = parse_json_request_body_with_limit(&payload, "zstd", 8).unwrap_err();
+
+    assert!(matches!(err, RequestBodyError::DecodedBodyTooLarge { limit } if limit == 8));
 }

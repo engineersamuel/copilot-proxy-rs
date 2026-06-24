@@ -16,7 +16,7 @@ use crate::copilot::request::{
 };
 use crate::errors::{anthropic_error, openai_error};
 use crate::models::ModelsListResponse;
-use crate::request_body::parse_json_request_body;
+use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
 use crate::telemetry::{
@@ -101,6 +101,7 @@ async fn list_models(State(state): State<AppState>) -> Json<ModelsListResponse> 
 }
 
 async fn count_tokens(
+    State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CountTokensResponse>, (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
@@ -108,7 +109,12 @@ async fn count_tokens(
         .get(http::header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("identity");
-    let body = parse_json_request_body(&body, encoding).map_err(|err| {
+    let body = parse_json_request_body_with_limit(
+        &body,
+        encoding,
+        state.config.max_decoded_body_bytes as usize,
+    )
+    .map_err(|err| {
         anthropic_error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -140,7 +146,12 @@ async fn chat_completions_inner(
         .get(http::header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("identity");
-    let mut body = parse_json_request_body(&body, encoding).map_err(|err| {
+    let mut body = parse_json_request_body_with_limit(
+        &body,
+        encoding,
+        state.config.max_decoded_body_bytes as usize,
+    )
+    .map_err(|err| {
         openai_error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -338,7 +349,12 @@ async fn messages_inner(
         .get(http::header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("identity");
-    let mut body = parse_json_request_body(&body, encoding).map_err(|err| {
+    let mut body = parse_json_request_body_with_limit(
+        &body,
+        encoding,
+        state.config.max_decoded_body_bytes as usize,
+    )
+    .map_err(|err| {
         anthropic_error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -530,7 +546,11 @@ async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Byte
         .get(http::header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("identity");
-    let body = match parse_json_request_body(&body, encoding) {
+    let body = match parse_json_request_body_with_limit(
+        &body,
+        encoding,
+        state.config.max_decoded_body_bytes as usize,
+    ) {
         Ok(body) => body,
         Err(err) => {
             return openai_error(

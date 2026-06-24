@@ -309,6 +309,36 @@ async fn count_tokens_non_object_json_returns_anthropic_error() {
 }
 
 #[tokio::test]
+async fn chat_route_rejects_body_over_decoded_limit() {
+    let mut config = AppConfig::default();
+    config.max_decoded_body_bytes = 8;
+    let app = router(AppState::new(config));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("decoded request body exceeds 8 bytes")
+    );
+}
+
+#[tokio::test]
 async fn dynamic_copilot_models_store_supported_reasoning_efforts_internally() {
     let registry = ModelRegistry::new();
     registry
