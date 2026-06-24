@@ -96,6 +96,9 @@ Important variables:
 | `COPILOT_PROXY_RS_PORT` | Bind port. Defaults to `8080`. |
 | `COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK` | Required for `0.0.0.0`, `::`, or other non-loopback binds. |
 | `COPILOT_PROXY_RS_CONTAINER_LOOPBACK_ONLY` | Allows container-internal `0.0.0.0` binds when the host port is published only on loopback. |
+| `COPILOT_PROXY_RS_API_KEY` | Optional inbound API key. When set, Copilot-backed routes require `Authorization: Bearer <key>` or `x-api-key: <key>`. |
+| `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated WebSocket origin allowlist for `/v1/responses`. Empty means no origin filtering. |
+| `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
 
 ## Safety model
@@ -105,8 +108,10 @@ expose this process directly to a network or the public internet. For alpha
 releases, the service refuses non-loopback bind addresses unless
 `COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK=true` is set.
 
-WebSocket clients are not separately authenticated in this alpha. Keep the proxy
-local-only or place it behind trusted inbound authentication and origin controls.
+WebSocket clients can be protected with `COPILOT_PROXY_RS_API_KEY` and
+`COPILOT_PROXY_RS_ALLOWED_ORIGINS`. Keep the proxy local-only unless you have
+configured inbound authentication, origin controls, and trusted network
+boundaries.
 
 ## Docker
 
