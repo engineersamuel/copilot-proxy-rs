@@ -109,6 +109,59 @@ async fn post_chat_retries_503_then_returns_json() {
 }
 
 #[tokio::test]
+async fn post_chat_preserves_explicit_retry_after_above_fallback_cap() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/chat/completions",
+        vec![
+            (
+                503,
+                serde_json::json!({"error": "temporarily unavailable"}),
+                vec![("retry-after", "120")],
+            ),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "recovered"}}]}),
+                vec![],
+            ),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let events = with_event_capture(|| async {
+        let request = fixture.backend.post_chat(
+            serde_json::json!({"model": "gpt-5.5", "messages": []})
+                .as_object()
+                .unwrap()
+                .clone(),
+            None,
+        );
+        tokio::pin!(request);
+
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            result = &mut request => panic!("request finished before honoring Retry-After: {result:?}"),
+        }
+    })
+    .await;
+
+    assert_eq!(
+        field(&events, "copilot request retrying", "retry.delay_ms").as_deref(),
+        Some("120000")
+    );
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+}
+
+#[tokio::test]
 async fn post_chat_retries_timeout_then_returns_json() {
     let mock = support::MockServer::start().await;
     mock.respond_json(
@@ -281,6 +334,88 @@ async fn get_response_retries_timeout_then_returns_json() {
 
     assert_eq!(response["ok"], true);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn post_chat_retryable_status_without_retry_after_uses_jittered_delay() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/chat/completions",
+        vec![
+            (500, serde_json::json!({"error": "upstream"}), vec![]),
+            (503, serde_json::json!({"error": "temporarily unavailable"}), vec![]),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "recovered"}}]}),
+                vec![],
+            ),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let temp = tempfile::Builder::new()
+        .prefix("backend-fixture-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let temp_path = temp.path().to_path_buf();
+    std::fs::write(temp_path.join("github_token"), "github-token").unwrap();
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp_path.to_str().unwrap()),
+        ("COPILOT_RETRY_MAX", "2"),
+        ("COPILOT_RETRY_BASE_DELAY", "0"),
+    ]);
+    let config = Arc::new(AppConfig::load_from_env(&env).unwrap());
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        mock.auth_endpoints(),
+        false,
+    ));
+    let models = Arc::new(ModelRegistry::new());
+    let backend = Arc::new(CopilotBackend::with_endpoints_for_tests(
+        config,
+        auth,
+        models,
+        mock.copilot_endpoints(),
+    ));
+
+    let events = with_event_capture(|| async {
+        let response = backend
+            .post_chat(
+                serde_json::json!({"model": "gpt-5.5", "messages": []})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response["choices"][0]["message"]["content"], "recovered");
+    })
+    .await;
+
+    let retry_delays: Vec<_> = events
+        .iter()
+        .filter(|event| event.message == "copilot request retrying")
+        .filter_map(|event| {
+            event
+                .fields
+                .iter()
+                .find(|(field_name, _)| field_name == "retry.delay_ms")
+                .map(|(_, value)| value.clone())
+        })
+        .collect();
+
+    assert_eq!(retry_delays, vec!["0".to_string(), "148".to_string()]);
+    assert_eq!(mock.hits("POST", "/chat/completions").await, 3);
 }
 
 #[tokio::test]

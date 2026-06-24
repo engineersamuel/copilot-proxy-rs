@@ -435,7 +435,7 @@ impl CopilotBackend {
             let status = response.status().as_u16();
             let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
             let delay = if should_retry {
-                Some(retry_delay(
+                Some(retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
@@ -761,15 +761,7 @@ fn endpoint_family(url: &str) -> &'static str {
 }
 
 fn retry_delay(headers: &reqwest::header::HeaderMap, attempt: u32, base_delay: f64) -> Duration {
-    let retry_after = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<f64>().ok());
-    Duration::from_secs_f64(
-        retry_after
-            .unwrap_or(base_delay * 2_f64.powi(attempt as i32))
-            .min(30.0),
-    )
+    retry_after_delay(headers).unwrap_or_else(|| fallback_retry_delay(attempt, base_delay))
 }
 
 fn retry_delay_with_jitter(
@@ -777,13 +769,25 @@ fn retry_delay_with_jitter(
     attempt: u32,
     base_delay_seconds: f64,
 ) -> Duration {
-    if headers.get(reqwest::header::RETRY_AFTER).is_some() {
-        return retry_delay(headers, attempt, base_delay_seconds);
+    if let Some(retry_after) = retry_after_delay(headers) {
+        return retry_after;
     }
     let base = retry_delay(headers, attempt, base_delay_seconds);
     let jitter_seed = (attempt as u64).wrapping_mul(37) % 100;
     let jitter = Duration::from_millis(jitter_seed * 4);
     base + jitter
+}
+
+fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(Duration::from_secs_f64)
+}
+
+fn fallback_retry_delay(attempt: u32, base_delay: f64) -> Duration {
+    Duration::from_secs_f64((base_delay * 2_f64.powi(attempt as i32)).min(30.0))
 }
 
 fn retryable_status(status: u16) -> bool {
@@ -856,6 +860,18 @@ mod tests {
         assert_eq!(
             retry_delay_with_jitter(&headers, 2, 1.0),
             Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn retry_delay_preserves_explicit_retry_after_above_fallback_cap() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "120".parse().unwrap());
+
+        assert_eq!(retry_delay(&headers, 5, 1.0), Duration::from_secs(120));
+        assert_eq!(
+            retry_delay_with_jitter(&headers, 5, 1.0),
+            Duration::from_secs(120)
         );
     }
 
