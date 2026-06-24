@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::state::{BackendKind, BackendSnapshot};
+use crate::state::BackendSnapshot;
 
 pub const COPILOT_MODEL_MAP: &[(&str, &str)] = &[
     ("claude-opus-4-8", "claude-opus-4.8"),
@@ -239,18 +239,6 @@ impl ModelRegistry {
     }
 
     pub async fn list_for_snapshot(&self, snapshot: BackendSnapshot) -> ModelsListResponse {
-        let inner = self.inner.read().await;
-        if snapshot.primary == BackendKind::Copilot && !inner.models.is_empty() {
-            return ModelsListResponse {
-                object: "list",
-                data: inner
-                    .models
-                    .iter()
-                    .filter_map(dynamic_model_entry)
-                    .collect(),
-            };
-        }
-        drop(inner);
         model_list_for_snapshot(snapshot)
     }
 
@@ -353,23 +341,6 @@ fn static_supported_endpoints(model: &str) -> Vec<String> {
         }
         _ => Vec::new(),
     }
-}
-
-fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
-    let id = value.get("id")?.as_str()?.to_string();
-    Some(ModelEntry {
-        owned_by: value
-            .get("owned_by")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(infer_owned_by(&id))
-            .to_string(),
-        created: value
-            .get("created_at")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(1_700_000_000),
-        object: "model",
-        id,
-    })
 }
 
 fn strip_model_prefix(model: &str) -> &str {

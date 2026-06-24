@@ -86,7 +86,12 @@ fn copilot_model_list_contains_supported_static_models() {
     });
 
     assert_eq!(response.object, "list");
-    assert!(response.data.iter().any(|model| model.id == "claude-sonnet-4-6"));
+    assert!(
+        response
+            .data
+            .iter()
+            .any(|model| model.id == "claude-sonnet-4-6")
+    );
     assert!(response.data.iter().any(|model| model.id == "gpt-5.4"));
     assert!(response.data.iter().all(|model| model.object == "model"));
 }
@@ -326,18 +331,6 @@ async fn dynamic_copilot_models_store_supported_reasoning_efforts_internally() {
         .expect("dynamic model should expose internal supported efforts");
 
     assert_eq!(efforts.as_strings(), vec!["low", "medium", "high"]);
-
-    let public = registry
-        .list_for_snapshot(BackendSnapshot {
-            primary: BackendKind::Copilot,
-            fallback: None,
-        })
-        .await;
-    let public_json = serde_json::to_value(public.data.first().unwrap()).unwrap();
-    assert!(
-        public_json.get("capabilities").is_none(),
-        "public /v1/models shape must not expose internal capabilities"
-    );
 }
 
 #[tokio::test]
@@ -386,47 +379,17 @@ async fn static_claude_effort_fallbacks_match_python_supported_sets() {
 }
 
 #[tokio::test]
-async fn dynamic_copilot_models_override_static_catalog_when_present() {
-    let registry = ModelRegistry::new();
-    registry
-        .set_copilot_models(vec![serde_json::json!({
-            "id": "gpt-dynamic",
-            "created_at": 1_800_000_000u64,
-            "owned_by": "openai",
-            "supported_endpoints": ["/chat/completions"],
-            "capabilities": {"limits": {"max_prompt_tokens": 1234, "max_output_tokens": 99}}
-        })])
-        .await;
-
-    let response = registry
-        .list_for_snapshot(BackendSnapshot {
-            primary: BackendKind::Copilot,
-            fallback: None,
-        })
-        .await;
-
-    assert_eq!(response.data.len(), 1);
-    assert_eq!(response.data[0].id, "gpt-dynamic");
-}
-
-#[tokio::test]
-async fn models_route_uses_dynamic_copilot_models_when_refreshed() {
+async fn models_route_ignores_cached_upstream_only_model_ids() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
-        .mock
-        .respond_json(
-            "GET",
-            "/models",
-            200,
-            serde_json::json!({
-                "data": [{
-                    "id": "gpt-live",
-                    "created_at": 1800000000,
-                    "owned_by": "openai",
-                    "supported_endpoints": ["/chat/completions"]
-                }]
-            }),
-        )
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-upstream-only",
+            "created_at": 1_800_000_000u64,
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
         .await;
 
     let response = router(fixture.state)
@@ -441,12 +404,16 @@ async fn models_route_uses_dynamic_copilot_models_when_refreshed() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"gpt-5.4"));
     assert!(
-        body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|model| model["id"] == "gpt-live")
+        !ids.contains(&"gpt-upstream-only"),
+        "public /v1/models must stay on the static Copilot catalog"
     );
 }
 

@@ -9,7 +9,7 @@ use crate::auth::CopilotAuth;
 use crate::config::AppConfig;
 use crate::copilot::errors::{CopilotError, CopilotHttpError, TransientBackendError};
 use crate::copilot::request::{
-    base_copilot_request_headers, compute_initiator, CopilotRequestMetadata,
+    CopilotRequestMetadata, base_copilot_request_headers, compute_initiator,
 };
 use crate::models::{EffortLevel, ModelRegistry};
 

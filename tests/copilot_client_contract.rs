@@ -15,7 +15,6 @@ use copilot_proxy_rs::copilot::client::CopilotBackend;
 use copilot_proxy_rs::copilot::client::CopilotEndpoints;
 use copilot_proxy_rs::copilot::errors::CopilotError;
 use copilot_proxy_rs::models::ModelRegistry;
-use copilot_proxy_rs::state::{BackendKind, BackendSnapshot};
 use http_body_util::BodyExt as _;
 use support::log_capture::{field, with_event_capture};
 
@@ -235,30 +234,28 @@ async fn get_response_retries_timeout_then_returns_json() {
     let app = Router::new()
         .route(
             "/responses/demo",
-            get(
-                |State(attempts): State<Arc<AtomicUsize>>| async move {
-                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                    if attempt == 0 {
-                        let stream = async_stream::stream! {
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#"{"id":"demo","#));
-                            tokio::time::sleep(Duration::from_millis(1200)).await;
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#""ok":true}"#));
-                        };
-                        axum::response::Response::builder()
-                            .status(http::StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(axum::body::Body::from_stream(stream))
-                            .unwrap()
-                            .into_response()
-                    } else {
-                        axum::response::Json(serde_json::json!({
-                            "id": "demo",
-                            "ok": true
-                        }))
+            get(|State(attempts): State<Arc<AtomicUsize>>| async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    let stream = async_stream::stream! {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#"{"id":"demo","#));
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(br#""ok":true}"#));
+                    };
+                    axum::response::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from_stream(stream))
+                        .unwrap()
                         .into_response()
-                    }
-                },
-            ),
+                } else {
+                    axum::response::Json(serde_json::json!({
+                        "id": "demo",
+                        "ok": true
+                    }))
+                    .into_response()
+                }
+            }),
         )
         .with_state(attempts.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -322,18 +319,16 @@ async fn stream_messages_retries_timeout_then_returns_response() {
     let app = Router::new()
         .route(
             "/v1/messages",
-            post(
-                |State(attempts): State<Arc<AtomicUsize>>| async move {
-                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                    if attempt == 0 {
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
-                    }
-                    axum::response::Json(serde_json::json!({
-                        "ok": true
-                    }))
-                    .into_response()
-                },
-            ),
+            post(|State(attempts): State<Arc<AtomicUsize>>| async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                }
+                axum::response::Json(serde_json::json!({
+                    "ok": true
+                }))
+                .into_response()
+            }),
         )
         .with_state(attempts.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -730,20 +725,13 @@ async fn refresh_models_retries_503_then_caches_models() {
 
     fixture.state.copilot.refresh_models_if_stale().await;
 
-    let models = fixture
-        .state
-        .models
-        .list_for_snapshot(BackendSnapshot {
-            primary: BackendKind::Copilot,
-            fallback: None,
-        })
-        .await;
-    assert!(
-        models
-            .data
-            .iter()
-            .any(|model| model.id == "gpt-transient-ok"),
-        "expected refreshed model list to include gpt-transient-ok"
+    assert_eq!(
+        fixture
+            .state
+            .models
+            .get_copilot_openai_model("gpt-transient-ok")
+            .await,
+        "gpt-transient-ok"
     );
     assert_eq!(fixture.mock.hits("GET", "/models").await, 2);
 }

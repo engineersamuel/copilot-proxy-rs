@@ -77,10 +77,7 @@ async fn runtime_switch_affects_new_snapshots_only() {
     let state = AppState::new(AppConfig::default());
     let before = state.backend.snapshot().await;
 
-    state
-        .backend
-        .set(BackendKind::Copilot, None)
-        .await;
+    state.backend.set(BackendKind::Copilot, None).await;
     let after = state.backend.snapshot().await;
 
     assert_eq!(before.primary, BackendKind::Copilot);
