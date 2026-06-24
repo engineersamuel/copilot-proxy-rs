@@ -59,9 +59,8 @@ fn with_warn_capture<F: FnOnce()>(f: F) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn backend_state_snapshots_primary_and_fallback() {
+async fn backend_state_snapshots_copilot_only() {
     let config = AppConfig {
-        backend: "bedrock".to_string(),
         fallback_backend: "copilot".to_string(),
         ..AppConfig::default()
     };
@@ -69,8 +68,8 @@ async fn backend_state_snapshots_primary_and_fallback() {
 
     let snapshot = state.backend.snapshot().await;
 
-    assert_eq!(snapshot.primary, BackendKind::Bedrock);
-    assert_eq!(snapshot.fallback, Some(BackendKind::Copilot));
+    assert_eq!(snapshot.primary, BackendKind::Copilot);
+    assert_eq!(snapshot.fallback, None);
 }
 
 #[tokio::test]
@@ -80,14 +79,14 @@ async fn runtime_switch_affects_new_snapshots_only() {
 
     state
         .backend
-        .set(BackendKind::Bedrock, Some(BackendKind::Copilot))
+        .set(BackendKind::Copilot, None)
         .await;
     let after = state.backend.snapshot().await;
 
     assert_eq!(before.primary, BackendKind::Copilot);
     assert_eq!(before.fallback, None);
-    assert_eq!(after.primary, BackendKind::Bedrock);
-    assert_eq!(after.fallback, Some(BackendKind::Copilot));
+    assert_eq!(after.primary, BackendKind::Copilot);
+    assert_eq!(after.fallback, None);
 }
 
 #[test]

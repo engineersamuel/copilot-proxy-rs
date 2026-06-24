@@ -92,9 +92,7 @@ async fn version() -> Json<VersionResponse> {
 
 async fn list_models(State(state): State<AppState>) -> Json<ModelsListResponse> {
     let snapshot = state.backend.snapshot().await;
-    if snapshot.primary == crate::state::BackendKind::Copilot
-        || snapshot.fallback == Some(crate::state::BackendKind::Copilot)
-    {
+    if snapshot.primary == crate::state::BackendKind::Copilot {
         state.copilot.refresh_models_if_stale().await;
     }
     Json(state.models.list_for_snapshot(snapshot).await)

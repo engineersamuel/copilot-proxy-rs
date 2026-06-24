@@ -79,53 +79,16 @@ fn infer_owned_by_matches_python_prefix_rules() {
 }
 
 #[test]
-fn copilot_model_list_contains_anthropic_and_openai_models() {
+fn copilot_model_list_contains_supported_static_models() {
     let response = model_list_for_snapshot(BackendSnapshot {
         primary: BackendKind::Copilot,
         fallback: None,
     });
 
     assert_eq!(response.object, "list");
-    assert!(
-        response
-            .data
-            .iter()
-            .any(|model| model.id == "claude-sonnet-4-6")
-    );
+    assert!(response.data.iter().any(|model| model.id == "claude-sonnet-4-6"));
     assert!(response.data.iter().any(|model| model.id == "gpt-5.4"));
     assert!(response.data.iter().all(|model| model.object == "model"));
-}
-
-#[test]
-fn bedrock_model_list_contains_anthropic_models_only_without_copilot_fallback() {
-    let response = model_list_for_snapshot(BackendSnapshot {
-        primary: BackendKind::Bedrock,
-        fallback: None,
-    });
-
-    assert!(
-        response
-            .data
-            .iter()
-            .any(|model| model.id == "claude-sonnet-4-6")
-    );
-    assert!(!response.data.iter().any(|model| model.id == "gpt-5.4"));
-}
-
-#[test]
-fn bedrock_with_copilot_fallback_includes_non_claude_copilot_models() {
-    let response = model_list_for_snapshot(BackendSnapshot {
-        primary: BackendKind::Bedrock,
-        fallback: Some(BackendKind::Copilot),
-    });
-
-    assert!(
-        response
-            .data
-            .iter()
-            .any(|model| model.id == "claude-sonnet-4-6")
-    );
-    assert!(response.data.iter().any(|model| model.id == "gpt-5.4"));
 }
 
 #[tokio::test]

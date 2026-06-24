@@ -1,6 +1,5 @@
 {
   "backend": "copilot",
-  "fallback_backend": "",
   "host": "127.0.0.1",
   "port": 8080,
   "allow_non_loopback_bind": false,

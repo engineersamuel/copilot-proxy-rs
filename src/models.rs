@@ -6,88 +6,6 @@ use tokio::sync::RwLock;
 
 use crate::state::{BackendKind, BackendSnapshot};
 
-pub const BEDROCK_MODEL_MAP: &[(&str, &str)] = &[
-    ("claude-opus-4-6-20250515", "anthropic.claude-opus-4-6-v1"),
-    ("claude-opus-4-6", "anthropic.claude-opus-4-6-v1"),
-    ("claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
-    (
-        "claude-opus-4-5-20251101",
-        "anthropic.claude-opus-4-5-20251101-v1:0",
-    ),
-    ("claude-opus-4-5", "anthropic.claude-opus-4-5-20251101-v1:0"),
-    (
-        "claude-opus-4-1-20250805",
-        "anthropic.claude-opus-4-1-20250805-v1:0",
-    ),
-    ("claude-opus-4-1", "anthropic.claude-opus-4-1-20250805-v1:0"),
-    (
-        "claude-opus-4-20250514",
-        "anthropic.claude-opus-4-20250514-v1:0",
-    ),
-    ("claude-opus-4", "anthropic.claude-opus-4-20250514-v1:0"),
-    (
-        "claude-sonnet-4-5-20250929",
-        "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    ),
-    (
-        "claude-sonnet-4-5",
-        "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    ),
-    (
-        "claude-sonnet-4-20250514",
-        "anthropic.claude-sonnet-4-20250514-v1:0",
-    ),
-    ("claude-sonnet-4", "anthropic.claude-sonnet-4-20250514-v1:0"),
-    (
-        "claude-3-7-sonnet-20250219",
-        "anthropic.claude-3-7-sonnet-20250219-v1:0",
-    ),
-    (
-        "claude-3-7-sonnet",
-        "anthropic.claude-3-7-sonnet-20250219-v1:0",
-    ),
-    (
-        "claude-3-5-sonnet-20241022",
-        "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    ),
-    (
-        "claude-3-5-sonnet",
-        "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    ),
-    (
-        "claude-3-5-sonnet-20240620",
-        "anthropic.claude-3-5-sonnet-20240620-v1:0",
-    ),
-    (
-        "claude-haiku-4-5-20251001",
-        "anthropic.claude-haiku-4-5-20251001-v1:0",
-    ),
-    (
-        "claude-haiku-4-5",
-        "anthropic.claude-haiku-4-5-20251001-v1:0",
-    ),
-    (
-        "claude-3-5-haiku-20241022",
-        "anthropic.claude-3-5-haiku-20241022-v1:0",
-    ),
-    (
-        "claude-3-5-haiku",
-        "anthropic.claude-3-5-haiku-20241022-v1:0",
-    ),
-    (
-        "claude-3-haiku-20240307",
-        "anthropic.claude-3-haiku-20240307-v1:0",
-    ),
-    (
-        "claude-3-opus-20240229",
-        "anthropic.claude-3-opus-20240229-v1:0",
-    ),
-    (
-        "claude-3-sonnet-20240229",
-        "anthropic.claude-3-sonnet-20240229-v1:0",
-    ),
-];
-
 pub const COPILOT_MODEL_MAP: &[(&str, &str)] = &[
     ("claude-opus-4-8", "claude-opus-4.8"),
     ("claude-opus-4-7", "claude-opus-4.7"),
@@ -253,20 +171,10 @@ pub fn is_claude_model(model_id: &str) -> bool {
         || model_id.contains("anthropic.")
 }
 
-pub fn model_list_for_snapshot(snapshot: BackendSnapshot) -> ModelsListResponse {
-    let data = match snapshot.primary {
-        BackendKind::Copilot => copilot_models(),
-        BackendKind::Bedrock => {
-            let mut models = bedrock_models();
-            if snapshot.fallback == Some(BackendKind::Copilot) {
-                append_non_claude_copilot_models(&mut models);
-            }
-            models
-        }
-    };
+pub fn model_list_for_snapshot(_snapshot: BackendSnapshot) -> ModelsListResponse {
     ModelsListResponse {
         object: "list",
-        data,
+        data: copilot_models(),
     }
 }
 
@@ -298,32 +206,6 @@ fn copilot_models() -> Vec<ModelEntry> {
             owned_by,
         })
         .collect()
-}
-
-fn bedrock_models() -> Vec<ModelEntry> {
-    BEDROCK_MODEL_MAP
-        .iter()
-        .map(|(model_id, _)| ModelEntry {
-            id: (*model_id).to_string(),
-            object: "model",
-            created: 1_700_000_000,
-            owned_by: "anthropic".to_string(),
-        })
-        .collect()
-}
-
-fn append_non_claude_copilot_models(models: &mut Vec<ModelEntry>) {
-    let existing: BTreeSet<String> = models.iter().map(|model| model.id.clone()).collect();
-    for (model_id, _) in COPILOT_OPENAI_MODEL_MAP {
-        if !is_claude_model(model_id) && !existing.contains(*model_id) {
-            models.push(ModelEntry {
-                id: (*model_id).to_string(),
-                object: "model",
-                created: 1_700_000_000,
-                owned_by: infer_owned_by(model_id).to_string(),
-            });
-        }
-    }
 }
 
 #[derive(Debug, Default)]
