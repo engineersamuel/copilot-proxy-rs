@@ -363,15 +363,34 @@ impl CopilotBackend {
             for (key, value) in self.headers(&token, &body, metadata.as_ref()) {
                 request = request.header(key, value);
             }
-            let response = request
-                .json(&body)
-                .send()
-                .await
-                .map_err(map_reqwest_error)?;
+            let response = match request.json(&body).send().await {
+                Ok(response) => response,
+                Err(error) => match map_reqwest_error(error) {
+                    CopilotError::Transient(transient)
+                        if attempt < self.config.copilot_retry_max =>
+                    {
+                        let delay = retry_delay_with_jitter(
+                            &reqwest::header::HeaderMap::new(),
+                            attempt,
+                            self.config.copilot_retry_base_delay,
+                        );
+                        tracing::warn!(
+                            api.family = family,
+                            http.status_code = transient.status_code as u64,
+                            attempt = attempt as u64,
+                            retry.delay_ms = delay.as_millis() as u64,
+                            "copilot request retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    other => return Err(other),
+                },
+            };
             if response.status() == StatusCode::TOO_MANY_REQUESTS
                 && attempt < self.config.copilot_retry_max
             {
-                let delay = retry_delay(
+                let delay = retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
@@ -414,8 +433,29 @@ impl CopilotBackend {
                 return Ok(value);
             }
             let status = response.status().as_u16();
+            let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
+            let delay = if should_retry {
+                Some(retry_delay_with_jitter(
+                    response.headers(),
+                    attempt,
+                    self.config.copilot_retry_base_delay,
+                ))
+            } else {
+                None
+            };
             last_response_text = response.text().await.unwrap_or_default();
             let sanitized_detail = sanitize_upstream_error(status, &last_response_text);
+            if let Some(delay) = delay {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    attempt = attempt as u64,
+                    retry.delay_ms = delay.as_millis() as u64,
+                    "copilot request retrying"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
             tracing::warn!(
                 api.family = family,
                 http.status_code = status as u64,
@@ -423,14 +463,8 @@ impl CopilotBackend {
                 attempt = attempt as u64,
                 "copilot request completed"
             );
-            if matches!(status, 429 | 500 | 502 | 503 | 504) {
-                return Err(TransientBackendError {
-                    status_code: status,
-                    error_type: error_type_for_status(status).to_string(),
-                    message: sanitized_detail,
-                    backend: "copilot".to_string(),
-                }
-                .into());
+            if retryable_status(status) {
+                return Err(transient_error_for_status(status, sanitized_detail).into());
             }
             return Err(CopilotHttpError {
                 status_code: status,
@@ -468,28 +502,56 @@ impl CopilotBackend {
             for (key, value) in self.headers(&token, &Map::new(), metadata.as_ref()) {
                 request = request.header(key, value);
             }
-            let response = request.send().await.map_err(map_reqwest_error)?;
-            if response.status() == StatusCode::TOO_MANY_REQUESTS
-                && attempt < self.config.copilot_retry_max
-            {
-                let delay = retry_delay(
-                    response.headers(),
-                    attempt,
-                    self.config.copilot_retry_base_delay,
-                );
-                tracing::warn!(
-                    api.family = family,
-                    http.status_code = response.status().as_u16() as u64,
-                    attempt = attempt as u64,
-                    retry.delay_ms = delay.as_millis() as u64,
-                    "copilot request retrying"
-                );
-                tokio::time::sleep(delay).await;
-                continue;
-            }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => match map_reqwest_error(error) {
+                    CopilotError::Transient(transient)
+                        if attempt < self.config.copilot_retry_max =>
+                    {
+                        let delay = retry_delay_with_jitter(
+                            &reqwest::header::HeaderMap::new(),
+                            attempt,
+                            self.config.copilot_retry_base_delay,
+                        );
+                        tracing::warn!(
+                            api.family = family,
+                            http.status_code = transient.status_code as u64,
+                            attempt = attempt as u64,
+                            retry.delay_ms = delay.as_millis() as u64,
+                            "copilot request retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    other => return Err(other),
+                },
+            };
             if response.status().is_success() {
                 let status = response.status().as_u16();
-                let value = response.json().await.map_err(map_reqwest_error)?;
+                let value = match response.json().await {
+                    Ok(value) => value,
+                    Err(error) => match map_reqwest_error(error) {
+                        CopilotError::Transient(transient)
+                            if attempt < self.config.copilot_retry_max =>
+                        {
+                            let delay = retry_delay_with_jitter(
+                                &reqwest::header::HeaderMap::new(),
+                                attempt,
+                                self.config.copilot_retry_base_delay,
+                            );
+                            tracing::warn!(
+                                api.family = family,
+                                http.status_code = transient.status_code as u64,
+                                attempt = attempt as u64,
+                                retry.delay_ms = delay.as_millis() as u64,
+                                "copilot request retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        other => return Err(other),
+                    },
+                };
                 tracing::info!(
                     api.family = family,
                     http.status_code = status as u64,
@@ -500,6 +562,29 @@ impl CopilotBackend {
                 return Ok(value);
             }
             let status = response.status().as_u16();
+            let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
+            let delay = if should_retry {
+                Some(retry_delay_with_jitter(
+                    response.headers(),
+                    attempt,
+                    self.config.copilot_retry_base_delay,
+                ))
+            } else {
+                None
+            };
+            let raw_detail = response.text().await.unwrap_or_default();
+            let sanitized_detail = sanitize_upstream_error(status, &raw_detail);
+            if let Some(delay) = delay {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    attempt = attempt as u64,
+                    retry.delay_ms = delay.as_millis() as u64,
+                    "copilot request retrying"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
             tracing::warn!(
                 api.family = family,
                 http.status_code = status as u64,
@@ -507,9 +592,12 @@ impl CopilotBackend {
                 attempt = attempt as u64,
                 "copilot request completed"
             );
+            if retryable_status(status) {
+                return Err(transient_error_for_status(status, sanitized_detail).into());
+            }
             return Err(CopilotHttpError {
                 status_code: status,
-                detail: sanitize_upstream_error(status, &response.text().await.unwrap_or_default()),
+                detail: sanitized_detail,
             }
             .into());
         }
@@ -534,7 +622,6 @@ impl CopilotBackend {
             stream = true,
             "copilot request started"
         );
-        let mut last_err: Option<CopilotError> = None;
         for attempt in 0..=self.config.copilot_retry_max {
             if let Some(rate_limiter) = &self.rate_limiter {
                 rate_limiter.acquire().await;
@@ -544,11 +631,30 @@ impl CopilotBackend {
             for (key, value) in self.headers(&token, &body, metadata.as_ref()) {
                 request = request.header(key, value);
             }
-            let response = request
-                .json(&body)
-                .send()
-                .await
-                .map_err(map_reqwest_error)?;
+            let response = match request.json(&body).send().await {
+                Ok(response) => response,
+                Err(error) => match map_reqwest_error(error) {
+                    CopilotError::Transient(transient)
+                        if attempt < self.config.copilot_retry_max =>
+                    {
+                        let delay = retry_delay_with_jitter(
+                            &reqwest::header::HeaderMap::new(),
+                            attempt,
+                            self.config.copilot_retry_base_delay,
+                        );
+                        tracing::warn!(
+                            api.family = family,
+                            http.status_code = transient.status_code as u64,
+                            attempt = attempt as u64,
+                            retry.delay_ms = delay.as_millis() as u64,
+                            "copilot request retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    other => return Err(other),
+                },
+            };
             if response.status().is_success() {
                 let status = response.status().as_u16();
                 tracing::info!(
@@ -560,32 +666,30 @@ impl CopilotBackend {
                 );
                 return Ok(response);
             }
-            if response.status() == StatusCode::TOO_MANY_REQUESTS
-                && attempt < self.config.copilot_retry_max
-            {
-                let status = response.status().as_u16();
-                let delay = retry_delay(
+            let status = response.status().as_u16();
+            let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
+            let delay = if should_retry {
+                Some(retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
-                );
-                let msg =
-                    sanitize_upstream_error(status, &response.text().await.unwrap_or_default());
-                tokio::time::sleep(delay).await;
-                last_err = Some(
-                    TransientBackendError {
-                        status_code: 429,
-                        error_type: "rate_limit_error".to_string(),
-                        message: msg,
-                        backend: "copilot".to_string(),
-                    }
-                    .into(),
-                );
-                continue;
-            }
-            let status = response.status().as_u16();
+                ))
+            } else {
+                None
+            };
             let raw_detail = response.text().await.unwrap_or_default();
             let detail = sanitize_upstream_error(status, &raw_detail);
+            if let Some(delay) = delay {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    attempt = attempt as u64,
+                    retry.delay_ms = delay.as_millis() as u64,
+                    "copilot request retrying"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
             tracing::warn!(
                 api.family = family,
                 http.status_code = status as u64,
@@ -593,14 +697,8 @@ impl CopilotBackend {
                 stream = true,
                 "copilot request completed"
             );
-            return if matches!(status, 429 | 500 | 502 | 503 | 504) {
-                Err(TransientBackendError {
-                    status_code: status,
-                    error_type: error_type_for_status(status).to_string(),
-                    message: detail,
-                    backend: "copilot".to_string(),
-                }
-                .into())
+            return if retryable_status(status) {
+                Err(transient_error_for_status(status, detail).into())
             } else {
                 Err(CopilotHttpError {
                     status_code: status,
@@ -609,11 +707,9 @@ impl CopilotBackend {
                 .into())
             };
         }
-        // Unreachable: the final loop iteration (attempt == retry_max) always
-        // hits the non-retry error handler above and returns before the loop
-        // exits normally. Kept as a compile-time necessity.
-        Err(last_err
-            .unwrap_or_else(|| CopilotError::Transport("stream retry loop exhausted".to_string())))
+        Err(CopilotError::Transport(
+            "stream retry loop exhausted".to_string(),
+        ))
     }
 
     fn headers(
@@ -665,15 +761,46 @@ fn endpoint_family(url: &str) -> &'static str {
 }
 
 fn retry_delay(headers: &reqwest::header::HeaderMap, attempt: u32, base_delay: f64) -> Duration {
-    let retry_after = headers
+    retry_after_delay(headers).unwrap_or_else(|| fallback_retry_delay(attempt, base_delay))
+}
+
+fn retry_delay_with_jitter(
+    headers: &reqwest::header::HeaderMap,
+    attempt: u32,
+    base_delay_seconds: f64,
+) -> Duration {
+    if let Some(retry_after) = retry_after_delay(headers) {
+        return retry_after;
+    }
+    let base = retry_delay(headers, attempt, base_delay_seconds);
+    let jitter_seed = (attempt as u64).wrapping_mul(37) % 100;
+    let jitter = Duration::from_millis(jitter_seed * 4);
+    base + jitter
+}
+
+fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<f64>().ok());
-    Duration::from_secs_f64(
-        retry_after
-            .unwrap_or(base_delay * 2_f64.powi(attempt as i32))
-            .min(30.0),
-    )
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(Duration::from_secs_f64)
+}
+
+fn fallback_retry_delay(attempt: u32, base_delay: f64) -> Duration {
+    Duration::from_secs_f64((base_delay * 2_f64.powi(attempt as i32)).min(30.0))
+}
+
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+fn transient_error_for_status(status: u16, detail: String) -> TransientBackendError {
+    TransientBackendError {
+        status_code: status,
+        error_type: error_type_for_status(status).to_string(),
+        message: detail,
+        backend: "copilot".to_string(),
+    }
 }
 
 fn error_type_for_status(status: u16) -> &'static str {
@@ -717,5 +844,43 @@ fn map_reqwest_error(error: reqwest::Error) -> CopilotError {
         .into()
     } else {
         CopilotError::Transport(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+
+    #[test]
+    fn retry_delay_honors_zero_retry_after_without_jitter() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "0".parse().unwrap());
+
+        assert_eq!(
+            retry_delay_with_jitter(&headers, 2, 1.0),
+            Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn retry_delay_preserves_explicit_retry_after_above_fallback_cap() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "120".parse().unwrap());
+
+        assert_eq!(retry_delay(&headers, 5, 1.0), Duration::from_secs(120));
+        assert_eq!(
+            retry_delay_with_jitter(&headers, 5, 1.0),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn retry_delay_adds_bounded_jitter_when_retry_after_absent() {
+        let headers = HeaderMap::new();
+        let delay = retry_delay_with_jitter(&headers, 2, 1.0);
+
+        assert!(delay >= Duration::from_secs(4));
+        assert!(delay <= Duration::from_millis(4400));
     }
 }

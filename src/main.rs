@@ -8,7 +8,7 @@ use tower_http::trace::TraceLayer;
 #[command(
     name = "copilot-proxy-rs",
     version,
-    about = "Rust API proxy for Copilot and Bedrock-compatible clients"
+    about = "Rust API proxy for GitHub Copilot-backed OpenAI, Anthropic, and Responses clients"
 )]
 struct Cli {
     #[arg(long, env = "COPILOT_PROXY_RS_HOST")]

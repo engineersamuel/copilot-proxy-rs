@@ -1,10 +1,12 @@
 {
   "backend": "copilot",
-  "fallback_backend": "",
   "host": "127.0.0.1",
   "port": 8080,
   "allow_non_loopback_bind": false,
   "container_loopback_only": false,
+  "api_key": "",
+  "allowed_origins": [],
+  "max_decoded_body_bytes": 16777216,
   "copilot_timeout": 300,
   "copilot_models_ttl": 300,
   "copilot_retry_max": 3,

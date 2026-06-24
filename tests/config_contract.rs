@@ -92,8 +92,8 @@ fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
     fs::write(
         &config_file,
         r#"{
-          "backend": "bedrock",
-          "fallback_backend": "copilot",
+          "backend": "copilot",
+          "fallback_backend": "bedrock",
           "port": 9090,
           "copilot_timeout": "600",
           "context_guard_threshold": "0.75",
@@ -109,8 +109,8 @@ fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
         EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
     let config = AppConfig::load_from_env(&env).unwrap();
 
-    assert_eq!(config.backend, "bedrock");
-    assert_eq!(config.fallback_backend, "copilot");
+    assert_eq!(config.backend, "copilot");
+    assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9090);
     assert_eq!(config.copilot_timeout, 600);
     assert_eq!(config.context_guard_threshold, 0.75);
@@ -151,14 +151,14 @@ fn environment_values_override_file_values() {
 
     let env = EnvSource::from_pairs([
         ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
-        ("COPILOT_PROXY_RS_BACKEND", "bedrock,copilot"),
+        ("COPILOT_PROXY_RS_BACKEND", "copilot,bedrock"),
         ("COPILOT_PROXY_RS_PORT", "9444"),
         ("COPILOT_TIMEOUT", "900"),
     ]);
     let config = AppConfig::load_from_env(&env).unwrap();
 
-    assert_eq!(config.backend, "bedrock");
-    assert_eq!(config.fallback_backend, "copilot");
+    assert_eq!(config.backend, "copilot");
+    assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9444);
     assert_eq!(config.copilot_timeout, 900);
 }
@@ -316,4 +316,46 @@ fn env_source_can_be_constructed_for_tests() {
 
     assert_eq!(all.get("A"), Some(&"1".to_string()));
     assert_eq!(all.get("B"), Some(&"two".to_string()));
+}
+
+#[test]
+fn default_inbound_auth_config_is_disabled() {
+    let temp = repo_tempdir("config-default-auth-");
+    let env = EnvSource::from_pairs([
+        ("HOME", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+    ]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.api_key, "");
+    assert!(config.allowed_origins.is_empty());
+    assert_eq!(config.max_decoded_body_bytes, 16 * 1024 * 1024);
+}
+
+#[test]
+fn env_overrides_inbound_auth_config() {
+    let temp = repo_tempdir("config-env-auth-");
+    let env = EnvSource::from_pairs([
+        ("HOME", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_API_KEY", "local-secret"),
+        (
+            "COPILOT_PROXY_RS_ALLOWED_ORIGINS",
+            "http://localhost:3000,https://example.test",
+        ),
+        ("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES", "4096"),
+    ]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.api_key, "local-secret");
+    assert_eq!(
+        config.allowed_origins,
+        vec![
+            "http://localhost:3000".to_string(),
+            "https://example.test".to_string(),
+        ]
+    );
+    assert_eq!(config.max_decoded_body_bytes, 4096);
 }

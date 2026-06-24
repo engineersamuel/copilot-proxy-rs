@@ -20,33 +20,25 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let config = Arc::new(config);
-        let primary = if let Some(kind) = BackendKind::parse(&config.backend) {
-            kind
-        } else {
-            if !config.backend.trim().is_empty() {
-                tracing::warn!(
-                    value = %config.backend,
-                    "unrecognized primary backend; falling back to copilot"
-                );
-            }
-            BackendKind::Copilot
-        };
-        let fallback = if config.fallback_backend.trim().is_empty() {
-            None
-        } else if let Some(kind) = BackendKind::parse(&config.fallback_backend) {
-            Some(kind)
-        } else {
+        if !config.backend.trim().is_empty() && BackendKind::parse(&config.backend).is_none() {
+            tracing::warn!(
+                value = %config.backend,
+                "unrecognized primary backend; falling back to copilot"
+            );
+        }
+        if !config.fallback_backend.trim().is_empty()
+            && BackendKind::parse(&config.fallback_backend).is_none()
+        {
             tracing::warn!(
                 value = %config.fallback_backend,
                 "unrecognized fallback_backend; ignoring"
             );
-            None
-        };
+        }
         let models = Arc::new(ModelRegistry::new());
         let auth = Arc::new(CopilotAuth::new(config.clone()));
         let copilot = Arc::new(CopilotBackend::new(config.clone(), auth, models.clone()));
         Self {
-            backend: Arc::new(BackendState::new(primary, fallback)),
+            backend: Arc::new(BackendState::new(BackendKind::Copilot, None)),
             config,
             models,
             copilot,
@@ -59,10 +51,8 @@ impl AppState {
         models: Arc<ModelRegistry>,
         copilot: Arc<CopilotBackend>,
     ) -> Self {
-        let primary = BackendKind::parse(&config.backend).unwrap_or(BackendKind::Copilot);
-        let fallback = BackendKind::parse_optional(&config.fallback_backend);
         Self {
-            backend: Arc::new(BackendState::new(primary, fallback)),
+            backend: Arc::new(BackendState::new(BackendKind::Copilot, None)),
             config,
             models,
             copilot,
@@ -74,21 +64,18 @@ impl AppState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     Copilot,
-    Bedrock,
 }
 
 impl BackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Copilot => "copilot",
-            Self::Bedrock => "bedrock",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "copilot" => Some(Self::Copilot),
-            "bedrock" => Some(Self::Bedrock),
             _ => None,
         }
     }
