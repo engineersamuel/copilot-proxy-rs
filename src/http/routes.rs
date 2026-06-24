@@ -657,8 +657,15 @@ async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Byte
 
 async fn responses_ws(
     State(state): State<AppState>,
+    headers: HeaderMap,
     ws: axum::extract::WebSocketUpgrade,
 ) -> Response {
+    if !crate::http::auth::request_has_valid_api_key(&headers, &state.config.api_key) {
+        return crate::http::auth::unauthorized_ws_response();
+    }
+    if !crate::http::auth::request_has_allowed_origin(&headers, &state.config.allowed_origins) {
+        return crate::http::auth::forbidden_ws_response("WebSocket origin is not allowed");
+    }
     ws.on_upgrade(move |socket| handle_responses_ws(state, socket))
 }
 

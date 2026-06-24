@@ -23,6 +23,18 @@ async fn start_proxy(state: AppState) -> SocketAddr {
     addr
 }
 
+async fn start_proxy_with_config(config: AppConfig) -> SocketAddr {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    let state = AppState {
+        config: Arc::new(config),
+        backend: fixture.state.backend,
+        models: fixture.state.models,
+        copilot: fixture.state.copilot,
+        responses: fixture.state.responses,
+    };
+    start_proxy(state).await
+}
+
 async fn mock_ws_backend_addr() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -109,6 +121,50 @@ async fn state_with_ws_backend(ws_backend_addr: SocketAddr) -> (AppState, tempfi
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn responses_websocket_rejects_missing_inbound_auth_when_configured() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    let mut config = (*fixture.state.config).clone();
+    config.api_key = "local-secret".to_string();
+    let addr = start_proxy_with_config(config).await;
+
+    let url = format!("ws://{addr}/v1/responses");
+    let err = connect_async(&url).await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("HTTP error"),
+        "expected rejected websocket upgrade, got {err}"
+    );
+}
+
+#[tokio::test]
+async fn responses_websocket_rejects_disallowed_origin_when_configured() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    let mut config = (*fixture.state.config).clone();
+    config.api_key = "local-secret".to_string();
+    config.allowed_origins = vec!["http://localhost:3000".to_string()];
+    let addr = start_proxy_with_config(config).await;
+
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer local-secret".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+
+    let err = connect_async(request).await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("HTTP error"),
+        "expected rejected websocket upgrade, got {err}"
+    );
+}
 
 #[tokio::test]
 async fn responses_websocket_rejects_invalid_json_with_error_frame() {

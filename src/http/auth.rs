@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -29,6 +30,17 @@ pub fn request_has_valid_api_key(headers: &HeaderMap, configured_api_key: &str) 
     bearer_matches || api_key_matches
 }
 
+pub fn request_has_allowed_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
+    if allowed_origins.is_empty() {
+        return true;
+    }
+
+    headers
+        .get(http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| allowed_origins.iter().any(|allowed| allowed == origin))
+}
+
 pub async fn require_inbound_auth(
     State(state): State<AppState>,
     request: Request,
@@ -44,4 +56,17 @@ pub async fn require_inbound_auth(
         "Missing or invalid proxy API key",
     )
     .into_response()
+}
+
+pub fn unauthorized_ws_response() -> Response<Body> {
+    openai_error(
+        StatusCode::UNAUTHORIZED,
+        "authentication_error",
+        "Missing or invalid proxy API key",
+    )
+    .into_response()
+}
+
+pub fn forbidden_ws_response(message: &'static str) -> Response<Body> {
+    openai_error(StatusCode::FORBIDDEN, "invalid_request_error", message).into_response()
 }
