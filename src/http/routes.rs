@@ -7,14 +7,16 @@ use axum::{Json, Router};
 use bytes::Bytes as RawBytes;
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderMap, StatusCode};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::copilot::request::{
     CopilotRequestMetadata, adapt_openai_reasoning_effort, adapt_thinking_for_copilot,
     filter_anthropic_beta_header,
 };
 use crate::errors::{anthropic_error, openai_error};
+use crate::http::errors::{anthropic_copilot_error, openai_copilot_error};
 use crate::http::health::{count_tokens, health, list_models, version};
+use crate::http::validation::{validate_anthropic_messages_request, validate_openai_chat_request};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
@@ -615,7 +617,7 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
         let Message::Text(raw) = message else {
             continue;
         };
-        let mut body: Map<String, Value> = match serde_json::from_str::<Value>(&raw) {
+        let mut body: serde_json::Map<String, Value> = match serde_json::from_str::<Value>(&raw) {
             Ok(Value::Object(map)) => map,
             _ => {
                 let _ = client_ws
@@ -789,120 +791,4 @@ async fn responses_compact() -> Response {
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     }))
     .into_response()
-}
-
-fn validate_openai_chat_request(
-    body: &serde_json::Map<String, Value>,
-) -> Result<(), (StatusCode, Json<crate::errors::OpenAiErrorResponse>)> {
-    if !body.contains_key("model") {
-        return Err(openai_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "Missing required field: model",
-        ));
-    }
-    match body.get("messages") {
-        Some(Value::Array(messages)) if !messages.is_empty() => Ok(()),
-        Some(Value::Array(_)) => Err(openai_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "messages must not be empty",
-        )),
-        Some(_) => Err(openai_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "messages must be an array",
-        )),
-        None => Err(openai_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "Missing required field: messages",
-        )),
-    }
-}
-
-fn validate_anthropic_messages_request(
-    body: &serde_json::Map<String, Value>,
-) -> Result<(), (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
-    if !body.contains_key("model") {
-        return Err(anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "Missing required field: model",
-        ));
-    }
-    if !body.contains_key("max_tokens") {
-        return Err(anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "Missing required field: max_tokens",
-        ));
-    }
-    match body.get("messages") {
-        Some(Value::Array(_)) => Ok(()),
-        Some(_) => Err(anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "messages must be an array",
-        )),
-        None => Err(anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "Missing required field: messages",
-        )),
-    }
-}
-
-fn openai_copilot_error(
-    error: crate::copilot::errors::CopilotError,
-) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
-    match error {
-        crate::copilot::errors::CopilotError::Auth(err) => openai_error(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            err.to_string(),
-        ),
-        crate::copilot::errors::CopilotError::Transient(err) => openai_error(
-            StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-            err.error_type,
-            err.message,
-        ),
-        crate::copilot::errors::CopilotError::Http(err) => openai_error(
-            StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-            "server_error",
-            err.detail,
-        ),
-        other => openai_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            other.to_string(),
-        ),
-    }
-}
-
-fn anthropic_copilot_error(
-    error: crate::copilot::errors::CopilotError,
-) -> (StatusCode, Json<crate::errors::AnthropicErrorResponse>) {
-    match error {
-        crate::copilot::errors::CopilotError::Auth(err) => anthropic_error(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            err.to_string(),
-        ),
-        crate::copilot::errors::CopilotError::Transient(err) => anthropic_error(
-            StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-            err.error_type,
-            err.message,
-        ),
-        crate::copilot::errors::CopilotError::Http(err) => anthropic_error(
-            StatusCode::from_u16(err.status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-            "server_error",
-            err.detail,
-        ),
-        other => anthropic_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            other.to_string(),
-        ),
-    }
 }
