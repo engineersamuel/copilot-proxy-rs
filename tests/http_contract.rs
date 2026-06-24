@@ -526,6 +526,30 @@ async fn copilot_routes_accept_bearer_inbound_auth_when_configured() {
 }
 
 #[tokio::test]
+async fn copilot_routes_accept_lowercase_bearer_inbound_auth_when_configured() {
+    let app = router(state_with_no_token_and_api_key("local-secret").await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("authorization", "bearer local-secret")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
+    assert_ne!(body["error"]["message"], "Missing or invalid proxy API key");
+}
+
+#[tokio::test]
 async fn copilot_routes_accept_x_api_key_inbound_auth_when_configured() {
     let app = router(state_with_no_token_and_api_key("local-secret").await);
     let response = app

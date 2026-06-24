@@ -15,7 +15,10 @@ pub fn request_has_valid_api_key(headers: &HeaderMap, configured_api_key: &str) 
     let bearer_matches = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| {
+            let (scheme, token) = value.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("Bearer").then_some(token)
+        })
         .is_some_and(|token| token == configured_api_key);
 
     let api_key_matches = headers
