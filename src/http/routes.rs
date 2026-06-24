@@ -4,7 +4,6 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use bytes::Bytes as RawBytes;
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
@@ -16,6 +15,7 @@ use crate::copilot::request::{
 use crate::errors::{anthropic_error, openai_error};
 use crate::http::errors::{anthropic_copilot_error, openai_copilot_error};
 use crate::http::health::{count_tokens, health, list_models, version};
+use crate::http::sse::map_sse_lines;
 use crate::http::validation::{validate_anthropic_messages_request, validate_openai_chat_request};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
@@ -149,40 +149,10 @@ async fn chat_completions_inner(
                 .stream_responses(responses_body, None)
                 .await
                 .map_err(openai_copilot_error)?;
-            let byte_stream = {
-                let mut src = Box::pin(upstream.bytes_stream());
-                async_stream::stream! {
-                    let mut buf = String::new();
-                    while let Some(chunk_result) = src.next().await {
-                        match chunk_result {
-                            Err(e) => {
-                                yield Err(std::io::Error::other(e));
-                                return;
-                            }
-                            Ok(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                        }
-                        while let Some(nl) = buf.find('\n') {
-                            let line = buf[..nl].trim_end_matches('\r').to_string();
-                            buf.drain(..=nl);
-                            if let Some(normalized) =
-                                crate::translate::responses_formats::responses_sse_to_openai_chat_sse_line(&line)
-                            {
-                                yield Ok::<RawBytes, std::io::Error>(RawBytes::from(
-                                    format!("{normalized}\n"),
-                                ));
-                            }
-                        }
-                    }
-                    if !buf.is_empty() {
-                        let line = buf.trim_end_matches('\r').to_string();
-                        if let Some(normalized) =
-                            crate::translate::responses_formats::responses_sse_to_openai_chat_sse_line(&line)
-                        {
-                            yield Ok(RawBytes::from(format!("{normalized}\n")));
-                        }
-                    }
-                }
-            };
+            let byte_stream = map_sse_lines(
+                upstream.bytes_stream(),
+                crate::translate::responses_formats::responses_sse_to_openai_chat_sse_line,
+            );
             return Ok(Response::builder()
                 .header(http::header::CONTENT_TYPE, "text/event-stream")
                 .body(Body::from_stream(byte_stream))
@@ -208,37 +178,9 @@ async fn chat_completions_inner(
             .stream_chat(body, None)
             .await
             .map_err(openai_copilot_error)?;
-        let byte_stream = {
-            let mut src = Box::pin(upstream.bytes_stream());
-            async_stream::stream! {
-                let mut buf = String::new();
-                while let Some(chunk_result) = src.next().await {
-                    match chunk_result {
-                        Err(e) => {
-                            yield Err(std::io::Error::other(e));
-                            return;
-                        }
-                        Ok(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                    }
-                    // Emit every complete line (those terminated by \n).
-                    while let Some(nl) = buf.find('\n') {
-                        let line = buf[..nl].trim_end_matches('\r').to_string();
-                        buf.drain(..=nl);
-                        let normalized =
-                            crate::translate::openai::normalize_openai_sse_line(&line);
-                        yield Ok::<RawBytes, std::io::Error>(RawBytes::from(
-                            format!("{normalized}\n"),
-                        ));
-                    }
-                }
-                // Flush any partial line left at stream end (shouldn't occur in valid SSE).
-                if !buf.is_empty() {
-                    let line = buf.trim_end_matches('\r').to_string();
-                    let normalized = crate::translate::openai::normalize_openai_sse_line(&line);
-                    yield Ok(RawBytes::from(format!("{normalized}\n")));
-                }
-            }
-        };
+        let byte_stream = map_sse_lines(upstream.bytes_stream(), |line| {
+            Some(crate::translate::openai::normalize_openai_sse_line(line))
+        });
         return Ok(Response::builder()
             .header(http::header::CONTENT_TYPE, "text/event-stream")
             .body(Body::from_stream(byte_stream))
@@ -363,40 +305,10 @@ async fn messages_inner(
                 .stream_responses(responses_body, metadata)
                 .await
                 .map_err(anthropic_copilot_error)?;
-            let byte_stream = {
-                let mut src = Box::pin(upstream.bytes_stream());
-                async_stream::stream! {
-                    let mut buf = String::new();
-                    while let Some(chunk_result) = src.next().await {
-                        match chunk_result {
-                            Err(e) => {
-                                yield Err(std::io::Error::other(e));
-                                return;
-                            }
-                            Ok(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                        }
-                        while let Some(nl) = buf.find('\n') {
-                            let line = buf[..nl].trim_end_matches('\r').to_string();
-                            buf.drain(..=nl);
-                            if let Some(normalized) =
-                                crate::translate::responses_formats::responses_sse_to_anthropic_sse_line(&line)
-                            {
-                                yield Ok::<RawBytes, std::io::Error>(RawBytes::from(
-                                    format!("{normalized}\n"),
-                                ));
-                            }
-                        }
-                    }
-                    if !buf.is_empty() {
-                        let line = buf.trim_end_matches('\r').to_string();
-                        if let Some(normalized) =
-                            crate::translate::responses_formats::responses_sse_to_anthropic_sse_line(&line)
-                        {
-                            yield Ok(RawBytes::from(format!("{normalized}\n")));
-                        }
-                    }
-                }
-            };
+            let byte_stream = map_sse_lines(
+                upstream.bytes_stream(),
+                crate::translate::responses_formats::responses_sse_to_anthropic_sse_line,
+            );
             return Ok(Response::builder()
                 .header(http::header::CONTENT_TYPE, "text/event-stream")
                 .body(Body::from_stream(byte_stream))
