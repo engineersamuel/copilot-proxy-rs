@@ -4,7 +4,7 @@ pub(crate) mod errors;
 pub(crate) mod health;
 pub(crate) mod messages;
 pub(crate) mod responses;
-pub mod routes;
+pub(crate) mod routes;
 pub(crate) mod sse;
 pub(crate) mod validation;
 
