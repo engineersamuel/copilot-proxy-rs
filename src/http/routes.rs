@@ -1,5 +1,6 @@
 use axum::body::{Body, Bytes};
 use axum::extract::State;
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -23,9 +24,7 @@ use crate::telemetry::{
 };
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/version", get(version))
+    let protected = Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", post(messages))
@@ -34,6 +33,15 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/responses/compact", post(responses_compact))
         .route("/v1/responses/{response_id}", get(responses_retrieve))
         .route("/v1/responses/{response_id}/cancel", post(responses_cancel))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::http::auth::require_inbound_auth,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/version", get(version))
+        .merge(protected)
         .with_state(state)
 }
 

@@ -317,3 +317,45 @@ fn env_source_can_be_constructed_for_tests() {
     assert_eq!(all.get("A"), Some(&"1".to_string()));
     assert_eq!(all.get("B"), Some(&"two".to_string()));
 }
+
+#[test]
+fn default_inbound_auth_config_is_disabled() {
+    let temp = repo_tempdir("config-default-auth-");
+    let env = EnvSource::from_pairs([
+        ("HOME", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+    ]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.api_key, "");
+    assert!(config.allowed_origins.is_empty());
+    assert_eq!(config.max_decoded_body_bytes, 16 * 1024 * 1024);
+}
+
+#[test]
+fn env_overrides_inbound_auth_config() {
+    let temp = repo_tempdir("config-env-auth-");
+    let env = EnvSource::from_pairs([
+        ("HOME", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_API_KEY", "local-secret"),
+        (
+            "COPILOT_PROXY_RS_ALLOWED_ORIGINS",
+            "http://localhost:3000,https://example.test",
+        ),
+        ("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES", "4096"),
+    ]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.api_key, "local-secret");
+    assert_eq!(
+        config.allowed_origins,
+        vec![
+            "http://localhost:3000".to_string(),
+            "https://example.test".to_string(),
+        ]
+    );
+    assert_eq!(config.max_decoded_body_bytes, 4096);
+}

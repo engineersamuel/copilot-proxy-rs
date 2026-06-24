@@ -46,6 +46,29 @@ async fn state_with_no_token() -> AppState {
     AppState::with_parts_for_tests(config, models, copilot)
 }
 
+async fn state_with_no_token_and_api_key(api_key: &str) -> AppState {
+    let temp = repo_tempdir("http-contract-");
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+    let mut config = AppConfig::load_from_env(&env).unwrap();
+    config.api_key = api_key.to_string();
+    let config = Arc::new(config);
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        AuthEndpoints::localhost_for_tests(),
+        false,
+    ));
+    let models = Arc::new(ModelRegistry::new());
+    let copilot = Arc::new(CopilotBackend::with_endpoints_for_tests(
+        config.clone(),
+        auth,
+        models.clone(),
+        CopilotEndpoints::default(),
+    ));
+    AppState::with_parts_for_tests(config, models, copilot)
+}
+
 #[test]
 fn infer_owned_by_matches_python_prefix_rules() {
     assert_eq!(infer_owned_by("gpt-5.4"), "openai");
@@ -435,4 +458,88 @@ async fn models_route_uses_dynamic_copilot_models_when_refreshed() {
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn health_does_not_require_inbound_auth() {
+    let app = router(AppState::new(AppConfig {
+        api_key: "local-secret".to_string(),
+        ..AppConfig::default()
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn copilot_routes_reject_missing_inbound_auth_when_configured() {
+    let app = router(state_with_no_token_and_api_key("local-secret").await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
+}
+
+#[tokio::test]
+async fn copilot_routes_accept_bearer_inbound_auth_when_configured() {
+    let app = router(state_with_no_token_and_api_key("local-secret").await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer local-secret")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
+    assert_ne!(body["error"]["message"], "Missing or invalid proxy API key");
+}
+
+#[tokio::test]
+async fn copilot_routes_accept_x_api_key_inbound_auth_when_configured() {
+    let app = router(state_with_no_token_and_api_key("local-secret").await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages/count_tokens")
+                .header("content-type", "application/json")
+                .header("x-api-key", "local-secret")
+                .body(Body::from(r#"{"messages":[{"role":"user","content":"hello"}]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
 }

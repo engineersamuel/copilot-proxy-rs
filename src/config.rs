@@ -82,6 +82,12 @@ pub struct AppConfig {
     #[serde(deserialize_with = "deserialize_bool")]
     pub container_loopback_only: bool,
     #[serde(deserialize_with = "deserialize_string")]
+    pub api_key: String,
+    #[serde(deserialize_with = "deserialize_string_vec")]
+    pub allowed_origins: Vec<String>,
+    #[serde(deserialize_with = "deserialize_u64")]
+    pub max_decoded_body_bytes: u64,
+    #[serde(deserialize_with = "deserialize_string")]
     pub log_level: String,
     #[serde(deserialize_with = "deserialize_string")]
     pub cowork_host: String,
@@ -146,6 +152,9 @@ impl Default for AppConfig {
             auto_update: false,
             allow_non_loopback_bind: false,
             container_loopback_only: false,
+            api_key: String::new(),
+            allowed_origins: Vec::new(),
+            max_decoded_body_bytes: 16 * 1024 * 1024,
             log_level: "INFO".to_string(),
             cowork_host: "198.18.1.1".to_string(),
             cowork_port: 8443,
@@ -203,6 +212,12 @@ struct FileConfig {
     allow_non_loopback_bind: Option<bool>,
     #[serde(deserialize_with = "deserialize_opt_bool")]
     container_loopback_only: Option<bool>,
+    #[serde(deserialize_with = "deserialize_opt_string")]
+    api_key: Option<String>,
+    #[serde(deserialize_with = "deserialize_opt_string_vec")]
+    allowed_origins: Option<Vec<String>>,
+    #[serde(deserialize_with = "deserialize_opt_u64")]
+    max_decoded_body_bytes: Option<u64>,
     #[serde(deserialize_with = "deserialize_opt_string")]
     log_level: Option<String>,
     #[serde(deserialize_with = "deserialize_opt_string")]
@@ -334,6 +349,17 @@ impl AppConfig {
         if let Some(v) = file.container_loopback_only {
             self.container_loopback_only = v;
         }
+        if let Some(v) = file.api_key {
+            self.api_key = v;
+        }
+        if let Some(v) = file.allowed_origins {
+            self.allowed_origins = v;
+        }
+        if let Some(v) = file.max_decoded_body_bytes {
+            if v > 0 {
+                self.max_decoded_body_bytes = v;
+            }
+        }
         if let Some(v) = file.log_level {
             if !v.is_empty() {
                 self.log_level = v;
@@ -439,6 +465,23 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
         "COPILOT_PROXY_RS_CONTAINER_LOOPBACK_ONLY",
         &mut config.container_loopback_only,
     );
+    apply_string(env, "COPILOT_PROXY_RS_API_KEY", &mut config.api_key);
+    if let Some(value) = env.get("COPILOT_PROXY_RS_ALLOWED_ORIGINS") {
+        config.allowed_origins = value
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    apply_parse(
+        env,
+        "COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES",
+        &mut config.max_decoded_body_bytes,
+    );
+    if config.max_decoded_body_bytes == 0 {
+        config.max_decoded_body_bytes = 16 * 1024 * 1024;
+    }
     apply_string(env, "COPILOT_PROXY_RS_LOG_LEVEL", &mut config.log_level);
     config.log_level = config.log_level.to_ascii_uppercase();
     apply_string(env, "COPILOT_PROXY_RS_COWORK_HOST", &mut config.cowork_host);
