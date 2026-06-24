@@ -14,6 +14,7 @@ use copilot_proxy_rs::copilot::client::CopilotBackend;
 use copilot_proxy_rs::copilot::client::CopilotEndpoints;
 use copilot_proxy_rs::copilot::errors::CopilotError;
 use copilot_proxy_rs::models::ModelRegistry;
+use copilot_proxy_rs::state::{BackendKind, BackendSnapshot};
 use http_body_util::BodyExt as _;
 use support::log_capture::{field, with_event_capture};
 
@@ -489,6 +490,90 @@ async fn stream_chat_retries_429_before_streaming() {
         response.err()
     );
     assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 2);
+}
+
+#[tokio::test]
+async fn stream_chat_retries_503_then_returns_stream() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/chat/completions",
+        vec![
+            (
+                503,
+                serde_json::json!({"error": "temporarily unavailable"}),
+                vec![("retry-after", "0")],
+            ),
+            (200, serde_json::json!({"ok": true}), vec![]),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let response = fixture
+        .backend
+        .stream_chat(
+            serde_json::json!({"model": "gpt-5.5", "stream": true, "messages": []})
+                .as_object()
+                .unwrap()
+                .clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(response.status().is_success());
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 2);
+}
+
+#[tokio::test]
+async fn refresh_models_retries_503_then_caches_models() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "GET",
+            "/models",
+            vec![
+                (
+                    503,
+                    serde_json::json!({"error": "temporarily unavailable"}),
+                    vec![("retry-after", "0")],
+                ),
+                (
+                    200,
+                    serde_json::json!({"data": [{"id": "gpt-transient-ok", "owned_by": "openai"}]}),
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+
+    fixture.state.copilot.refresh_models_if_stale().await;
+
+    let models = fixture
+        .state
+        .models
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+    assert!(
+        models
+            .data
+            .iter()
+            .any(|model| model.id == "gpt-transient-ok"),
+        "expected refreshed model list to include gpt-transient-ok"
+    );
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 2);
 }
 
 #[tokio::test]
