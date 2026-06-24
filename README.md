@@ -53,6 +53,13 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applicatio
 - Safe metadata logging that avoids raw prompt/body/token logging.
 - Fail-closed startup for non-loopback binds unless explicitly opted in.
 
+## Code structure
+
+- `src/http/` owns route wiring and HTTP/WebSocket handlers.
+- `src/copilot/` owns GitHub/Copilot authentication, upstream requests, retries, and model refresh.
+- `src/translate/` owns OpenAI, Anthropic, and Responses format conversion.
+- `src/responses/` owns Responses API request preparation and in-memory response-state caching.
+
 ## Copilot authentication
 
 The Rust service uses `GITHUB_TOKEN` when set. Otherwise it reads

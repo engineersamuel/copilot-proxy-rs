@@ -11,7 +11,8 @@ use crate::http::responses::{
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
-    let protected = Router::new()
+    // Keep the Copilot-backed routes behind inbound auth middleware.
+    let protected_routes = Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", post(messages))
@@ -28,6 +29,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/version", get(version))
-        .merge(protected)
+        .merge(protected_routes)
         .with_state(state)
 }
