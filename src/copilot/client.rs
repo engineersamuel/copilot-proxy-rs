@@ -9,7 +9,7 @@ use crate::auth::CopilotAuth;
 use crate::config::AppConfig;
 use crate::copilot::errors::{CopilotError, CopilotHttpError, TransientBackendError};
 use crate::copilot::request::{
-    CopilotRequestMetadata, base_copilot_request_headers, compute_initiator,
+    base_copilot_request_headers, compute_initiator, CopilotRequestMetadata,
 };
 use crate::models::{EffortLevel, ModelRegistry};
 
@@ -369,7 +369,7 @@ impl CopilotBackend {
                     CopilotError::Transient(transient)
                         if attempt < self.config.copilot_retry_max =>
                     {
-                        let delay = retry_delay(
+                        let delay = retry_delay_with_jitter(
                             &reqwest::header::HeaderMap::new(),
                             attempt,
                             self.config.copilot_retry_base_delay,
@@ -390,7 +390,7 @@ impl CopilotBackend {
             if response.status() == StatusCode::TOO_MANY_REQUESTS
                 && attempt < self.config.copilot_retry_max
             {
-                let delay = retry_delay(
+                let delay = retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
@@ -508,7 +508,7 @@ impl CopilotBackend {
                     CopilotError::Transient(transient)
                         if attempt < self.config.copilot_retry_max =>
                     {
-                        let delay = retry_delay(
+                        let delay = retry_delay_with_jitter(
                             &reqwest::header::HeaderMap::new(),
                             attempt,
                             self.config.copilot_retry_base_delay,
@@ -534,7 +534,7 @@ impl CopilotBackend {
                         CopilotError::Transient(transient)
                             if attempt < self.config.copilot_retry_max =>
                         {
-                            let delay = retry_delay(
+                            let delay = retry_delay_with_jitter(
                                 &reqwest::header::HeaderMap::new(),
                                 attempt,
                                 self.config.copilot_retry_base_delay,
@@ -564,7 +564,7 @@ impl CopilotBackend {
             let status = response.status().as_u16();
             let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
             let delay = if should_retry {
-                Some(retry_delay(
+                Some(retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
@@ -637,7 +637,7 @@ impl CopilotBackend {
                     CopilotError::Transient(transient)
                         if attempt < self.config.copilot_retry_max =>
                     {
-                        let delay = retry_delay(
+                        let delay = retry_delay_with_jitter(
                             &reqwest::header::HeaderMap::new(),
                             attempt,
                             self.config.copilot_retry_base_delay,
@@ -669,7 +669,7 @@ impl CopilotBackend {
             let status = response.status().as_u16();
             let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
             let delay = if should_retry {
-                Some(retry_delay(
+                Some(retry_delay_with_jitter(
                     response.headers(),
                     attempt,
                     self.config.copilot_retry_base_delay,
@@ -707,7 +707,9 @@ impl CopilotBackend {
                 .into())
             };
         }
-        Err(CopilotError::Transport("stream retry loop exhausted".to_string()))
+        Err(CopilotError::Transport(
+            "stream retry loop exhausted".to_string(),
+        ))
     }
 
     fn headers(
@@ -770,6 +772,20 @@ fn retry_delay(headers: &reqwest::header::HeaderMap, attempt: u32, base_delay: f
     )
 }
 
+fn retry_delay_with_jitter(
+    headers: &reqwest::header::HeaderMap,
+    attempt: u32,
+    base_delay_seconds: f64,
+) -> Duration {
+    if headers.get(reqwest::header::RETRY_AFTER).is_some() {
+        return retry_delay(headers, attempt, base_delay_seconds);
+    }
+    let base = retry_delay(headers, attempt, base_delay_seconds);
+    let jitter_seed = (attempt as u64).wrapping_mul(37) % 100;
+    let jitter = Duration::from_millis(jitter_seed * 4);
+    base + jitter
+}
+
 fn retryable_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
@@ -824,5 +840,31 @@ fn map_reqwest_error(error: reqwest::Error) -> CopilotError {
         .into()
     } else {
         CopilotError::Transport(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+
+    #[test]
+    fn retry_delay_honors_zero_retry_after_without_jitter() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "0".parse().unwrap());
+
+        assert_eq!(
+            retry_delay_with_jitter(&headers, 2, 1.0),
+            Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn retry_delay_adds_bounded_jitter_when_retry_after_absent() {
+        let headers = HeaderMap::new();
+        let delay = retry_delay_with_jitter(&headers, 2, 1.0);
+
+        assert!(delay >= Duration::from_secs(4));
+        assert!(delay <= Duration::from_millis(4400));
     }
 }
