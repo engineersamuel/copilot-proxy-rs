@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use copilot_proxy_rs::auth::CopilotAuth;
 use copilot_proxy_rs::config::{AppConfig, EnvSource};
 use copilot_proxy_rs::copilot::client::CopilotBackend;
@@ -195,6 +195,166 @@ async fn post_chat_retries_timeout_then_returns_json() {
         .unwrap();
 
     assert_eq!(response["choices"][0]["message"]["content"], "recovered");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn get_response_retries_timeout_then_returns_json() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let temp = tempfile::Builder::new()
+        .prefix("backend-fixture-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let temp_path = temp.path().to_path_buf();
+    std::fs::write(temp_path.join("github_token"), "github-token").unwrap();
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp_path.to_str().unwrap()),
+        ("COPILOT_TIMEOUT", "1"),
+        ("COPILOT_RETRY_MAX", "1"),
+        ("COPILOT_RETRY_BASE_DELAY", "0"),
+    ]);
+    let config = Arc::new(AppConfig::load_from_env(&env).unwrap());
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        mock.auth_endpoints(),
+        false,
+    ));
+    let models = Arc::new(ModelRegistry::new());
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/responses/demo",
+            get(
+                |State(attempts): State<Arc<AtomicUsize>>| async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                    }
+                    axum::response::Json(serde_json::json!({
+                        "id": "demo",
+                        "ok": true
+                    }))
+                    .into_response()
+                },
+            ),
+        )
+        .with_state(attempts.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let backend = Arc::new(CopilotBackend::with_endpoints_for_tests(
+        config,
+        auth,
+        models,
+        CopilotEndpoints {
+            chat_url: format!("http://{addr}/chat/completions"),
+            messages_url: format!("http://{addr}/v1/messages"),
+            responses_url: format!("http://{addr}/responses"),
+            responses_ws_url: format!("ws://{addr}/responses"),
+            models_url: format!("http://{addr}/models"),
+        },
+    ));
+
+    let response = backend.get_response("demo", None).await.unwrap();
+
+    assert_eq!(response["ok"], true);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn stream_messages_retries_timeout_then_returns_response() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let temp = tempfile::Builder::new()
+        .prefix("backend-fixture-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let temp_path = temp.path().to_path_buf();
+    std::fs::write(temp_path.join("github_token"), "github-token").unwrap();
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp_path.to_str().unwrap()),
+        ("COPILOT_TIMEOUT", "1"),
+        ("COPILOT_RETRY_MAX", "1"),
+        ("COPILOT_RETRY_BASE_DELAY", "0"),
+    ]);
+    let config = Arc::new(AppConfig::load_from_env(&env).unwrap());
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        mock.auth_endpoints(),
+        false,
+    ));
+    let models = Arc::new(ModelRegistry::new());
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                |State(attempts): State<Arc<AtomicUsize>>| async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                    }
+                    axum::response::Json(serde_json::json!({
+                        "ok": true
+                    }))
+                    .into_response()
+                },
+            ),
+        )
+        .with_state(attempts.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let backend = Arc::new(CopilotBackend::with_endpoints_for_tests(
+        config,
+        auth,
+        models,
+        CopilotEndpoints {
+            chat_url: format!("http://{addr}/chat/completions"),
+            messages_url: format!("http://{addr}/v1/messages"),
+            responses_url: format!("http://{addr}/responses"),
+            responses_ws_url: format!("ws://{addr}/responses"),
+            models_url: format!("http://{addr}/models"),
+        },
+    ));
+
+    let response = backend
+        .stream_messages(
+            serde_json::json!({"model": "gpt-5.5", "stream": true, "messages": []})
+                .as_object()
+                .unwrap()
+                .clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(response.status().is_success());
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
