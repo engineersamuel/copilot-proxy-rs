@@ -7,7 +7,6 @@ use axum::{Json, Router};
 use bytes::Bytes as RawBytes;
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderMap, StatusCode};
-use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::copilot::request::{
@@ -15,7 +14,7 @@ use crate::copilot::request::{
     filter_anthropic_beta_header,
 };
 use crate::errors::{anthropic_error, openai_error};
-use crate::models::ModelsListResponse;
+use crate::http::health::{count_tokens, health, list_models, version};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
@@ -43,85 +42,6 @@ pub fn router(state: AppState) -> Router {
         .route("/version", get(version))
         .merge(protected)
         .with_state(state)
-}
-
-#[derive(Debug, Serialize)]
-struct RuntimeInfo {
-    implementation: &'static str,
-    pid: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    version: &'static str,
-    backend: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fallback: Option<&'static str>,
-    runtime: RuntimeInfo,
-}
-
-#[derive(Debug, Serialize)]
-struct VersionResponse {
-    version: &'static str,
-    runtime: RuntimeInfo,
-}
-
-#[derive(Debug, Serialize)]
-struct CountTokensResponse {
-    input_tokens: usize,
-}
-
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let snapshot = state.backend.snapshot().await;
-    Json(HealthResponse {
-        status: "ok",
-        version: env!("CARGO_PKG_VERSION"),
-        backend: snapshot.primary.as_str(),
-        fallback: snapshot.fallback.map(|backend| backend.as_str()),
-        runtime: runtime_info(),
-    })
-}
-
-async fn version() -> Json<VersionResponse> {
-    Json(VersionResponse {
-        version: env!("CARGO_PKG_VERSION"),
-        runtime: runtime_info(),
-    })
-}
-
-async fn list_models(State(state): State<AppState>) -> Json<ModelsListResponse> {
-    let snapshot = state.backend.snapshot().await;
-    if snapshot.primary == crate::state::BackendKind::Copilot {
-        state.copilot.refresh_models_if_stale().await;
-    }
-    Json(state.models.list_for_snapshot(snapshot).await)
-}
-
-async fn count_tokens(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Json<CountTokensResponse>, (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
-    let encoding = headers
-        .get(http::header::CONTENT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("identity");
-    let body = parse_json_request_body_with_limit(
-        &body,
-        encoding,
-        state.config.max_decoded_body_bytes as usize,
-    )
-    .map_err(|err| {
-        anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            err.to_string(),
-        )
-    })?;
-    Ok(Json(CountTokensResponse {
-        input_tokens: crate::telemetry::estimate_request_tokens(&body),
-    }))
 }
 
 async fn chat_completions(
@@ -869,13 +789,6 @@ async fn responses_compact() -> Response {
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     }))
     .into_response()
-}
-
-fn runtime_info() -> RuntimeInfo {
-    RuntimeInfo {
-        implementation: "rust",
-        pid: std::process::id(),
-    }
 }
 
 fn validate_openai_chat_request(
