@@ -49,6 +49,51 @@ async fn post_chat_retries_429_then_returns_json() {
 }
 
 #[tokio::test]
+async fn post_chat_retries_503_then_returns_json() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/chat/completions",
+        vec![
+            (
+                503,
+                serde_json::json!({"error": "temporarily unavailable"}),
+                vec![("retry-after", "0")],
+            ),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "recovered"}}]}),
+                vec![],
+            ),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let response = fixture
+        .backend
+        .post_chat(
+            serde_json::json!({"model": "gpt-5.5", "messages": []})
+                .as_object()
+                .unwrap()
+                .clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response["choices"][0]["message"]["content"], "recovered");
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 2);
+}
+
+#[tokio::test]
 async fn post_chat_does_not_retry_with_different_model_when_effort_cannot_be_downgraded() {
     let mock = support::MockServer::start().await;
     mock.respond_sequence_json(

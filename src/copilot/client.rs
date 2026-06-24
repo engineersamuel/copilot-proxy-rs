@@ -414,8 +414,29 @@ impl CopilotBackend {
                 return Ok(value);
             }
             let status = response.status().as_u16();
+            let should_retry = retryable_status(status) && attempt < self.config.copilot_retry_max;
+            let delay = if should_retry {
+                Some(retry_delay(
+                    response.headers(),
+                    attempt,
+                    self.config.copilot_retry_base_delay,
+                ))
+            } else {
+                None
+            };
             last_response_text = response.text().await.unwrap_or_default();
             let sanitized_detail = sanitize_upstream_error(status, &last_response_text);
+            if let Some(delay) = delay {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    attempt = attempt as u64,
+                    retry.delay_ms = delay.as_millis() as u64,
+                    "copilot request retrying"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
             tracing::warn!(
                 api.family = family,
                 http.status_code = status as u64,
@@ -423,14 +444,8 @@ impl CopilotBackend {
                 attempt = attempt as u64,
                 "copilot request completed"
             );
-            if matches!(status, 429 | 500 | 502 | 503 | 504) {
-                return Err(TransientBackendError {
-                    status_code: status,
-                    error_type: error_type_for_status(status).to_string(),
-                    message: sanitized_detail,
-                    backend: "copilot".to_string(),
-                }
-                .into());
+            if retryable_status(status) {
+                return Err(transient_error_for_status(status, sanitized_detail).into());
             }
             return Err(CopilotHttpError {
                 status_code: status,
@@ -674,6 +689,19 @@ fn retry_delay(headers: &reqwest::header::HeaderMap, attempt: u32, base_delay: f
             .unwrap_or(base_delay * 2_f64.powi(attempt as i32))
             .min(30.0),
     )
+}
+
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+fn transient_error_for_status(status: u16, detail: String) -> TransientBackendError {
+    TransientBackendError {
+        status_code: status,
+        error_type: error_type_for_status(status).to_string(),
+        message: detail,
+        backend: "copilot".to_string(),
+    }
 }
 
 fn error_type_for_status(status: u16) -> &'static str {
