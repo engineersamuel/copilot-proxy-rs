@@ -559,7 +559,9 @@ async fn copilot_routes_accept_x_api_key_inbound_auth_when_configured() {
                 .uri("/v1/messages/count_tokens")
                 .header("content-type", "application/json")
                 .header("x-api-key", "local-secret")
-                .body(Body::from(r#"{"messages":[{"role":"user","content":"hello"}]}"#))
+                .body(Body::from(
+                    r#"{"messages":[{"role":"user","content":"hello"}]}"#,
+                ))
                 .unwrap(),
         )
         .await
