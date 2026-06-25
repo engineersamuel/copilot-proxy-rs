@@ -305,6 +305,133 @@ async fn messages_filters_and_forwards_anthropic_beta_header() {
     );
 }
 
+#[tokio::test]
+async fn messages_preserves_anthropic_cache_control_for_claude_requests() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/messages",
+            200,
+            serde_json::json!({
+                "id": "msg_cache",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "cache ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-sonnet-4-6",
+                        "max_tokens":64,
+                        "system":[{
+                            "type":"text",
+                            "text":"Stable system context",
+                            "cache_control":{"type":"ephemeral"}
+                        }],
+                        "messages":[{
+                            "role":"user",
+                            "content":[{
+                                "type":"text",
+                                "text":"Stable user context",
+                                "cache_control":{"type":"ephemeral"}
+                            }]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(
+        outbound["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+}
+
+#[tokio::test]
+async fn messages_stream_preserves_anthropic_cache_control_for_claude_requests() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/messages",
+            200,
+            vec![
+                concat!(
+                    "event: message_start\n",
+                    r#"data: {"type":"message_start","message":{"id":"msg_cache_stream","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":0}}}"#
+                ),
+                "event: done\ndata: [DONE]",
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-sonnet-4-6",
+                        "stream":true,
+                        "max_tokens":64,
+                        "system":[{
+                            "type":"text",
+                            "text":"Stable system context",
+                            "cache_control":{"type":"ephemeral"}
+                        }],
+                        "messages":[{
+                            "role":"user",
+                            "content":[{
+                                "type":"text",
+                                "text":"Stable user context",
+                                "cache_control":{"type":"ephemeral"}
+                            }]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(
+        outbound["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+}
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()

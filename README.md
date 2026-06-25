@@ -168,6 +168,14 @@ curl -fsS http://127.0.0.1:8080/v1/messages \
   -d '{"model":"claude-sonnet-4-6","max_tokens":128,"messages":[{"role":"user","content":"Say hello"}]}'
 ```
 
+Anthropic-style prompt caching metadata is preserved for Claude-family
+Messages requests that are forwarded to Copilot's Anthropic-compatible
+`/v1/messages` endpoint. For example, `cache_control: {"type":"ephemeral"}`
+on `system` text blocks or message content blocks remains in the outbound
+provider request. This depends on the upstream Copilot-hosted Claude endpoint
+honoring the metadata; the proxy does not guarantee a manual cache-control
+mechanism for GPT/OpenAI-style Chat Completions or Responses requests.
+
 Responses:
 
 ```bash
