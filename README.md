@@ -44,6 +44,11 @@ Run a simple "Hello World" query (e.g., against `gpt-5.5`):
 curl -fsS http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say Hello World!"}]}'
 ```
 
+Run a streaming query:
+```bash
+curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"Write me poem"}]}'
+```
+
 ## Features
 
 - Config defaults and loading from `~/.config/copilot-proxy-rs/config.json`.
