@@ -220,6 +220,22 @@ COPILOT_PROXY_RS_CONFIG_DIR=~/.config/copilot-proxy-rs-dev COPILOT_PROXY_RS_PORT
 The smoke test calls real Copilot endpoints and is intentionally not part of
 `cargo test`.
 
+## Streaming benchmark
+
+Use the reusable streaming benchmark script to measure TTFT and approximate
+streaming throughput for each model exposed by the proxy:
+
+```bash
+python3 scripts/benchmark_streaming.py \
+  --base-url http://127.0.0.1:8080 \
+  --runs 3 \
+  --output-json /tmp/streaming-bench.json \
+  --output-csv /tmp/streaming-bench.csv
+```
+
+The script benchmarks the proxy's `/v1/chat/completions` streaming endpoint,
+prints a summary table, and writes JSON/CSV output for later comparison.
+
 ## License
 
 MIT. See `LICENSE`.
