@@ -141,6 +141,7 @@ pub const COPILOT_OPENAI_MODEL_MAP: &[(&str, &str)] = &[
     ("gemini-3-flash-preview", "gemini-3-flash-preview"),
     ("gemini-2.5-pro", "gemini-2.5-pro"),
     ("grok-code-fast-1", "grok-code-fast-1"),
+    ("mai-code-1-flash-internal", "mai-code-1-flash-internal"),
     ("raptor-mini", "raptor-mini"),
 ];
 
@@ -240,6 +241,8 @@ pub fn infer_owned_by(model_id: &str) -> &'static str {
         "google"
     } else if model_id.starts_with("grok-") {
         "xai"
+    } else if model_id.starts_with("mai-") {
+        "microsoft"
     } else if model_id.starts_with("claude-") {
         "anthropic"
     } else {
