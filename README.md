@@ -65,6 +65,38 @@ curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applica
 - `src/translate/` owns OpenAI, Anthropic, and Responses format conversion.
 - `src/responses/` owns Responses API request preparation and in-memory response-state caching.
 
+## Benchmarks
+
+The proxy is a single Rust process and starts quickly without requiring a live
+Copilot call for readiness. The benchmark below measures a release binary from
+process spawn until `/health` responds, then samples idle resident memory.
+
+Run it on an isolated loopback port so it does not interfere with a real proxy:
+
+```bash
+COPILOT_PROXY_RS_BENCH_PORT=19091 ./scripts/benchmark-proxy.sh
+```
+
+Latest local result:
+
+<!-- benchmark:start -->
+## Benchmark result
+
+- Command: `COPILOT_PROXY_RS_BENCH_PORT=19091 ./scripts/benchmark-proxy.sh`
+- Runs: 10 measured after 2 warmup
+- Platform: macOS-26.5.1-arm64-arm-64bit-Mach-O
+- Rust: rustc 1.96.0 (ac68faa20 2026-05-25)
+
+| Metric | Median | Mean | p95 | Min | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Startup to `/health` | 37 ms | 37.4 ms | 43 ms | 32 ms | 43 ms |
+| Idle RSS after readiness | 4.0 MiB | 4.0 MiB | 4.0 MiB | 3.9 MiB | 4.0 MiB |
+<!-- benchmark:end -->
+
+The benchmark uses `/health` only. It does not send prompts or call live
+Copilot-backed routes, so no GitHub token is required for these startup and
+idle-memory numbers.
+
 ## Copilot authentication
 
 The Rust service uses `GITHUB_TOKEN` when set. Otherwise it reads
