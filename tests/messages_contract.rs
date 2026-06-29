@@ -206,6 +206,55 @@ async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
 }
 
 #[tokio::test]
+async fn messages_bridge_preserves_prompt_cache_controls_for_responses() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_messages_cache",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "max_tokens":64,
+                        "prompt_cache_key":"messages-cache-key",
+                        "prompt_cache_retention":"24h",
+                        "messages":[{"role":"user","content":"hello"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["prompt_cache_key"], "messages-cache-key");
+    assert_eq!(outbound["prompt_cache_retention"], "24h");
+}
+
+#[tokio::test]
 async fn messages_stream_routes_gpt55_to_responses_stream() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

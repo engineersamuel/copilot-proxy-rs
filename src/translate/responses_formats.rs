@@ -19,6 +19,7 @@ pub fn openai_chat_to_responses_request(body: &Map<String, Value>) -> Map<String
     if let Some(effort) = body.get("reasoning_effort") {
         out.insert("reasoning".to_string(), json!({ "effort": effort }));
     }
+    copy_prompt_cache_controls(body, &mut out);
     out
 }
 
@@ -73,7 +74,16 @@ pub fn anthropic_messages_to_responses_request(
             out.insert("reasoning".to_string(), json!({ "effort": effort }));
         }
     }
+    copy_prompt_cache_controls(body, &mut out);
     out
+}
+
+fn copy_prompt_cache_controls(source: &Map<String, Value>, target: &mut Map<String, Value>) {
+    for key in ["prompt_cache_key", "prompt_cache_retention"] {
+        if let Some(value) = source.get(key) {
+            target.insert(key.to_string(), value.clone());
+        }
+    }
 }
 
 fn anthropic_messages_to_responses_input(value: &Value) -> Value {

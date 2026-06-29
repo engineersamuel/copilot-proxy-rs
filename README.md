@@ -222,8 +222,16 @@ Messages requests that are forwarded to Copilot's Anthropic-compatible
 `/v1/messages` endpoint. For example, `cache_control: {"type":"ephemeral"}`
 on `system` text blocks or message content blocks remains in the outbound
 provider request. This depends on the upstream Copilot-hosted Claude endpoint
-honoring the metadata; the proxy does not guarantee a manual cache-control
-mechanism for GPT/OpenAI-style Chat Completions or Responses requests.
+honoring the metadata.
+
+OpenAI-style prompt caching controls are preserved for GPT/OpenAI-style
+Chat Completions and Responses requests. `prompt_cache_key` and
+`prompt_cache_retention` pass through when supplied by the client, including
+when Chat Completions or Messages requests are translated to Copilot's
+`/responses` endpoint. Direct Responses requests without an explicit
+`prompt_cache_key` derive one from `x-interaction-id` or
+`x-client-request-id` plus the effective model, when either header is present,
+to improve upstream cache locality without inventing a random per-request key.
 
 Responses:
 
