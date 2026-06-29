@@ -158,6 +158,63 @@ async fn chat_completions_routes_responses_only_model_to_responses_endpoint() {
 }
 
 #[tokio::test]
+async fn chat_completions_preserves_prompt_cache_controls_when_routed_to_responses() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_chat_cache",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cached bridge"}]}],
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "prompt_cache_key":"chat-cache-key",
+                        "prompt_cache_retention":"24h",
+                        "messages":[{"role":"user","content":"Hello"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["prompt_cache_key"], "chat-cache-key");
+    assert_eq!(outbound["prompt_cache_retention"], "24h");
+}
+
+#[tokio::test]
 async fn chat_completions_routes_static_gpt55_to_responses_endpoint_without_metadata() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

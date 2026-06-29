@@ -239,6 +239,96 @@ async fn responses_http_clamps_reasoning_effort_and_preserves_unrelated_fields()
 }
 
 #[tokio::test]
+async fn responses_preserves_explicit_prompt_cache_controls() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_cache_controls",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-interaction-id", "conv-ignored")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "input":"hello",
+                        "prompt_cache_key":"client-cache-key",
+                        "prompt_cache_retention":"24h"
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["prompt_cache_key"], "client-cache-key");
+    assert_eq!(outbound["prompt_cache_retention"], "24h");
+}
+
+#[tokio::test]
+async fn responses_adds_stable_prompt_cache_key_from_conversation_header() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_cache_key",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-interaction-id", "conv-123")
+                .body(Body::from(r#"{"model":"gpt-5.5","input":"hello"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["prompt_cache_key"], "conv-123:gpt-5.5");
+}
+
+#[tokio::test]
 async fn responses_http_strips_reasoning_effort_for_unsupported_model() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
