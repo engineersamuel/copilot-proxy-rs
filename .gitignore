@@ -4,4 +4,3 @@
 !.env.example
 /.DS_Store
 *.log
-worktree_init.toml
