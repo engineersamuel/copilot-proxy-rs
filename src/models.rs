@@ -67,6 +67,7 @@ pub const COPILOT_OPENAI_MODEL_MAP: &[(&str, &str)] = &[
 pub struct ModelsListResponse {
     pub object: &'static str,
     pub data: Vec<ModelEntry>,
+    pub models: Vec<CodexModelEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -75,6 +76,32 @@ pub struct ModelEntry {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexModelEntry {
+    pub slug: String,
+    pub display_name: String,
+    pub default_reasoning_level: Option<String>,
+    pub supported_reasoning_levels: Vec<String>,
+    pub context_window: u64,
+    pub max_context_window: u64,
+    pub context_window_modes: Vec<ContextWindowMode>,
+    pub supported_endpoints: Vec<String>,
+    pub source: ModelMetadataSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContextWindowMode {
+    pub name: String,
+    pub context_window: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMetadataSource {
+    Static,
+    Dynamic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -178,6 +205,7 @@ pub fn model_list_for_snapshot(_snapshot: BackendSnapshot) -> ModelsListResponse
     ModelsListResponse {
         object: "list",
         data: copilot_models(),
+        models: rich_copilot_models(&[]),
     }
 }
 
@@ -211,6 +239,206 @@ fn copilot_models() -> Vec<ModelEntry> {
         .collect()
 }
 
+fn rich_copilot_models(dynamic_models: &[serde_json::Value]) -> Vec<CodexModelEntry> {
+    copilot_models()
+        .into_iter()
+        .map(|entry| rich_model_entry(&entry.id, dynamic_models))
+        .collect()
+}
+
+fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> CodexModelEntry {
+    let dynamic = dynamic_models
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model_id));
+    let fallback = static_model_metadata(model_id);
+
+    let supported_reasoning_levels = dynamic
+        .and_then(dynamic_supported_efforts)
+        .map(|efforts| {
+            efforts
+                .as_strings()
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        })
+        .or_else(|| fallback.reasoning_levels.clone())
+        .unwrap_or_default();
+    let default_reasoning_level = if supported_reasoning_levels
+        .iter()
+        .any(|level| level == "medium")
+    {
+        Some("medium".to_string())
+    } else {
+        supported_reasoning_levels.first().cloned()
+    };
+
+    let supported_endpoints = dynamic
+        .and_then(dynamic_supported_endpoints)
+        .unwrap_or_else(|| static_supported_endpoints(model_id));
+    let context_window = dynamic
+        .and_then(|item| number_field(item, &["context_window", "contextWindow"]))
+        .unwrap_or(fallback.context_window);
+    let max_context_window = dynamic
+        .and_then(|item| number_field(item, &["max_context_window", "maxContextWindow"]))
+        .unwrap_or(fallback.max_context_window);
+    let context_window_modes = dynamic
+        .and_then(dynamic_context_window_modes)
+        .unwrap_or_else(|| fallback.context_window_modes.clone());
+
+    CodexModelEntry {
+        slug: model_id.to_string(),
+        display_name: display_name(model_id),
+        default_reasoning_level,
+        supported_reasoning_levels,
+        context_window,
+        max_context_window,
+        context_window_modes,
+        supported_endpoints,
+        source: if dynamic.is_some() {
+            ModelMetadataSource::Dynamic
+        } else {
+            ModelMetadataSource::Static
+        },
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StaticModelMetadata {
+    context_window: u64,
+    max_context_window: u64,
+    context_window_modes: Vec<ContextWindowMode>,
+    reasoning_levels: Option<Vec<String>>,
+}
+
+fn static_model_metadata(model_id: &str) -> StaticModelMetadata {
+    match model_id {
+        "gpt-5.5" => StaticModelMetadata {
+            context_window: 272_000,
+            max_context_window: 1_000_000,
+            context_window_modes: vec![
+                context_mode("default", 272_000),
+                context_mode("long_context", 1_000_000),
+            ],
+            reasoning_levels: Some(vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ]),
+        },
+        "gpt-5.4" => StaticModelMetadata {
+            context_window: 272_000,
+            max_context_window: 1_000_000,
+            context_window_modes: vec![
+                context_mode("default", 272_000),
+                context_mode("long_context", 1_000_000),
+            ],
+            reasoning_levels: Some(vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ]),
+        },
+        _ => StaticModelMetadata {
+            context_window: 128_000,
+            max_context_window: 128_000,
+            context_window_modes: vec![context_mode("default", 128_000)],
+            reasoning_levels: None,
+        },
+    }
+}
+
+fn context_mode(name: &str, context_window: u64) -> ContextWindowMode {
+    ContextWindowMode {
+        name: name.to_string(),
+        context_window,
+    }
+}
+
+fn display_name(model_id: &str) -> String {
+    model_id
+        .split('-')
+        .map(|part| {
+            if part.eq_ignore_ascii_case("gpt") {
+                "GPT".to_string()
+            } else {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn number_field(value: &serde_json::Value, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| value.get(*name)?.as_u64())
+}
+
+fn dynamic_supported_endpoints(value: &serde_json::Value) -> Option<Vec<String>> {
+    value
+        .get("supported_endpoints")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+}
+
+fn dynamic_context_window_modes(value: &serde_json::Value) -> Option<Vec<ContextWindowMode>> {
+    let modes = value
+        .get("context_window_modes")
+        .or_else(|| value.get("contextWindowModes"))?
+        .as_array()?
+        .iter()
+        .filter_map(|mode| {
+            let name = mode.get("name")?.as_str()?;
+            let context_window = number_field(mode, &["context_window", "contextWindow"])?;
+            Some(context_mode(name, context_window))
+        })
+        .collect::<Vec<_>>();
+    (!modes.is_empty()).then_some(modes)
+}
+
+fn sanitize_model_metadata(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .filter_map(|(key, value)| {
+                    if is_sensitive_metadata_key(key) {
+                        None
+                    } else {
+                        Some((key.clone(), sanitize_model_metadata(value)))
+                    }
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sanitize_model_metadata).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn is_sensitive_metadata_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "access_token"
+            | "refresh_token"
+            | "token"
+            | "api_key"
+            | "apikey"
+            | "password"
+            | "secret"
+    )
+}
+
 #[derive(Debug, Default)]
 pub struct ModelRegistry {
     inner: RwLock<ModelRegistryInner>,
@@ -220,6 +448,14 @@ pub struct ModelRegistry {
 struct ModelRegistryInner {
     models: Vec<serde_json::Value>,
     fetched_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopilotModelsDebugSnapshot {
+    pub fetched: bool,
+    pub fetched_at_age_seconds: Option<u64>,
+    pub upstream_models: Vec<serde_json::Value>,
+    pub models: Vec<CodexModelEntry>,
 }
 
 impl ModelRegistry {
@@ -241,8 +477,29 @@ impl ModelRegistry {
         }
     }
 
-    pub async fn list_for_snapshot(&self, snapshot: BackendSnapshot) -> ModelsListResponse {
-        model_list_for_snapshot(snapshot)
+    pub async fn debug_snapshot(&self) -> CopilotModelsDebugSnapshot {
+        let inner = self.inner.read().await;
+        let upstream_models = inner.models.iter().map(sanitize_model_metadata).collect();
+        let models = rich_copilot_models(&inner.models);
+        CopilotModelsDebugSnapshot {
+            fetched: inner.fetched_at.is_some(),
+            fetched_at_age_seconds: inner
+                .fetched_at
+                .map(|fetched_at| fetched_at.elapsed().as_secs()),
+            upstream_models,
+            models,
+        }
+    }
+
+    pub async fn list_for_snapshot(&self, _snapshot: BackendSnapshot) -> ModelsListResponse {
+        let inner = self.inner.read().await;
+        let dynamic_models = inner.models.clone();
+        drop(inner);
+        ModelsListResponse {
+            object: "list",
+            data: copilot_models(),
+            models: rich_copilot_models(&dynamic_models),
+        }
     }
 
     pub async fn get_copilot_openai_model(&self, model: &str) -> String {

@@ -308,26 +308,27 @@ impl CopilotBackend {
     }
 
     pub async fn refresh_models_if_stale(&self) {
+        if let Err(error) = self.refresh_models_if_stale_result().await {
+            tracing::warn!(
+                error = %error,
+                "failed to refresh Copilot models; keeping cached/static models"
+            );
+        }
+    }
+
+    pub async fn refresh_models_if_stale_result(&self) -> Result<(), CopilotError> {
         if !self
             .models
             .refresh_needed(self.config.copilot_models_ttl)
             .await
         {
-            return;
+            return Ok(());
         }
-        match self.get_json(&self.endpoints.models_url, None).await {
-            Ok(value) => {
-                if let Some(models) = value.get("data").and_then(Value::as_array) {
-                    self.models.set_copilot_models(models.clone()).await;
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "failed to refresh Copilot models; keeping cached/static models"
-                );
-            }
+        let value = self.get_json(&self.endpoints.models_url, None).await?;
+        if let Some(models) = value.get("data").and_then(Value::as_array) {
+            self.models.set_copilot_models(models.clone()).await;
         }
+        Ok(())
     }
 
     async fn post_json(
