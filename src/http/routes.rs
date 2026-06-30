@@ -3,7 +3,7 @@ use axum::middleware;
 use axum::routing::{get, post};
 
 use crate::http::chat::chat_completions;
-use crate::http::health::{count_tokens, health, list_models, version};
+use crate::http::health::{count_tokens, debug_copilot_models, health, list_models, version};
 use crate::http::messages::messages;
 use crate::http::responses::{
     responses, responses_cancel, responses_compact, responses_retrieve, responses_ws,
@@ -13,6 +13,7 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     // Keep the Copilot-backed routes behind inbound auth middleware.
     let protected_routes = Router::new()
+        .route("/debug/copilot/models", get(debug_copilot_models))
         .route("/v1/models", get(list_models))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", post(messages))

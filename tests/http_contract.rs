@@ -138,7 +138,7 @@ async fn version_returns_version_and_runtime() {
 
 #[tokio::test]
 async fn models_route_returns_openai_list_and_rich_catalog() {
-    let app = router(AppState::new(AppConfig::default()));
+    let app = router(state_with_no_token().await);
     let response = app
         .oneshot(
             Request::builder()
@@ -398,9 +398,8 @@ async fn static_claude_effort_fallbacks_match_python_supported_sets() {
 
 #[tokio::test]
 async fn models_route_ignores_cached_upstream_only_model_ids() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    fixture
-        .state
+    let state = state_with_no_token().await;
+    state
         .models
         .set_copilot_models(vec![serde_json::json!({
             "id": "gpt-upstream-only",
@@ -410,7 +409,7 @@ async fn models_route_ignores_cached_upstream_only_model_ids() {
         })])
         .await;
 
-    let response = router(fixture.state)
+    let response = router(state)
         .oneshot(
             Request::builder()
                 .uri("/v1/models")
@@ -433,6 +432,157 @@ async fn models_route_ignores_cached_upstream_only_model_ids() {
         !ids.contains(&"gpt-upstream-only"),
         "public /v1/models must stay on the static Copilot catalog"
     );
+}
+
+#[tokio::test]
+async fn model_registry_debug_snapshot_sanitizes_sensitive_fields() {
+    let registry = copilot_proxy_rs::models::ModelRegistry::new();
+    registry
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"],
+            "authorization": "Bearer secret",
+            "access_token": "secret",
+            "capabilities": {
+                "supports": {
+                    "reasoning_effort": ["low", "medium", "high", "xhigh"]
+                }
+            }
+        })])
+        .await;
+
+    let snapshot = registry.debug_snapshot().await;
+    assert!(snapshot.fetched);
+    assert!(snapshot.fetched_at_age_seconds.is_some());
+    assert_eq!(snapshot.upstream_models[0]["id"], "gpt-5.5");
+    assert!(snapshot.upstream_models[0].get("authorization").is_none());
+    assert!(snapshot.upstream_models[0].get("access_token").is_none());
+    let gpt55 = snapshot
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-5.5")
+        .unwrap();
+    assert_eq!(
+        gpt55.source,
+        copilot_proxy_rs::models::ModelMetadataSource::Dynamic
+    );
+}
+
+#[tokio::test]
+async fn debug_copilot_models_requires_inbound_auth() {
+    let app = router(AppState::new(AppConfig {
+        api_key: "local-secret".to_string(),
+        ..AppConfig::default()
+    }));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/copilot/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn debug_copilot_models_returns_sanitized_snapshot() {
+    let state = state_with_no_token().await;
+    state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"],
+            "authorization": "Bearer secret"
+        })])
+        .await;
+
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/debug/copilot/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["snapshot"]["upstream_models"][0]["id"], "gpt-5.5");
+    assert!(
+        body["snapshot"]["upstream_models"][0]
+            .get("authorization")
+            .is_none()
+    );
+    assert!(
+        body["snapshot"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["slug"] == "gpt-5.5")
+    );
+}
+
+#[tokio::test]
+async fn models_route_uses_dynamic_context_and_reasoning_metadata() {
+    let state = state_with_no_token().await;
+    state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses", "ws:/responses"],
+            "context_window": 400000u64,
+            "max_context_window": 1100000u64,
+            "context_window_modes": [
+                {"name": "default", "context_window": 400000u64},
+                {"name": "long_context", "context_window": 1100000u64}
+            ],
+            "capabilities": {
+                "supports": {
+                    "reasoning_effort": ["low", "medium", "high", "xhigh"]
+                }
+            }
+        })])
+        .await;
+
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let rich_gpt55 = body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "gpt-5.5")
+        .unwrap();
+
+    assert_eq!(rich_gpt55["context_window"], 400_000);
+    assert_eq!(rich_gpt55["max_context_window"], 1_100_000);
+    assert_eq!(
+        rich_gpt55["supported_endpoints"],
+        serde_json::json!(["/responses", "ws:/responses"])
+    );
+    assert_eq!(
+        rich_gpt55["supported_reasoning_levels"],
+        serde_json::json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(rich_gpt55["source"], "dynamic");
 }
 
 async fn response_json(response: axum::response::Response) -> Value {

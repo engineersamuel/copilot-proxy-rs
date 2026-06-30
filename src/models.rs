@@ -294,7 +294,11 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         max_context_window,
         context_window_modes,
         supported_endpoints,
-        source: ModelMetadataSource::Static,
+        source: if dynamic.is_some() {
+            ModelMetadataSource::Dynamic
+        } else {
+            ModelMetadataSource::Static
+        },
     }
 }
 
@@ -401,6 +405,40 @@ fn dynamic_context_window_modes(value: &serde_json::Value) -> Option<Vec<Context
     (!modes.is_empty()).then_some(modes)
 }
 
+fn sanitize_model_metadata(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .filter_map(|(key, value)| {
+                    if is_sensitive_metadata_key(key) {
+                        None
+                    } else {
+                        Some((key.clone(), sanitize_model_metadata(value)))
+                    }
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sanitize_model_metadata).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn is_sensitive_metadata_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "access_token"
+            | "refresh_token"
+            | "token"
+            | "api_key"
+            | "apikey"
+            | "password"
+            | "secret"
+    )
+}
+
 #[derive(Debug, Default)]
 pub struct ModelRegistry {
     inner: RwLock<ModelRegistryInner>,
@@ -410,6 +448,14 @@ pub struct ModelRegistry {
 struct ModelRegistryInner {
     models: Vec<serde_json::Value>,
     fetched_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopilotModelsDebugSnapshot {
+    pub fetched: bool,
+    pub fetched_at_age_seconds: Option<u64>,
+    pub upstream_models: Vec<serde_json::Value>,
+    pub models: Vec<CodexModelEntry>,
 }
 
 impl ModelRegistry {
@@ -428,6 +474,20 @@ impl ModelRegistry {
         match inner.fetched_at {
             Some(fetched_at) => fetched_at.elapsed() >= Duration::from_secs(ttl_seconds),
             None => true,
+        }
+    }
+
+    pub async fn debug_snapshot(&self) -> CopilotModelsDebugSnapshot {
+        let inner = self.inner.read().await;
+        let upstream_models = inner.models.iter().map(sanitize_model_metadata).collect();
+        let models = rich_copilot_models(&inner.models);
+        CopilotModelsDebugSnapshot {
+            fetched: inner.fetched_at.is_some(),
+            fetched_at_age_seconds: inner
+                .fetched_at
+                .map(|fetched_at| fetched_at.elapsed().as_secs()),
+            upstream_models,
+            models,
         }
     }
 

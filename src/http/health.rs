@@ -4,8 +4,8 @@ use axum::extract::State;
 use http::{HeaderMap, StatusCode};
 use serde::Serialize;
 
-use crate::errors::anthropic_error;
-use crate::models::ModelsListResponse;
+use crate::errors::{AnthropicErrorResponse, anthropic_error};
+use crate::models::{CopilotModelsDebugSnapshot, ModelsListResponse};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 
@@ -36,6 +36,14 @@ pub(crate) struct CountTokensResponse {
     input_tokens: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct CopilotModelsDebugResponse {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    snapshot: CopilotModelsDebugSnapshot,
+}
+
 pub(crate) async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let snapshot = state.backend.snapshot().await;
     Json(HealthResponse {
@@ -60,6 +68,30 @@ pub(crate) async fn list_models(State(state): State<AppState>) -> Json<ModelsLis
         state.copilot.refresh_models_if_stale().await;
     }
     Json(state.models.list_for_snapshot(snapshot).await)
+}
+
+pub(crate) async fn debug_copilot_models(
+    State(state): State<AppState>,
+) -> Result<Json<CopilotModelsDebugResponse>, (StatusCode, Json<AnthropicErrorResponse>)> {
+    let refresh_result = state.copilot.refresh_models_if_stale_result().await;
+    let snapshot = state.models.debug_snapshot().await;
+    match refresh_result {
+        Ok(()) => Ok(Json(CopilotModelsDebugResponse {
+            status: "ok",
+            warning: None,
+            snapshot,
+        })),
+        Err(error) if snapshot.fetched => Ok(Json(CopilotModelsDebugResponse {
+            status: "stale",
+            warning: Some(error.to_string()),
+            snapshot,
+        })),
+        Err(error) => Err(anthropic_error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            format!("failed to refresh Copilot models: {error}"),
+        )),
+    }
 }
 
 pub(crate) async fn count_tokens(
