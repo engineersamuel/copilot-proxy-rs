@@ -137,7 +137,7 @@ async fn version_returns_version_and_runtime() {
 }
 
 #[tokio::test]
-async fn models_route_returns_openai_model_list() {
+async fn models_route_returns_openai_list_and_rich_catalog() {
     let app = router(AppState::new(AppConfig::default()));
     let response = app
         .oneshot(
@@ -158,6 +158,24 @@ async fn models_route_returns_openai_model_list() {
             .unwrap()
             .iter()
             .any(|model| model["id"] == "gpt-5.4")
+    );
+
+    let rich_gpt55 = body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "gpt-5.5")
+        .unwrap();
+    assert_eq!(rich_gpt55["display_name"], "GPT-5.5");
+    assert_eq!(rich_gpt55["context_window"], 272_000);
+    assert_eq!(rich_gpt55["max_context_window"], 1_000_000);
+    assert_eq!(rich_gpt55["source"], "static");
+    assert_eq!(
+        rich_gpt55["context_window_modes"],
+        serde_json::json!([
+            {"name": "default", "context_window": 272000},
+            {"name": "long_context", "context_window": 1000000}
+        ])
     );
 }
 
