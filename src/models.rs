@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::state::BackendSnapshot;
 
-pub const COPILOT_MODEL_MAP: &[(&str, &str)] = &[
+pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
     ("claude-opus-4-8", "claude-opus-4.8"),
     ("claude-opus-4-7", "claude-opus-4.7"),
     ("claude-opus-4-6-20250515", "claude-opus-4.6"),
@@ -17,11 +17,9 @@ pub const COPILOT_MODEL_MAP: &[(&str, &str)] = &[
     ("claude-opus-4-1-20250805", "claude-opus-4.1"),
     ("claude-opus-4-1", "claude-opus-4.1"),
     ("claude-opus-4-20250514", "claude-opus-4"),
-    ("claude-opus-4", "claude-opus-4"),
     ("claude-sonnet-4-5-20250929", "claude-sonnet-4.5"),
     ("claude-sonnet-4-5", "claude-sonnet-4.5"),
     ("claude-sonnet-4-20250514", "claude-sonnet-4"),
-    ("claude-sonnet-4", "claude-sonnet-4"),
     ("claude-haiku-4-5-20251001", "claude-haiku-4.5"),
     ("claude-haiku-4-5", "claude-haiku-4.5"),
     ("claude-3-7-sonnet-20250219", "claude-3.7-sonnet"),
@@ -30,37 +28,6 @@ pub const COPILOT_MODEL_MAP: &[(&str, &str)] = &[
     ("claude-3-5-sonnet", "claude-3.5-sonnet"),
     ("claude-3-5-haiku-20241022", "claude-3.5-haiku"),
     ("claude-3-5-haiku", "claude-3.5-haiku"),
-];
-
-pub const COPILOT_OPENAI_MODEL_MAP: &[(&str, &str)] = &[
-    ("claude-opus-4.8", "claude-opus-4.8"),
-    ("claude-opus-4.7", "claude-opus-4.7"),
-    ("claude-opus-4.6", "claude-opus-4.6"),
-    ("claude-opus-4.5", "claude-opus-4.5"),
-    ("claude-opus-4.1", "claude-opus-4.1"),
-    ("claude-sonnet-4.5", "claude-sonnet-4.5"),
-    ("claude-sonnet-4", "claude-sonnet-4"),
-    ("claude-haiku-4.5", "claude-haiku-4.5"),
-    ("gpt-5.5", "gpt-5.5"),
-    ("gpt-5.4", "gpt-5.4"),
-    ("gpt-5.3-codex", "gpt-5.3-codex"),
-    ("gpt-5.2-codex", "gpt-5.2-codex"),
-    ("gpt-5.2", "gpt-5.2"),
-    ("gpt-5.1-codex-max", "gpt-5.1-codex-max"),
-    ("gpt-5.1-codex-mini", "gpt-5.1-codex-mini"),
-    ("gpt-5.1-codex", "gpt-5.1-codex"),
-    ("gpt-5.1", "gpt-5.1"),
-    ("gpt-5-codex", "gpt-5-codex"),
-    ("gpt-5-mini", "gpt-5-mini"),
-    ("gpt-5", "gpt-5"),
-    ("gpt-4.1", "gpt-4.1"),
-    ("gpt-4o", "gpt-4o"),
-    ("gemini-3-pro-preview", "gemini-3-pro-preview"),
-    ("gemini-3-flash-preview", "gemini-3-flash-preview"),
-    ("gemini-2.5-pro", "gemini-2.5-pro"),
-    ("grok-code-fast-1", "grok-code-fast-1"),
-    ("mai-code-1-flash-internal", "mai-code-1-flash-internal"),
-    ("raptor-mini", "raptor-mini"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,8 +51,8 @@ pub struct CodexModelEntry {
     pub display_name: String,
     pub default_reasoning_level: Option<String>,
     pub supported_reasoning_levels: Vec<String>,
-    pub context_window: u64,
-    pub max_context_window: u64,
+    pub context_window: Option<u64>,
+    pub max_context_window: Option<u64>,
     pub context_window_modes: Vec<ContextWindowMode>,
     pub supported_endpoints: Vec<String>,
     pub source: ModelMetadataSource,
@@ -100,7 +67,6 @@ pub struct ContextWindowMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelMetadataSource {
-    Static,
     Dynamic,
 }
 
@@ -204,43 +170,40 @@ pub fn is_claude_model(model_id: &str) -> bool {
 pub fn model_list_for_snapshot(_snapshot: BackendSnapshot) -> ModelsListResponse {
     ModelsListResponse {
         object: "list",
-        data: copilot_models(),
+        data: copilot_models(&[]),
         models: rich_copilot_models(&[]),
     }
 }
 
-fn copilot_models() -> Vec<ModelEntry> {
-    let mut owners = BTreeMap::new();
-    let copilot_target_ids: BTreeSet<&str> = COPILOT_MODEL_MAP
-        .iter()
-        .map(|(_, target)| *target)
-        .collect();
-
-    for (model_id, _) in COPILOT_MODEL_MAP {
-        owners.insert((*model_id).to_string(), "anthropic".to_string());
-    }
-    for (model_id, _) in COPILOT_OPENAI_MODEL_MAP {
-        if !owners.contains_key(*model_id) && !copilot_target_ids.contains(model_id) {
-            owners.insert(
-                (*model_id).to_string(),
-                infer_owned_by(model_id).to_string(),
-            );
+fn copilot_models(dynamic_models: &[serde_json::Value]) -> Vec<ModelEntry> {
+    let mut entries = BTreeMap::new();
+    for dynamic in dynamic_models {
+        if let Some(entry) = dynamic_model_entry(dynamic) {
+            entries.insert(entry.id.clone(), entry);
         }
     }
 
-    owners
-        .into_iter()
-        .map(|(id, owned_by)| ModelEntry {
-            id,
-            object: "model",
-            created: 1_700_000_000,
-            owned_by,
-        })
-        .collect()
+    entries.into_values().collect()
+}
+
+fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
+    let id = value.get("id").and_then(serde_json::Value::as_str)?;
+    Some(ModelEntry {
+        id: id.to_string(),
+        object: "model",
+        created: number_field(value, &["created", "created_at", "createdAt"])
+            .unwrap_or(1_700_000_000),
+        owned_by: value
+            .get("owned_by")
+            .or_else(|| value.get("ownedBy"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| infer_owned_by(id))
+            .to_string(),
+    })
 }
 
 fn rich_copilot_models(dynamic_models: &[serde_json::Value]) -> Vec<CodexModelEntry> {
-    copilot_models()
+    copilot_models(dynamic_models)
         .into_iter()
         .map(|entry| rich_model_entry(&entry.id, dynamic_models))
         .collect()
@@ -250,9 +213,8 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
     let dynamic = dynamic_models
         .iter()
         .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model_id));
-    let fallback = static_model_metadata(model_id);
 
-    let supported_reasoning_levels = dynamic
+    let supported_reasoning_levels: Vec<String> = dynamic
         .and_then(dynamic_supported_efforts)
         .map(|efforts| {
             efforts
@@ -261,7 +223,6 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
                 .map(str::to_string)
                 .collect()
         })
-        .or_else(|| fallback.reasoning_levels.clone())
         .unwrap_or_default();
     let default_reasoning_level = if supported_reasoning_levels
         .iter()
@@ -274,16 +235,14 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
 
     let supported_endpoints = dynamic
         .and_then(dynamic_supported_endpoints)
-        .unwrap_or_else(|| static_supported_endpoints(model_id));
-    let context_window = dynamic
-        .and_then(|item| number_field(item, &["context_window", "contextWindow"]))
-        .unwrap_or(fallback.context_window);
-    let max_context_window = dynamic
-        .and_then(|item| number_field(item, &["max_context_window", "maxContextWindow"]))
-        .unwrap_or(fallback.max_context_window);
+        .unwrap_or_default();
+    let context_window =
+        dynamic.and_then(|item| number_field(item, &["context_window", "contextWindow"]));
+    let max_context_window =
+        dynamic.and_then(|item| number_field(item, &["max_context_window", "maxContextWindow"]));
     let context_window_modes = dynamic
         .and_then(dynamic_context_window_modes)
-        .unwrap_or_else(|| fallback.context_window_modes.clone());
+        .unwrap_or_default();
 
     CodexModelEntry {
         slug: model_id.to_string(),
@@ -294,58 +253,7 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         max_context_window,
         context_window_modes,
         supported_endpoints,
-        source: if dynamic.is_some() {
-            ModelMetadataSource::Dynamic
-        } else {
-            ModelMetadataSource::Static
-        },
-    }
-}
-
-#[derive(Debug, Clone)]
-struct StaticModelMetadata {
-    context_window: u64,
-    max_context_window: u64,
-    context_window_modes: Vec<ContextWindowMode>,
-    reasoning_levels: Option<Vec<String>>,
-}
-
-fn static_model_metadata(model_id: &str) -> StaticModelMetadata {
-    match model_id {
-        "gpt-5.5" => StaticModelMetadata {
-            context_window: 272_000,
-            max_context_window: 1_000_000,
-            context_window_modes: vec![
-                context_mode("default", 272_000),
-                context_mode("long_context", 1_000_000),
-            ],
-            reasoning_levels: Some(vec![
-                "low".to_string(),
-                "medium".to_string(),
-                "high".to_string(),
-                "xhigh".to_string(),
-            ]),
-        },
-        "gpt-5.4" => StaticModelMetadata {
-            context_window: 272_000,
-            max_context_window: 1_000_000,
-            context_window_modes: vec![
-                context_mode("default", 272_000),
-                context_mode("long_context", 1_000_000),
-            ],
-            reasoning_levels: Some(vec![
-                "low".to_string(),
-                "medium".to_string(),
-                "high".to_string(),
-                "xhigh".to_string(),
-            ]),
-        },
-        _ => StaticModelMetadata {
-            context_window: 128_000,
-            max_context_window: 128_000,
-            context_window_modes: vec![context_mode("default", 128_000)],
-            reasoning_levels: None,
-        },
+        source: ModelMetadataSource::Dynamic,
     }
 }
 
@@ -448,6 +356,7 @@ pub struct ModelRegistry {
 struct ModelRegistryInner {
     models: Vec<serde_json::Value>,
     fetched_at: Option<Instant>,
+    copilot_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -461,6 +370,15 @@ pub struct CopilotModelsDebugSnapshot {
 impl ModelRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_copilot_overrides(overrides: BTreeMap<String, String>) -> Self {
+        Self {
+            inner: RwLock::new(ModelRegistryInner {
+                copilot_overrides: overrides,
+                ..Default::default()
+            }),
+        }
     }
 
     pub async fn set_copilot_models(&self, models: Vec<serde_json::Value>) {
@@ -497,7 +415,7 @@ impl ModelRegistry {
         drop(inner);
         ModelsListResponse {
             object: "list",
-            data: copilot_models(),
+            data: copilot_models(&dynamic_models),
             models: rich_copilot_models(&dynamic_models),
         }
     }
@@ -508,6 +426,9 @@ impl ModelRegistry {
             return "claude-sonnet-4.6".to_string();
         }
         let inner = self.inner.read().await;
+        if let Some(target) = inner.copilot_overrides.get(model) {
+            return target.clone();
+        }
         let ids: std::collections::BTreeSet<String> = inner
             .models
             .iter()
@@ -521,9 +442,8 @@ impl ModelRegistry {
             return model.to_string();
         }
         drop(inner);
-        COPILOT_OPENAI_MODEL_MAP
+        COPILOT_MODEL_ALIASES
             .iter()
-            .chain(COPILOT_MODEL_MAP.iter())
             .find_map(|(source, target)| (*source == model).then(|| (*target).to_string()))
             .unwrap_or_else(|| model.to_string())
     }
@@ -567,7 +487,7 @@ impl ModelRegistry {
             .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model))
             .and_then(dynamic_supported_efforts);
         drop(inner);
-        dynamic.or_else(|| static_supported_efforts(model))
+        dynamic
     }
 
     async fn supported_endpoints(&self, model: &str) -> Vec<String> {
@@ -586,20 +506,7 @@ impl ModelRegistry {
                     .collect()
             })
             .unwrap_or_default();
-        if dynamic.is_empty() {
-            static_supported_endpoints(model)
-        } else {
-            dynamic
-        }
-    }
-}
-
-fn static_supported_endpoints(model: &str) -> Vec<String> {
-    match model {
-        "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-nano" | "gpt-5.3-codex" => {
-            vec!["/responses".to_string()]
-        }
-        _ => Vec::new(),
+        dynamic
     }
 }
 
@@ -616,29 +523,5 @@ fn dynamic_supported_efforts(value: &serde_json::Value) -> Option<SupportedEffor
         .iter()
         .filter_map(|item| item.as_str().and_then(EffortLevel::parse))
         .collect();
-    SupportedEfforts::new(efforts)
-}
-
-fn static_supported_efforts(model: &str) -> Option<SupportedEfforts> {
-    let efforts = match model {
-        "claude-opus-4.8" | "claude-opus-4-8" | "claude-opus-4.7" | "claude-opus-4-7" => {
-            vec![
-                EffortLevel::Low,
-                EffortLevel::Medium,
-                EffortLevel::High,
-                EffortLevel::XHigh,
-                EffortLevel::Max,
-            ]
-        }
-        "claude-opus-4.6" | "claude-opus-4-6" | "claude-sonnet-4.6" | "claude-sonnet-4-6" => {
-            vec![
-                EffortLevel::Low,
-                EffortLevel::Medium,
-                EffortLevel::High,
-                EffortLevel::Max,
-            ]
-        }
-        _ => return None,
-    };
     SupportedEfforts::new(efforts)
 }

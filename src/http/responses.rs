@@ -44,6 +44,7 @@ pub(crate) async fn responses(
             .into_response();
         }
     };
+    state.copilot.refresh_models_if_stale().await;
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
@@ -230,6 +231,7 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
             continue;
         }
         let headers = HeaderMap::new();
+        state.copilot.refresh_models_if_stale().await;
         let requested_model = body
             .get("model")
             .and_then(Value::as_str)

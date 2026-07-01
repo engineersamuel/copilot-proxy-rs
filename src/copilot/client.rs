@@ -311,7 +311,7 @@ impl CopilotBackend {
         if let Err(error) = self.refresh_models_if_stale_result().await {
             tracing::warn!(
                 error = %error,
-                "failed to refresh Copilot models; keeping cached/static models"
+                "failed to refresh Copilot models; keeping cached models"
             );
         }
     }

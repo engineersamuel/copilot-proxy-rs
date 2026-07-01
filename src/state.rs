@@ -34,7 +34,9 @@ impl AppState {
                 "unrecognized fallback_backend; ignoring"
             );
         }
-        let models = Arc::new(ModelRegistry::new());
+        let models = Arc::new(ModelRegistry::with_copilot_overrides(
+            config.model_overrides.copilot.clone(),
+        ));
         let auth = Arc::new(CopilotAuth::new(config.clone()));
         let copilot = Arc::new(CopilotBackend::new(config.clone(), auth, models.clone()));
         Self {
