@@ -53,7 +53,8 @@ curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applica
 
 - Config defaults and loading from `~/.config/copilot-proxy-rs/config.json`.
 - Environment overrides with `COPILOT_PROXY_RS_*` variables.
-- Static `/health`, `/version`, `/v1/models`, and `/v1/messages/count_tokens` routes.
+- Static `/health`, `/version`, and `/v1/messages/count_tokens` routes.
+- Copilot-backed `/v1/models` sourced from live upstream model discovery.
 - Live Copilot-backed routes for `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, response retrieval/cancellation, and Responses WebSocket.
 - Safe metadata logging that avoids raw prompt/body/token logging.
 - Fail-closed startup for non-loopback binds unless explicitly opted in.
@@ -143,7 +144,34 @@ Important variables:
 | `COPILOT_PROXY_RS_API_KEY` | Optional inbound API key. When set, Copilot-backed routes require `Authorization: Bearer <key>` or `x-api-key: <key>`. |
 | `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated WebSocket origin allowlist for `/v1/responses`. Empty means no origin filtering. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
+| `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
+
+## Model discovery
+
+The proxy starts a background GitHub Copilot model metadata refresh at startup,
+then caches successful refreshes for `COPILOT_MODELS_TTL` seconds. `/v1/models`,
+`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, and Responses
+WebSocket requests also refresh the cache when it is stale, so newly advertised
+Copilot model IDs can appear and route without rebuilding the container.
+
+If metadata refresh fails, `/v1/models` returns the last cached live model list,
+or an empty list when no refresh has succeeded yet. Context-window fields are
+reported only when Copilot advertises them; otherwise they are `null` and
+`context_window_modes` is empty.
+
+You can define local request aliases in `config.json` with
+`model_overrides.copilot`, for example:
+
+```json
+{
+  "model_overrides": {
+    "copilot": {
+      "sonnet-latest": "claude-sonnet-5"
+    }
+  }
+}
+```
 
 ## Safety model
 

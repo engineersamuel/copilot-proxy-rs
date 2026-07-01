@@ -36,6 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
     let state = AppState::new(config);
+    let refresh_state = state.clone();
+    tokio::spawn(async move {
+        refresh_state.copilot.refresh_models_if_stale().await;
+    });
     let snapshot = state.backend.snapshot().await;
     copilot_proxy_rs::telemetry::log_startup(
         &format!("http://{address}"),

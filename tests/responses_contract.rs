@@ -93,6 +93,66 @@ async fn responses_passthrough_returns_live_response_and_caches_state() {
 }
 
 #[tokio::test]
+async fn responses_refreshes_models_before_reasoning_adaptation() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "gpt-live-responses",
+                    "owned_by": "openai",
+                    "supported_endpoints": ["/responses"],
+                    "capabilities": {"supports": {"reasoning_effort": ["low", "medium", "high"]}}
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_live_reasoning",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-live-responses","input":"hello","reasoning":{"effort":"max"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["model"], "gpt-live-responses");
+    assert_eq!(outbound["reasoning"]["effort"], "high");
+}
+
+#[tokio::test]
 async fn responses_retrieve_and_cancel_proxy_to_copilot() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -379,6 +439,15 @@ async fn response_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn responses_logs_cache_and_usage_safe_metadata() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({"data": [{"id": "gpt-5.5", "owned_by": "openai"}]}),
+        )
+        .await;
     fixture.mock.respond_json("POST", "/responses", 200, serde_json::json!({
         "id": "resp_log_1",
         "object": "response",

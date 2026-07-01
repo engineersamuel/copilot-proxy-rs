@@ -1,5 +1,6 @@
 mod support;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -79,21 +80,15 @@ fn infer_owned_by_matches_python_prefix_rules() {
 }
 
 #[test]
-fn copilot_model_list_contains_supported_static_models() {
+fn copilot_model_list_is_empty_without_live_metadata() {
     let response = model_list_for_snapshot(BackendSnapshot {
         primary: BackendKind::Copilot,
         fallback: None,
     });
 
     assert_eq!(response.object, "list");
-    assert!(
-        response
-            .data
-            .iter()
-            .any(|model| model.id == "claude-sonnet-4-6")
-    );
-    assert!(response.data.iter().any(|model| model.id == "gpt-5.4"));
-    assert!(response.data.iter().all(|model| model.object == "model"));
+    assert!(response.data.is_empty());
+    assert!(response.models.is_empty());
 }
 
 #[tokio::test]
@@ -137,7 +132,7 @@ async fn version_returns_version_and_runtime() {
 }
 
 #[tokio::test]
-async fn models_route_returns_openai_list_and_rich_catalog() {
+async fn models_route_returns_empty_live_catalog_when_refresh_is_unavailable() {
     let app = router(state_with_no_token().await);
     let response = app
         .oneshot(
@@ -152,31 +147,8 @@ async fn models_route_returns_openai_list_and_rich_catalog() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["object"], "list");
-    assert!(
-        body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|model| model["id"] == "gpt-5.4")
-    );
-
-    let rich_gpt55 = body["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|model| model["slug"] == "gpt-5.5")
-        .unwrap();
-    assert_eq!(rich_gpt55["display_name"], "GPT-5.5");
-    assert_eq!(rich_gpt55["context_window"], 272_000);
-    assert_eq!(rich_gpt55["max_context_window"], 1_000_000);
-    assert_eq!(rich_gpt55["source"], "static");
-    assert_eq!(
-        rich_gpt55["context_window_modes"],
-        serde_json::json!([
-            {"name": "default", "context_window": 272000},
-            {"name": "long_context", "context_window": 1000000}
-        ])
-    );
+    assert_eq!(body["data"], serde_json::json!([]));
+    assert_eq!(body["models"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -352,52 +324,27 @@ async fn dynamic_copilot_models_store_supported_reasoning_efforts_internally() {
 }
 
 #[tokio::test]
-async fn static_claude_effort_fallbacks_match_python_supported_sets() {
+async fn known_models_do_not_get_static_effort_fallbacks_without_metadata() {
     let registry = ModelRegistry::new();
 
-    assert_eq!(
+    assert!(
         registry
             .supported_efforts("claude-opus-4.8")
             .await
-            .unwrap()
-            .as_strings(),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-    assert_eq!(
-        registry
-            .supported_efforts("claude-opus-4-7")
-            .await
-            .unwrap()
-            .as_strings(),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-    assert_eq!(
-        registry
-            .supported_efforts("claude-opus-4.6")
-            .await
-            .unwrap()
-            .as_strings(),
-        vec!["low", "medium", "high", "max"]
-    );
-    assert_eq!(
-        registry
-            .supported_efforts("claude-sonnet-4-6")
-            .await
-            .unwrap()
-            .as_strings(),
-        vec!["low", "medium", "high", "max"]
+            .is_none(),
+        "known models without dynamic metadata should not advertise static effort support"
     );
     assert!(
         registry
-            .supported_efforts("gpt-without-metadata")
+            .supported_efforts("claude-sonnet-4-6")
             .await
             .is_none(),
-        "models without dynamic metadata or static fallback should not support effort"
+        "aliases without dynamic metadata should not advertise static effort support"
     );
 }
 
 #[tokio::test]
-async fn models_route_ignores_cached_upstream_only_model_ids() {
+async fn models_route_includes_cached_upstream_only_model_ids() {
     let state = state_with_no_token().await;
     state
         .models
@@ -427,10 +374,110 @@ async fn models_route_ignores_cached_upstream_only_model_ids() {
         .iter()
         .filter_map(|model| model["id"].as_str())
         .collect();
-    assert!(ids.contains(&"gpt-5.4"));
     assert!(
-        !ids.contains(&"gpt-upstream-only"),
-        "public /v1/models must stay on the static Copilot catalog"
+        ids.contains(&"gpt-upstream-only"),
+        "public /v1/models should include live Copilot model IDs"
+    );
+    assert!(
+        body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["slug"] == "gpt-upstream-only")
+    );
+    let rich = body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "gpt-upstream-only")
+        .unwrap();
+    assert_eq!(rich["context_window"], Value::Null);
+    assert_eq!(rich["max_context_window"], Value::Null);
+    assert_eq!(rich["context_window_modes"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn models_route_refreshes_and_exposes_upstream_model_ids() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "claude-sonnet-5",
+                    "owned_by": "anthropic",
+                    "created_at": 1_800_000_000u64,
+                    "supported_endpoints": ["/v1/messages"]
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["id"] == "claude-sonnet-5")
+    );
+    let sonnet5 = body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "claude-sonnet-5")
+        .unwrap();
+    assert_eq!(sonnet5["source"], "dynamic");
+    assert_eq!(
+        sonnet5["supported_endpoints"],
+        serde_json::json!(["/v1/messages"])
+    );
+}
+
+#[tokio::test]
+async fn app_state_wires_copilot_model_overrides() {
+    let mut config = AppConfig::default();
+    config
+        .model_overrides
+        .copilot
+        .insert("sonnet-latest".to_string(), "claude-sonnet-5".to_string());
+
+    let state = AppState::new(config);
+    assert_eq!(
+        state.models.get_copilot_openai_model("sonnet-latest").await,
+        "claude-sonnet-5"
+    );
+}
+
+#[tokio::test]
+async fn copilot_model_overrides_take_precedence_over_live_exact_ids() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert("preferred-model".to_string(), "claude-sonnet-5".to_string());
+    let registry = ModelRegistry::with_copilot_overrides(overrides);
+    registry
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "preferred-model",
+            "owned_by": "openai"
+        })])
+        .await;
+
+    assert_eq!(
+        registry.get_copilot_openai_model("preferred-model").await,
+        "claude-sonnet-5"
     );
 }
 

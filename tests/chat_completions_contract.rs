@@ -215,19 +215,16 @@ async fn chat_completions_preserves_prompt_cache_controls_when_routed_to_respons
 }
 
 #[tokio::test]
-async fn chat_completions_routes_static_gpt55_to_responses_endpoint_without_metadata() {
+async fn chat_completions_passes_through_gpt55_without_endpoint_metadata() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
         .mock
         .respond_json(
             "POST",
-            "/responses",
+            "/chat/completions",
             200,
             serde_json::json!({
-                "id": "resp_static_chat_bridge",
-                "object": "response",
-                "status": "completed",
-                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"static bridge ok"}]}],
+                "choices": [{"message": {"role": "assistant", "content": "pass through ok"}}],
                 "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
             }),
         )
@@ -248,10 +245,10 @@ async fn chat_completions_routes_static_gpt55_to_responses_endpoint_without_meta
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 0);
-    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
     let body = response_json(response).await;
-    assert_eq!(body["choices"][0]["message"]["content"], "static bridge ok");
+    assert_eq!(body["choices"][0]["message"]["content"], "pass through ok");
 }
 
 #[tokio::test]

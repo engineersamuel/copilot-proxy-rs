@@ -49,6 +49,7 @@ async fn messages_inner(
         )
     })?;
     validate_anthropic_messages_request(&body)?;
+    state.copilot.refresh_models_if_stale().await;
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")

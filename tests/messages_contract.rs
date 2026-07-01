@@ -49,6 +49,68 @@ async fn messages_returns_live_anthropic_response() {
 }
 
 #[tokio::test]
+async fn messages_refreshes_models_before_capability_routing() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "gpt-live-messages",
+                    "owned_by": "openai",
+                    "supported_endpoints": ["/v1/messages"]
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/messages",
+            200,
+            serde_json::json!({
+                "id": "msg_live",
+                "type": "message",
+                "role": "assistant",
+                "model": "gpt-live-messages",
+                "content": [{"type":"text","text":"live model ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 3, "output_tokens": 1}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-live-messages","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["model"], "gpt-live-messages");
+    let body = response_json(response).await;
+    assert_eq!(body["content"][0]["text"], "live model ok");
+}
+
+#[tokio::test]
 async fn messages_streams_anthropic_sse_from_copilot() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -111,6 +173,15 @@ async fn messages_streams_anthropic_sse_from_copilot() {
 async fn messages_routes_gpt55_to_responses_and_returns_anthropic_response() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
         .mock
         .respond_json(
             "POST",
@@ -159,6 +230,15 @@ async fn messages_routes_gpt55_to_responses_and_returns_anthropic_response() {
 #[tokio::test]
 async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
     fixture
         .mock
         .respond_json(
@@ -209,6 +289,15 @@ async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
 async fn messages_bridge_preserves_prompt_cache_controls_for_responses() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
         .mock
         .respond_json(
             "POST",
@@ -257,6 +346,15 @@ async fn messages_bridge_preserves_prompt_cache_controls_for_responses() {
 #[tokio::test]
 async fn messages_stream_routes_gpt55_to_responses_stream() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
     fixture
         .mock
         .respond_sse(
@@ -489,6 +587,20 @@ async fn response_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn messages_strips_structured_output_and_clamps_output_effort() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "claude-sonnet-4.6",
+            "owned_by": "anthropic",
+            "supported_endpoints": ["/v1/messages"],
+            "capabilities": {
+                "supports": {
+                    "reasoning_effort": ["low", "medium", "high"]
+                }
+            }
+        })])
+        .await;
     fixture
         .mock
         .respond_json(
