@@ -627,7 +627,22 @@ async fn models_route_uses_dynamic_context_and_reasoning_metadata() {
     );
     assert_eq!(
         rich_gpt55["supported_reasoning_levels"],
-        serde_json::json!(["low", "medium", "high", "xhigh"])
+        serde_json::json!([
+            {"effort": "low", "description": "Fast responses with lighter reasoning"},
+            {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+            {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+            {"effort": "xhigh", "description": "Extra high reasoning depth for complex problems"}
+        ])
+    );
+    assert_eq!(rich_gpt55["shell_type"], "shell_command");
+    assert_eq!(rich_gpt55["visibility"], "list");
+    assert_eq!(rich_gpt55["supported_in_api"], true);
+    assert_eq!(rich_gpt55["apply_patch_tool_type"], "freeform");
+    assert_eq!(rich_gpt55["web_search_tool_type"], "text_and_image");
+    assert_eq!(rich_gpt55["supports_parallel_tool_calls"], true);
+    assert_eq!(
+        rich_gpt55["input_modalities"],
+        serde_json::json!(["text", "image"])
     );
     assert_eq!(rich_gpt55["source"], "dynamic");
 }
