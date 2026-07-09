@@ -49,13 +49,45 @@ pub struct ModelEntry {
 pub struct CodexModelEntry {
     pub slug: String,
     pub display_name: String,
+    pub description: String,
     pub default_reasoning_level: Option<String>,
-    pub supported_reasoning_levels: Vec<String>,
+    pub supported_reasoning_levels: Vec<ReasoningEffortPreset>,
+    pub shell_type: String,
+    pub visibility: String,
+    pub supported_in_api: bool,
+    pub priority: u64,
+    pub additional_speed_tiers: Vec<serde_json::Value>,
+    pub service_tiers: Vec<serde_json::Value>,
+    pub availability_nux: Option<serde_json::Value>,
+    pub upgrade: Option<serde_json::Value>,
+    pub base_instructions: String,
+    pub model_messages: serde_json::Value,
+    pub supports_reasoning_summaries: bool,
+    pub default_reasoning_summary: String,
+    pub support_verbosity: bool,
+    pub default_verbosity: String,
+    pub apply_patch_tool_type: String,
+    pub web_search_tool_type: String,
+    pub truncation_policy: serde_json::Value,
+    pub supports_parallel_tool_calls: bool,
+    pub supports_image_detail_original: bool,
     pub context_window: Option<u64>,
     pub max_context_window: Option<u64>,
+    pub comp_hash: String,
+    pub effective_context_window_percent: u64,
+    pub experimental_supported_tools: Vec<serde_json::Value>,
+    pub input_modalities: Vec<String>,
+    pub supports_search_tool: bool,
+    pub use_responses_lite: bool,
     pub context_window_modes: Vec<ContextWindowMode>,
     pub supported_endpoints: Vec<String>,
     pub source: ModelMetadataSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReasoningEffortPreset {
+    pub effort: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -214,7 +246,7 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         .iter()
         .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model_id));
 
-    let supported_reasoning_levels: Vec<String> = dynamic
+    let supported_reasoning_level_names: Vec<String> = dynamic
         .and_then(dynamic_supported_efforts)
         .map(|efforts| {
             efforts
@@ -224,14 +256,18 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
                 .collect()
         })
         .unwrap_or_default();
-    let default_reasoning_level = if supported_reasoning_levels
+    let default_reasoning_level = if supported_reasoning_level_names
         .iter()
         .any(|level| level == "medium")
     {
         Some("medium".to_string())
     } else {
-        supported_reasoning_levels.first().cloned()
+        supported_reasoning_level_names.first().cloned()
     };
+    let supported_reasoning_levels = supported_reasoning_level_names
+        .into_iter()
+        .map(reasoning_effort_preset)
+        .collect();
 
     let supported_endpoints = dynamic
         .and_then(dynamic_supported_endpoints)
@@ -247,13 +283,57 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
     CodexModelEntry {
         slug: model_id.to_string(),
         display_name: display_name(model_id),
+        description: format!("Copilot model {model_id}"),
         default_reasoning_level,
         supported_reasoning_levels,
+        shell_type: "shell_command".to_string(),
+        visibility: "list".to_string(),
+        supported_in_api: true,
+        priority: 100,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        availability_nux: None,
+        upgrade: None,
+        base_instructions: String::new(),
+        model_messages: serde_json::json!({}),
+        supports_reasoning_summaries: true,
+        default_reasoning_summary: "none".to_string(),
+        support_verbosity: true,
+        default_verbosity: "low".to_string(),
+        apply_patch_tool_type: "freeform".to_string(),
+        web_search_tool_type: "text_and_image".to_string(),
+        truncation_policy: serde_json::json!({
+            "mode": "tokens",
+            "limit": 10000
+        }),
+        supports_parallel_tool_calls: true,
+        supports_image_detail_original: true,
         context_window,
         max_context_window,
+        comp_hash: "dynamic".to_string(),
+        effective_context_window_percent: 95,
+        experimental_supported_tools: Vec::new(),
+        input_modalities: vec!["text".to_string(), "image".to_string()],
+        supports_search_tool: true,
+        use_responses_lite: false,
         context_window_modes,
         supported_endpoints,
         source: ModelMetadataSource::Dynamic,
+    }
+}
+
+fn reasoning_effort_preset(effort: String) -> ReasoningEffortPreset {
+    let description = match effort.as_str() {
+        "low" => "Fast responses with lighter reasoning",
+        "medium" => "Balances speed and reasoning depth for everyday tasks",
+        "high" => "Greater reasoning depth for complex problems",
+        "xhigh" => "Extra high reasoning depth for complex problems",
+        "max" => "Maximum reasoning depth for the hardest problems",
+        _ => "Reasoning effort preset",
+    };
+    ReasoningEffortPreset {
+        effort,
+        description: description.to_string(),
     }
 }
 
