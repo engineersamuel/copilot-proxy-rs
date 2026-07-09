@@ -156,9 +156,12 @@ WebSocket requests also refresh the cache when it is stale, so newly advertised
 Copilot model IDs can appear and route without rebuilding the container.
 
 If metadata refresh fails, `/v1/models` returns the last cached live model list,
-or an empty list when no refresh has succeeded yet. Context-window fields are
-reported only when Copilot advertises them; otherwise they are `null` and
-`context_window_modes` is empty.
+plus static GPT-5.6 fallback entries for `gpt-5.6-sol`, `gpt-5.6-terra`, and
+`gpt-5.6-luna` when no refresh has succeeded yet. Those fallbacks route through
+the Responses API and advertise `low`, `medium`, `high`, `xhigh`, and `max`
+reasoning efforts; live Copilot metadata overrides them when available.
+Context-window fields are reported only when Copilot advertises them; otherwise
+they are `null` and `context_window_modes` is empty.
 
 You can define local request aliases in `config.json` with
 `model_overrides.copilot`, for example:

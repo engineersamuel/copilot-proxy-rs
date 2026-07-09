@@ -80,15 +80,37 @@ fn infer_owned_by_matches_python_prefix_rules() {
 }
 
 #[test]
-fn copilot_model_list_is_empty_without_live_metadata() {
+fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
     let response = model_list_for_snapshot(BackendSnapshot {
         primary: BackendKind::Copilot,
         fallback: None,
     });
 
     assert_eq!(response.object, "list");
-    assert!(response.data.is_empty());
-    assert!(response.models.is_empty());
+    assert_eq!(
+        response
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+    );
+    let sol = response
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-5.6-sol")
+        .expect("GPT-5.6 Sol should be in the static fallback catalog");
+    assert_eq!(
+        sol.supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort.as_str())
+            .collect::<Vec<_>>(),
+        vec!["low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(
+        sol.supported_endpoints,
+        vec!["/responses".to_string(), "ws:/responses".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -132,7 +154,7 @@ async fn version_returns_version_and_runtime() {
 }
 
 #[tokio::test]
-async fn models_route_returns_empty_live_catalog_when_refresh_is_unavailable() {
+async fn models_route_returns_static_gpt56_catalog_when_refresh_is_unavailable() {
     let app = router(state_with_no_token().await);
     let response = app
         .oneshot(
@@ -147,8 +169,20 @@ async fn models_route_returns_empty_live_catalog_when_refresh_is_unavailable() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["object"], "list");
-    assert_eq!(body["data"], serde_json::json!([]));
-    assert_eq!(body["models"], serde_json::json!([]));
+    let ids = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
+    assert!(
+        body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["source"] == "static")
+    );
 }
 
 #[tokio::test]
@@ -340,6 +374,49 @@ async fn known_models_do_not_get_static_effort_fallbacks_without_metadata() {
             .await
             .is_none(),
         "aliases without dynamic metadata should not advertise static effort support"
+    );
+}
+
+#[tokio::test]
+async fn gpt56_static_fallbacks_advertise_reasoning_efforts_up_to_max() {
+    let registry = ModelRegistry::new();
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let efforts = registry
+            .supported_efforts(model)
+            .await
+            .expect("GPT-5.6 fallback models should expose reasoning efforts");
+        assert_eq!(
+            efforts.as_strings(),
+            vec!["low", "medium", "high", "xhigh", "max"],
+            "{model} should support every effort through max"
+        );
+    }
+}
+
+#[tokio::test]
+async fn gpt56_aliases_resolve_to_canonical_models() {
+    let registry = ModelRegistry::new();
+
+    assert_eq!(
+        registry.get_copilot_openai_model("gpt-5-6-sol").await,
+        "gpt-5.6-sol"
+    );
+    assert_eq!(
+        registry.get_copilot_openai_model("gpt-5-6-luna").await,
+        "gpt-5.6-luna"
+    );
+    assert_eq!(
+        registry.get_copilot_openai_model("gpt-5-6-terra").await,
+        "gpt-5.6-terra"
+    );
+    assert_eq!(
+        registry.get_copilot_openai_model("gpt-5-6-tera").await,
+        "gpt-5.6-terra"
+    );
+    assert_eq!(
+        registry.get_copilot_openai_model("gpt-5.6-tera").await,
+        "gpt-5.6-terra"
     );
 }
 

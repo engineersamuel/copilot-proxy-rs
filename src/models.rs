@@ -7,6 +7,11 @@ use tokio::sync::RwLock;
 use crate::state::BackendSnapshot;
 
 pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
+    ("gpt-5-6-sol", "gpt-5.6-sol"),
+    ("gpt-5-6-luna", "gpt-5.6-luna"),
+    ("gpt-5-6-terra", "gpt-5.6-terra"),
+    ("gpt-5-6-tera", "gpt-5.6-terra"),
+    ("gpt-5.6-tera", "gpt-5.6-terra"),
     ("claude-opus-4-8", "claude-opus-4.8"),
     ("claude-opus-4-7", "claude-opus-4.7"),
     ("claude-opus-4-6-20250515", "claude-opus-4.6"),
@@ -28,6 +33,49 @@ pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
     ("claude-3-5-sonnet", "claude-3.5-sonnet"),
     ("claude-3-5-haiku-20241022", "claude-3.5-haiku"),
     ("claude-3-5-haiku", "claude-3.5-haiku"),
+];
+
+const GPT56_MODEL_CREATED: u64 = 1_783_555_200;
+const GPT56_SUPPORTED_ENDPOINTS: &[&str] = &["/responses", "ws:/responses"];
+const GPT56_REASONING_EFFORTS: &[EffortLevel] = &[
+    EffortLevel::Low,
+    EffortLevel::Medium,
+    EffortLevel::High,
+    EffortLevel::XHigh,
+    EffortLevel::Max,
+];
+
+#[derive(Debug, Clone, Copy)]
+struct StaticCopilotModel {
+    id: &'static str,
+    created: u64,
+    owned_by: &'static str,
+    supported_endpoints: &'static [&'static str],
+    supported_efforts: &'static [EffortLevel],
+}
+
+const STATIC_COPILOT_MODELS: &[StaticCopilotModel] = &[
+    StaticCopilotModel {
+        id: "gpt-5.6-luna",
+        created: GPT56_MODEL_CREATED,
+        owned_by: "openai",
+        supported_endpoints: GPT56_SUPPORTED_ENDPOINTS,
+        supported_efforts: GPT56_REASONING_EFFORTS,
+    },
+    StaticCopilotModel {
+        id: "gpt-5.6-sol",
+        created: GPT56_MODEL_CREATED,
+        owned_by: "openai",
+        supported_endpoints: GPT56_SUPPORTED_ENDPOINTS,
+        supported_efforts: GPT56_REASONING_EFFORTS,
+    },
+    StaticCopilotModel {
+        id: "gpt-5.6-terra",
+        created: GPT56_MODEL_CREATED,
+        owned_by: "openai",
+        supported_endpoints: GPT56_SUPPORTED_ENDPOINTS,
+        supported_efforts: GPT56_REASONING_EFFORTS,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,6 +148,7 @@ pub struct ContextWindowMode {
 #[serde(rename_all = "snake_case")]
 pub enum ModelMetadataSource {
     Dynamic,
+    Static,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -209,6 +258,10 @@ pub fn model_list_for_snapshot(_snapshot: BackendSnapshot) -> ModelsListResponse
 
 fn copilot_models(dynamic_models: &[serde_json::Value]) -> Vec<ModelEntry> {
     let mut entries = BTreeMap::new();
+    for static_model in STATIC_COPILOT_MODELS {
+        let entry = static_model_entry(static_model);
+        entries.insert(entry.id.clone(), entry);
+    }
     for dynamic in dynamic_models {
         if let Some(entry) = dynamic_model_entry(dynamic) {
             entries.insert(entry.id.clone(), entry);
@@ -216,6 +269,15 @@ fn copilot_models(dynamic_models: &[serde_json::Value]) -> Vec<ModelEntry> {
     }
 
     entries.into_values().collect()
+}
+
+fn static_model_entry(model: &StaticCopilotModel) -> ModelEntry {
+    ModelEntry {
+        id: model.id.to_string(),
+        object: "model",
+        created: model.created,
+        owned_by: model.owned_by.to_string(),
+    }
 }
 
 fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
@@ -245,9 +307,16 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
     let dynamic = dynamic_models
         .iter()
         .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model_id));
+    let static_model = static_copilot_model(model_id);
+    let source = if dynamic.is_some() {
+        ModelMetadataSource::Dynamic
+    } else {
+        ModelMetadataSource::Static
+    };
 
     let supported_reasoning_level_names: Vec<String> = dynamic
         .and_then(dynamic_supported_efforts)
+        .or_else(|| static_supported_efforts(model_id))
         .map(|efforts| {
             efforts
                 .as_strings()
@@ -271,6 +340,8 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
 
     let supported_endpoints = dynamic
         .and_then(dynamic_supported_endpoints)
+        .filter(|endpoints| !endpoints.is_empty())
+        .or_else(|| static_model.map(static_supported_endpoints))
         .unwrap_or_default();
     let context_window =
         dynamic.and_then(|item| number_field(item, &["context_window", "contextWindow"]));
@@ -310,7 +381,11 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         supports_image_detail_original: true,
         context_window,
         max_context_window,
-        comp_hash: "dynamic".to_string(),
+        comp_hash: match source {
+            ModelMetadataSource::Dynamic => "dynamic",
+            ModelMetadataSource::Static => "static",
+        }
+        .to_string(),
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: vec!["text".to_string(), "image".to_string()],
@@ -318,7 +393,7 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         use_responses_lite: false,
         context_window_modes,
         supported_endpoints,
-        source: ModelMetadataSource::Dynamic,
+        source,
     }
 }
 
@@ -559,7 +634,7 @@ impl ModelRegistry {
     }
 
     pub async fn supported_efforts(&self, model: &str) -> Option<SupportedEfforts> {
-        let model = strip_model_prefix(model);
+        let model = canonical_model_id(model);
         let inner = self.inner.read().await;
         let dynamic = inner
             .models
@@ -567,11 +642,11 @@ impl ModelRegistry {
             .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model))
             .and_then(dynamic_supported_efforts);
         drop(inner);
-        dynamic
+        dynamic.or_else(|| static_supported_efforts(model))
     }
 
     async fn supported_endpoints(&self, model: &str) -> Vec<String> {
-        let model = strip_model_prefix(model);
+        let model = canonical_model_id(model);
         let inner = self.inner.read().await;
         let dynamic: Vec<String> = inner
             .models
@@ -586,12 +661,46 @@ impl ModelRegistry {
                     .collect()
             })
             .unwrap_or_default();
-        dynamic
+        if dynamic.is_empty() {
+            static_copilot_model(model)
+                .map(static_supported_endpoints)
+                .unwrap_or_default()
+        } else {
+            dynamic
+        }
     }
 }
 
 fn strip_model_prefix(model: &str) -> &str {
     model.strip_prefix("github-copilot/").unwrap_or(model)
+}
+
+fn canonical_model_id(model: &str) -> &str {
+    let model = strip_model_prefix(model);
+    COPILOT_MODEL_ALIASES
+        .iter()
+        .find_map(|(source, target)| (*source == model).then_some(*target))
+        .unwrap_or(model)
+}
+
+fn static_copilot_model(model: &str) -> Option<&'static StaticCopilotModel> {
+    let model = canonical_model_id(model);
+    STATIC_COPILOT_MODELS
+        .iter()
+        .find(|static_model| static_model.id == model)
+}
+
+fn static_supported_efforts(model: &str) -> Option<SupportedEfforts> {
+    let static_model = static_copilot_model(model)?;
+    SupportedEfforts::new(static_model.supported_efforts.to_vec())
+}
+
+fn static_supported_endpoints(model: &StaticCopilotModel) -> Vec<String> {
+    model
+        .supported_endpoints
+        .iter()
+        .map(|endpoint| (*endpoint).to_string())
+        .collect()
 }
 
 fn dynamic_supported_efforts(value: &serde_json::Value) -> Option<SupportedEfforts> {

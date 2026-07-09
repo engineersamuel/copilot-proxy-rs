@@ -181,6 +181,74 @@ pub fn adapt_responses_reasoning_effort(
     }
 }
 
+pub fn adapt_responses_tools_for_copilot(body: &mut Map<String, Value>) {
+    strip_unsupported_responses_tools(body);
+    strip_unsupported_responses_tool_choice(body);
+    strip_unsupported_responses_includes(body);
+}
+
+fn strip_unsupported_responses_tools(body: &mut Map<String, Value>) {
+    let remove_tools_key = if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut)
+    {
+        tools.retain(|tool| !is_unsupported_responses_tool(tool));
+        tools.is_empty()
+    } else {
+        false
+    };
+
+    if remove_tools_key {
+        body.remove("tools");
+        body.remove("tool_choice");
+    }
+}
+
+fn strip_unsupported_responses_tool_choice(body: &mut Map<String, Value>) {
+    let remove_tool_choice = body
+        .get("tool_choice")
+        .is_some_and(is_unsupported_responses_tool_choice);
+    if remove_tool_choice {
+        body.remove("tool_choice");
+    }
+}
+
+fn strip_unsupported_responses_includes(body: &mut Map<String, Value>) {
+    let remove_include_key =
+        if let Some(includes) = body.get_mut("include").and_then(Value::as_array_mut) {
+            includes.retain(|include| {
+                include
+                    .as_str()
+                    .is_none_or(|value| !value.starts_with("image_generation_call."))
+            });
+            includes.is_empty()
+        } else {
+            false
+        };
+    if remove_include_key {
+        body.remove("include");
+    }
+}
+
+fn is_unsupported_responses_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(is_unsupported_responses_tool_type)
+}
+
+fn is_unsupported_responses_tool_choice(tool_choice: &Value) -> bool {
+    match tool_choice {
+        Value::String(choice) => is_unsupported_responses_tool_type(choice),
+        Value::Object(choice) => choice
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(is_unsupported_responses_tool_type),
+        _ => false,
+    }
+}
+
+fn is_unsupported_responses_tool_type(tool_type: &str) -> bool {
+    tool_type == "image_generation"
+}
+
 pub fn adapt_thinking_for_copilot(
     body: &mut Map<String, Value>,
     model: &str,
