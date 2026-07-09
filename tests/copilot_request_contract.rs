@@ -1,7 +1,7 @@
 use copilot_proxy_rs::copilot::request::{
-    adapt_openai_reasoning_effort, adapt_responses_reasoning_effort, adapt_thinking_for_copilot,
-    base_copilot_request_headers, clamp_effort, compute_initiator, filter_anthropic_beta_header,
-    strip_structured_output,
+    adapt_openai_reasoning_effort, adapt_responses_reasoning_effort,
+    adapt_responses_tools_for_copilot, adapt_thinking_for_copilot, base_copilot_request_headers,
+    clamp_effort, compute_initiator, filter_anthropic_beta_header, strip_structured_output,
 };
 use copilot_proxy_rs::models::{EffortLevel, SupportedEfforts};
 
@@ -180,4 +180,71 @@ fn responses_reasoning_effort_is_clamped_or_removed_without_losing_other_fields(
     .clone();
     adapt_responses_reasoning_effort(&mut unsupported_body, None);
     assert!(unsupported_body.get("reasoning").is_none());
+}
+
+#[test]
+fn responses_image_generation_tool_is_stripped_for_copilot() {
+    let mut body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": "hello",
+        "tools": [
+            {"type": "image_generation", "partial_images": 1},
+            {"type": "function", "name": "safe_tool", "parameters": {"type": "object"}}
+        ],
+        "tool_choice": "auto",
+        "include": ["image_generation_call.results", "reasoning.encrypted_content"]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert_eq!(
+        body["tools"],
+        serde_json::json!([
+            {"type": "function", "name": "safe_tool", "parameters": {"type": "object"}}
+        ])
+    );
+    assert_eq!(body["tool_choice"], "auto");
+    assert_eq!(
+        body["include"],
+        serde_json::json!(["reasoning.encrypted_content"])
+    );
+}
+
+#[test]
+fn responses_image_generation_only_request_removes_tool_controls() {
+    let mut body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": "hello",
+        "tools": [{"type": "image_generation"}],
+        "tool_choice": "auto",
+        "include": ["image_generation_call.results"]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert!(body.get("tools").is_none());
+    assert!(body.get("tool_choice").is_none());
+    assert!(body.get("include").is_none());
+}
+
+#[test]
+fn responses_image_generation_tool_choice_is_removed_without_tools() {
+    let mut body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": "hello",
+        "tool_choice": {"type": "image_generation"}
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert!(body.get("tool_choice").is_none());
 }

@@ -299,6 +299,126 @@ async fn responses_http_clamps_reasoning_effort_and_preserves_unrelated_fields()
 }
 
 #[tokio::test]
+async fn responses_preserves_gpt56_static_efforts_through_max() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture.state.models.set_copilot_models(vec![]).await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_gpt56_effort",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let app = router(fixture.state.clone());
+    let models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+    let efforts = ["low", "medium", "high", "xhigh", "max"];
+
+    for model in models {
+        for effort in efforts {
+            let body = serde_json::json!({
+                "model": model,
+                "input": "hello",
+                "reasoning": {"effort": effort}
+            });
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/responses")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "{model} {effort}");
+            let outbound = fixture
+                .mock
+                .last_request_body_json("POST", "/responses")
+                .await
+                .unwrap();
+            assert_eq!(outbound["model"], model, "{model} {effort}");
+            assert_eq!(outbound["reasoning"]["effort"], effort, "{model} {effort}");
+        }
+    }
+
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 15);
+}
+
+#[tokio::test]
+async fn responses_http_strips_codex_image_generation_tool_before_copilot() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_image_tool_stripped",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "input":"hello",
+                        "tools":[
+                            {"type":"image_generation","partial_images":1},
+                            {"type":"function","name":"safe_tool","parameters":{"type":"object"}}
+                        ],
+                        "tool_choice":"auto",
+                        "include":["image_generation_call.results","reasoning.encrypted_content"]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["tools"],
+        serde_json::json!([
+            {"type": "function", "name": "safe_tool", "parameters": {"type": "object"}}
+        ])
+    );
+    assert_eq!(outbound["tool_choice"], "auto");
+    assert_eq!(
+        outbound["include"],
+        serde_json::json!(["reasoning.encrypted_content"])
+    );
+}
+
+#[tokio::test]
 async fn responses_preserves_explicit_prompt_cache_controls() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

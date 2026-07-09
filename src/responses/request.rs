@@ -3,7 +3,8 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::copilot::request::{
-    CopilotRequestMetadata, adapt_responses_reasoning_effort, compute_initiator,
+    CopilotRequestMetadata, adapt_responses_reasoning_effort, adapt_responses_tools_for_copilot,
+    compute_initiator,
 };
 use crate::models::SupportedEfforts;
 use crate::responses::state::{ResponsesStateStore, ResponsesTurnIdentity};
@@ -53,6 +54,7 @@ pub async fn prepare_responses_request(
     }
     effective_body.insert("model".to_string(), Value::String(copilot_model));
     adapt_responses_reasoning_effort(&mut effective_body, supported_efforts);
+    adapt_responses_tools_for_copilot(&mut effective_body);
     let incoming_interaction_id = header_value(headers, "x-interaction-id")
         .or_else(|| header_value(headers, "x-client-request-id"));
     let prompt_cache_identity = incoming_interaction_id.as_deref().or_else(|| {
