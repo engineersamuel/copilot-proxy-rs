@@ -147,6 +147,35 @@ Important variables:
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
 
+### Large Codex conversations
+
+Codex sends its active conversation history in `/v1/responses` requests. Long
+tool-heavy sessions can therefore exceed small HTTP buffering defaults even
+while they remain below the model's token context window. The proxy accepts
+requests up to `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES`, including at the Axum
+buffering layer, so the default limit is 16 MiB rather than Axum's 2 MiB
+default.
+
+If the proxy returns `413 Payload Too Large`, increase the limit and restart it
+before retrying or resuming the same Codex conversation:
+
+```bash
+COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES=67108864 cargo run
+```
+
+With `RUST_LOG=info`, accepted Responses requests log safe size metadata such
+as `request.body.bytes`, `request.body.effective_bytes`, `input.bytes`,
+`input.tools.bytes`, `input.reasoning.bytes`, and the largest input item's
+index, type, role, and byte size. Prompt and tool-output contents are not
+logged.
+
+To compact earlier as an additional preventive measure, Codex supports a lower
+token threshold in `~/.codex/config.toml`:
+
+```toml
+model_auto_compact_token_limit = 300000
+```
+
 ## Model discovery
 
 The proxy starts a background GitHub Copilot model metadata refresh at startup,

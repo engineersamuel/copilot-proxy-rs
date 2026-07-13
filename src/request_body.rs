@@ -4,6 +4,8 @@ use flate2::read::GzDecoder;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+const ENCODED_BODY_OVERHEAD_BYTES: u64 = 64 * 1024;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RequestBodyError {
     #[error("unsupported content-encoding: {encoding}")]
@@ -66,6 +68,12 @@ pub fn parse_json_request_body_with_limit(
 ) -> Result<Map<String, Value>, RequestBodyError> {
     let decoded = decode_request_body_with_limit(raw_body, content_encoding, max_decoded_bytes)?;
     parse_json_value(decoded)
+}
+
+pub(crate) fn encoded_body_limit(max_decoded_body_bytes: u64) -> usize {
+    // gzip/zstd framing can be larger than small or incompressible JSON bodies.
+    let limit = max_decoded_body_bytes.saturating_add(ENCODED_BODY_OVERHEAD_BYTES);
+    usize::try_from(limit).unwrap_or(usize::MAX)
 }
 
 fn parse_json_value(decoded: Vec<u8>) -> Result<Map<String, Value>, RequestBodyError> {

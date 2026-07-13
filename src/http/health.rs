@@ -1,10 +1,14 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::extract::rejection::BytesRejection;
 use http::{HeaderMap, StatusCode};
 use serde::Serialize;
 
 use crate::errors::{AnthropicErrorResponse, anthropic_error};
+use crate::http::errors::{
+    anthropic_request_body_error_type, request_body_error_details, request_body_rejection_details,
+};
 use crate::models::{CopilotModelsDebugSnapshot, ModelsListResponse};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
@@ -97,8 +101,17 @@ pub(crate) async fn debug_copilot_models(
 pub(crate) async fn count_tokens(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<CountTokensResponse>, (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
+    let body = body.map_err(|rejection| {
+        let (status, message) = request_body_rejection_details(
+            rejection,
+            &headers,
+            state.config.max_decoded_body_bytes,
+            "messages_count_tokens",
+        );
+        anthropic_error(status, anthropic_request_body_error_type(status), message)
+    })?;
     let encoding = headers
         .get(http::header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
@@ -109,11 +122,8 @@ pub(crate) async fn count_tokens(
         state.config.max_decoded_body_bytes as usize,
     )
     .map_err(|err| {
-        anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            err.to_string(),
-        )
+        let (status, message) = request_body_error_details(&err);
+        anthropic_error(status, anthropic_request_body_error_type(status), message)
     })?;
     Ok(Json(CountTokensResponse {
         input_tokens: crate::telemetry::estimate_request_tokens(&body),

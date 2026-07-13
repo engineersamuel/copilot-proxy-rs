@@ -1,25 +1,42 @@
 use axum::Json;
 use axum::body::{Body, Bytes};
+use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
-use http::{HeaderMap, StatusCode};
+use http::HeaderMap;
 use serde_json::{Map, Value};
 
 use crate::errors::openai_error;
-use crate::http::errors::openai_copilot_error;
+use crate::http::errors::{
+    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
 use crate::telemetry::{
     ApiFamily, CacheOperation, api_family_name, summarize_cache, summarize_effective_request,
+    summarize_request_sizes,
 };
 
 pub(crate) async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            let (status, message) = request_body_rejection_details(
+                rejection,
+                &headers,
+                state.config.max_decoded_body_bytes,
+                "responses",
+            );
+            return openai_error(status, "invalid_request_error", message).into_response();
+        }
+    };
+    let request_body_bytes = body.len();
     let request_id = headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
@@ -36,12 +53,8 @@ pub(crate) async fn responses(
     ) {
         Ok(body) => body,
         Err(err) => {
-            return openai_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request_error",
-                err.to_string(),
-            )
-            .into_response();
+            let (status, message) = request_body_error_details(&err);
+            return openai_error(status, "invalid_request_error", message).into_response();
         }
     };
     state.copilot.refresh_models_if_stale().await;
@@ -70,13 +83,25 @@ pub(crate) async fn responses(
         Some(&requested_model),
         &prepared.effective_body,
     );
+    let size_summary = summarize_request_sizes(&prepared.effective_body);
     tracing::info!(
         api.family = api_family_name(summary.api_family),
         model.requested = summary.requested_model.as_deref().unwrap_or(""),
         model.effective = summary.effective_model.as_deref().unwrap_or(""),
         stream = summary.stream,
+        request.body.bytes = request_body_bytes as u64,
+        request.body.limit = state.config.max_decoded_body_bytes,
+        request.body.effective_bytes = size_summary.body_bytes as u64,
         tokens.input.estimated = summary.input_tokens_estimate as u64,
         input.items = summary.input_item_count as u64,
+        input.bytes = size_summary.input_bytes as u64,
+        input.tools.bytes = size_summary.input_tool_bytes as u64,
+        input.reasoning.bytes = size_summary.input_reasoning_bytes as u64,
+        input.largest_item.bytes = size_summary.largest_input_item_bytes as u64,
+        input.largest_item.index = size_summary.largest_input_item_index.unwrap_or(0) as u64,
+        input.largest_item.type = size_summary.largest_input_item_type.unwrap_or(""),
+        input.largest_item.role = size_summary.largest_input_item_role.unwrap_or(""),
+        tools.bytes = size_summary.tools_bytes as u64,
         tools.definitions = summary.tool_definition_count as u64,
         tools.results = summary.tool_result_count as u64,
         effort = summary.effort.as_deref().unwrap_or(""),

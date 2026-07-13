@@ -1,4 +1,5 @@
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{get, post};
 
@@ -8,9 +9,12 @@ use crate::http::messages::messages;
 use crate::http::responses::{
     responses, responses_cancel, responses_compact, responses_retrieve, responses_ws,
 };
+use crate::request_body::encoded_body_limit;
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
+    let max_request_body_bytes = encoded_body_limit(state.config.max_decoded_body_bytes);
+
     // Keep the Copilot-backed routes behind inbound auth middleware.
     let protected_routes = Router::new()
         .route("/debug/copilot/models", get(debug_copilot_models))
@@ -25,7 +29,8 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::http::auth::require_inbound_auth,
-        ));
+        ))
+        .layer(DefaultBodyLimit::max(max_request_body_bytes));
 
     Router::new()
         .route("/health", get(health))

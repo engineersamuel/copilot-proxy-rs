@@ -1,13 +1,16 @@
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
+use axum::extract::rejection::BytesRejection;
 use axum::response::{IntoResponse, Response};
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
 use crate::copilot::request::adapt_openai_reasoning_effort;
 use crate::errors::openai_error;
-use crate::http::errors::openai_copilot_error;
+use crate::http::errors::{
+    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+};
 use crate::http::validation::validate_openai_chat_request;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
@@ -16,8 +19,20 @@ use crate::telemetry::{ApiFamily, api_family_name, summarize_effective_request};
 pub(crate) async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            let (status, message) = request_body_rejection_details(
+                rejection,
+                &headers,
+                state.config.max_decoded_body_bytes,
+                "chat_completions",
+            );
+            return openai_error(status, "invalid_request_error", message).into_response();
+        }
+    };
     match chat_completions_inner(state, headers, body).await {
         Ok(response) => response,
         Err((status, body)) => (status, body).into_response(),
@@ -39,11 +54,8 @@ async fn chat_completions_inner(
         state.config.max_decoded_body_bytes as usize,
     )
     .map_err(|err| {
-        openai_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            err.to_string(),
-        )
+        let (status, message) = request_body_error_details(&err);
+        openai_error(status, "invalid_request_error", message)
     })?;
     validate_openai_chat_request(&body)?;
     state.copilot.refresh_models_if_stale().await;

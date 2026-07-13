@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
+use axum::extract::rejection::BytesRejection;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use http::{HeaderMap, StatusCode};
@@ -10,7 +11,10 @@ use crate::copilot::request::{
     CopilotRequestMetadata, adapt_thinking_for_copilot, filter_anthropic_beta_header,
 };
 use crate::errors::anthropic_error;
-use crate::http::errors::anthropic_copilot_error;
+use crate::http::errors::{
+    anthropic_copilot_error, anthropic_request_body_error_type, request_body_error_details,
+    request_body_rejection_details,
+};
 use crate::http::validation::validate_anthropic_messages_request;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
@@ -19,8 +23,21 @@ use crate::telemetry::{ApiFamily, api_family_name, summarize_effective_request};
 pub(crate) async fn messages(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            let (status, message) = request_body_rejection_details(
+                rejection,
+                &headers,
+                state.config.max_decoded_body_bytes,
+                "messages",
+            );
+            return anthropic_error(status, anthropic_request_body_error_type(status), message)
+                .into_response();
+        }
+    };
     match messages_inner(state, headers, body).await {
         Ok(response) => response,
         Err((status, body)) => (status, body).into_response(),
@@ -42,11 +59,8 @@ async fn messages_inner(
         state.config.max_decoded_body_bytes as usize,
     )
     .map_err(|err| {
-        anthropic_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            err.to_string(),
-        )
+        let (status, message) = request_body_error_details(&err);
+        anthropic_error(status, anthropic_request_body_error_type(status), message)
     })?;
     validate_anthropic_messages_request(&body)?;
     state.copilot.refresh_models_if_stale().await;
