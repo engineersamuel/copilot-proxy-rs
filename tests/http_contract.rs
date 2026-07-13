@@ -1,9 +1,12 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::Body;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -321,15 +324,65 @@ async fn chat_route_rejects_body_over_decoded_limit() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let body = response_json(response).await;
     assert_eq!(body["error"]["type"], "invalid_request_error");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("decoded request body exceeds 8 bytes")
-    );
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("8 bytes"));
+    assert!(message.contains("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES"));
+}
+
+#[tokio::test]
+async fn compressed_body_within_decoded_limit_allows_encoding_overhead() {
+    let payload = b"{}";
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(payload).unwrap();
+    let compressed = encoder.finish().unwrap();
+    assert!(compressed.len() > payload.len());
+
+    let config = AppConfig {
+        max_decoded_body_bytes: payload.len() as u64,
+        ..Default::default()
+    };
+    let response = router(AppState::new(config))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages/count_tokens")
+                .header("content-type", "application/json")
+                .header("content-encoding", "gzip")
+                .body(Body::from(compressed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn messages_route_uses_anthropic_request_too_large_error_type() {
+    let config = AppConfig {
+        max_decoded_body_bytes: 8,
+        ..Default::default()
+    };
+    let response = router(AppState::new(config))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "request_too_large");
 }
 
 #[tokio::test]

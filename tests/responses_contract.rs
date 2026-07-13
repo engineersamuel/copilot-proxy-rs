@@ -11,6 +11,81 @@ use tower::ServiceExt;
 use copilot_proxy_rs::http::router;
 
 #[tokio::test]
+async fn responses_accepts_body_between_axum_default_and_configured_limit() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_large",
+                "object": "response",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let request_body = serde_json::to_vec(&serde_json::json!({
+        "model": "gpt-5.5",
+        "input": "x".repeat(2 * 1024 * 1024)
+    }))
+    .unwrap();
+    assert!(request_body.len() > 2 * 1024 * 1024);
+    assert!(request_body.len() < fixture.state.config.max_decoded_body_bytes as usize);
+
+    let response = router(fixture.state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["id"], "resp_large");
+}
+
+#[tokio::test]
+async fn responses_rejects_body_over_configured_limit_with_actionable_error() {
+    let config = copilot_proxy_rs::AppConfig {
+        max_decoded_body_bytes: 64,
+        ..Default::default()
+    };
+    let response = router(copilot_proxy_rs::AppState::new(config))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "model": "gpt-5.5",
+                        "input": "x".repeat(128)
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response_json(response).await;
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("64 bytes"));
+    assert!(message.contains("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES"));
+}
+
+#[tokio::test]
 async fn responses_passthrough_returns_live_response_and_caches_state() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture.mock.respond_json("POST", "/responses", 200, serde_json::json!({
@@ -581,6 +656,7 @@ async fn responses_logs_cache_and_usage_safe_metadata() {
         }
     })).await;
 
+    let request_body = r#"{"model":"gpt-5.5","input":"private prompt"}"#;
     let events = with_event_capture(|| async {
         let response = router(fixture.state.clone())
             .oneshot(
@@ -588,9 +664,7 @@ async fn responses_logs_cache_and_usage_safe_metadata() {
                     .method("POST")
                     .uri("/v1/responses")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"model":"gpt-5.5","input":"private prompt"}"#,
-                    ))
+                    .body(Body::from(request_body))
                     .unwrap(),
             )
             .await
@@ -599,9 +673,28 @@ async fn responses_logs_cache_and_usage_safe_metadata() {
     })
     .await;
 
+    let request_body_bytes = request_body.len().to_string();
+    let request_body_limit = (16 * 1024 * 1024).to_string();
     assert_eq!(
         field(&events, "responses request prepared", "api.family").as_deref(),
         Some("responses")
+    );
+    assert_eq!(
+        field(&events, "responses request prepared", "request.body.bytes").as_deref(),
+        Some(request_body_bytes.as_str())
+    );
+    assert_eq!(
+        field(&events, "responses request prepared", "request.body.limit").as_deref(),
+        Some(request_body_limit.as_str())
+    );
+    assert!(
+        field(
+            &events,
+            "responses request prepared",
+            "request.body.effective_bytes"
+        )
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|bytes| bytes >= request_body.len())
     );
     assert_eq!(
         field(&events, "responses cache event", "cache.operation").as_deref(),

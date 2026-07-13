@@ -1,3 +1,7 @@
+use std::io;
+use std::io::Write;
+
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +34,19 @@ pub struct RequestLogSummary {
     pub tool_result_count: usize,
     pub max_tokens: Option<u64>,
     pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestSizeSummary {
+    pub body_bytes: usize,
+    pub input_bytes: usize,
+    pub input_tool_bytes: usize,
+    pub input_reasoning_bytes: usize,
+    pub tools_bytes: usize,
+    pub largest_input_item_bytes: usize,
+    pub largest_input_item_index: Option<usize>,
+    pub largest_input_item_type: Option<&'static str>,
+    pub largest_input_item_role: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +116,54 @@ pub fn summarize_effective_request(
             .or_else(|| body.get("output_config").and_then(|v| v.get("effort")))
             .and_then(Value::as_str)
             .map(str::to_string),
+    }
+}
+
+pub fn summarize_request_sizes(body: &Map<String, Value>) -> RequestSizeSummary {
+    let input = body.get("input");
+    let mut input_tool_bytes = 0;
+    let mut input_reasoning_bytes = 0;
+    let mut largest_input_item_bytes = 0;
+    let mut largest_input_item_index = None;
+    let mut largest_input_item_type = None;
+    let mut largest_input_item_role = None;
+
+    if let Some(Value::Array(items)) = input {
+        for (index, item) in items.iter().enumerate() {
+            let item_bytes = serialized_json_bytes(item);
+            if is_tool_history_item(item) {
+                input_tool_bytes += item_bytes;
+            }
+            if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                input_reasoning_bytes += item_bytes;
+            }
+            if item_bytes > largest_input_item_bytes {
+                largest_input_item_bytes = item_bytes;
+                largest_input_item_index = Some(index);
+                largest_input_item_type = safe_input_item_type(item);
+                largest_input_item_role = safe_input_item_role(item);
+            }
+        }
+    } else if let Some(input) = input {
+        largest_input_item_bytes = serialized_json_bytes(input);
+        largest_input_item_index = Some(0);
+        largest_input_item_type = Some(match input {
+            Value::String(_) => "string",
+            Value::Object(_) => "object",
+            _ => "value",
+        });
+    }
+
+    RequestSizeSummary {
+        body_bytes: serialized_json_bytes(body),
+        input_bytes: input.map_or(0, serialized_json_bytes),
+        input_tool_bytes,
+        input_reasoning_bytes,
+        tools_bytes: body.get("tools").map_or(0, serialized_json_bytes),
+        largest_input_item_bytes,
+        largest_input_item_index,
+        largest_input_item_type,
+        largest_input_item_role,
     }
 }
 
@@ -224,6 +289,90 @@ fn is_tool_item(value: &Value) -> bool {
                     | "server_tool_use"
             )
         })
+}
+
+fn is_tool_history_item(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "function_call"
+                    | "function_call_output"
+                    | "custom_tool_call"
+                    | "custom_tool_call_output"
+                    | "local_shell_call"
+                    | "tool_search_call"
+                    | "tool_search_output"
+                    | "web_search_call"
+                    | "web_search_tool_result"
+                    | "server_tool_use"
+                    | "computer_call"
+                    | "computer_call_output"
+                    | "image_generation_call"
+            )
+        })
+}
+
+fn safe_input_item_type(value: &Value) -> Option<&'static str> {
+    let kind = value.get("type").and_then(Value::as_str)?;
+    Some(match kind {
+        "message" => "message",
+        "reasoning" => "reasoning",
+        "function_call" => "function_call",
+        "function_call_output" => "function_call_output",
+        "custom_tool_call" => "custom_tool_call",
+        "custom_tool_call_output" => "custom_tool_call_output",
+        "local_shell_call" => "local_shell_call",
+        "tool_search_call" => "tool_search_call",
+        "tool_search_output" => "tool_search_output",
+        "web_search_call" => "web_search_call",
+        "web_search_tool_result" => "web_search_tool_result",
+        "server_tool_use" => "server_tool_use",
+        "computer_call" => "computer_call",
+        "computer_call_output" => "computer_call_output",
+        "image_generation_call" => "image_generation_call",
+        "compaction" => "compaction",
+        "context_compaction" => "context_compaction",
+        _ => "unknown",
+    })
+}
+
+fn safe_input_item_role(value: &Value) -> Option<&'static str> {
+    let role = value.get("role").and_then(Value::as_str)?;
+    Some(match role {
+        "user" => "user",
+        "assistant" => "assistant",
+        "system" => "system",
+        "developer" => "developer",
+        "tool" => "tool",
+        _ => "unknown",
+    })
+}
+
+fn serialized_json_bytes<T>(value: &T) -> usize
+where
+    T: Serialize + ?Sized,
+{
+    let mut counter = ByteCounter::default();
+    serde_json::to_writer(&mut counter, value).map_or(0, |()| counter.bytes)
+}
+
+#[derive(Debug, Default)]
+struct ByteCounter {
+    bytes: usize,
+}
+
+impl Write for ByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub fn init_logging() -> Result<(), tracing_subscriber::util::TryInitError> {

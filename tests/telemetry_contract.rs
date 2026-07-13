@@ -1,6 +1,6 @@
 use copilot_proxy_rs::telemetry::{
     ApiFamily, CacheOperation, summarize_cache, summarize_effective_request, summarize_request,
-    summarize_usage,
+    summarize_request_sizes, summarize_usage,
 };
 
 #[test]
@@ -108,6 +108,53 @@ fn responses_summary_counts_input_items_and_reasoning_effort() {
     assert!(!debug.contains("private"));
     assert!(!debug.contains("secret"));
     assert!(!debug.contains("hidden"));
+}
+
+#[test]
+fn request_size_summary_reports_structure_without_content() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": [
+            {"type": "reasoning", "encrypted_content": "private reasoning"},
+            {"type": "function_call_output", "call_id": "secret-call", "output": "private output"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "private prompt"}]}
+        ],
+        "tools": [{"type": "function", "name": "private_tool"}]
+    });
+
+    let summary = summarize_request_sizes(body.as_object().unwrap());
+
+    assert!(summary.body_bytes >= summary.input_bytes);
+    assert!(summary.input_tool_bytes > 0);
+    assert!(summary.input_reasoning_bytes > 0);
+    assert!(summary.tools_bytes > 0);
+    assert!(summary.largest_input_item_bytes > 0);
+    assert!(summary.largest_input_item_index.is_some());
+    let debug = format!("{summary:?}");
+    assert!(!debug.contains("private reasoning"));
+    assert!(!debug.contains("private output"));
+    assert!(!debug.contains("private prompt"));
+    assert!(!debug.contains("private_tool"));
+    assert!(!debug.contains("secret-call"));
+}
+
+#[test]
+fn request_size_summary_allowlists_logged_item_type_and_role() {
+    let body = serde_json::json!({
+        "input": [{
+            "type": "private type value",
+            "role": "private role value",
+            "content": "x".repeat(100)
+        }]
+    });
+
+    let summary = summarize_request_sizes(body.as_object().unwrap());
+
+    assert_eq!(summary.largest_input_item_type, Some("unknown"));
+    assert_eq!(summary.largest_input_item_role, Some("unknown"));
+    let debug = format!("{summary:?}");
+    assert!(!debug.contains("private type value"));
+    assert!(!debug.contains("private role value"));
 }
 
 #[test]
