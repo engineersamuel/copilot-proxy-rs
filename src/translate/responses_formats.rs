@@ -95,6 +95,32 @@ pub fn anthropic_messages_to_responses_request(
     out
 }
 
+pub fn has_anthropic_web_search_tool(body: &Map<String, Value>) -> bool {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.iter().any(is_anthropic_web_search_tool))
+}
+
+pub fn anthropic_web_search_to_responses_request(
+    body: &Map<String, Value>,
+    model: &str,
+) -> Map<String, Value> {
+    let mut out = anthropic_messages_to_responses_request(body, model);
+    let tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(anthropic_tool_to_web_search_responses_tool)
+        .collect();
+    out.insert("tools".to_string(), Value::Array(tools));
+    out.insert(
+        "tool_choice".to_string(),
+        Value::String("required".to_string()),
+    );
+    out
+}
+
 fn copy_prompt_cache_controls(source: &Map<String, Value>, target: &mut Map<String, Value>) {
     for key in ["prompt_cache_key", "prompt_cache_retention"] {
         if let Some(value) = source.get(key) {
@@ -219,6 +245,31 @@ fn anthropic_tool_to_responses_tool(value: &Value) -> Option<Value> {
             .unwrap_or_else(|| json!({"type": "object"})),
     );
     Some(Value::Object(tool))
+}
+
+fn anthropic_tool_to_web_search_responses_tool(value: &Value) -> Option<Value> {
+    if !is_anthropic_web_search_tool(value) {
+        return anthropic_tool_to_responses_tool(value);
+    }
+    let mut tool = Map::new();
+    tool.insert("type".to_string(), Value::String("web_search".to_string()));
+    if let Some(allowed_domains) = value.get("allowed_domains").and_then(Value::as_array) {
+        tool.insert(
+            "filters".to_string(),
+            json!({"allowed_domains": allowed_domains}),
+        );
+    }
+    if let Some(user_location) = value.get("user_location") {
+        tool.insert("user_location".to_string(), user_location.clone());
+    }
+    Some(Value::Object(tool))
+}
+
+fn is_anthropic_web_search_tool(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|tool_type| tool_type.starts_with("web_search_"))
 }
 
 fn anthropic_tool_choice_to_responses(value: &Value) -> Option<Value> {

@@ -23,6 +23,7 @@ fn defaults_match_copilot_proxy_rs() {
     assert_eq!(config.copilot_retry_max, 3);
     assert_eq!(config.copilot_retry_base_delay, 1.0);
     assert_eq!(config.copilot_max_rate, 15);
+    assert_eq!(config.web_search_model, "gpt-5.6-sol");
     assert_eq!(config.context_guard_threshold, 0.90);
     assert_eq!(config.bedrock_region_prefix, "us");
     assert_eq!(config.aws_region, "us-west-2");
@@ -96,6 +97,7 @@ fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
           "fallback_backend": "bedrock",
           "port": 9090,
           "copilot_timeout": "600",
+          "web_search_model": "gpt-5.6-terra",
           "context_guard_threshold": "0.75",
           "model_overrides": {
             "copilot": {"claude-sonnet-4-6": "claude-sonnet-4.6"},
@@ -113,6 +115,7 @@ fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
     assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9090);
     assert_eq!(config.copilot_timeout, 600);
+    assert_eq!(config.web_search_model, "gpt-5.6-terra");
     assert_eq!(config.context_guard_threshold, 0.75);
     assert!(config.update_check);
     assert!(config.auto_restart);
@@ -154,6 +157,7 @@ fn environment_values_override_file_values() {
         ("COPILOT_PROXY_RS_BACKEND", "copilot,bedrock"),
         ("COPILOT_PROXY_RS_PORT", "9444"),
         ("COPILOT_TIMEOUT", "900"),
+        ("COPILOT_PROXY_RS_WEB_SEARCH_MODEL", "gpt-5.6-luna"),
     ]);
     let config = AppConfig::load_from_env(&env).unwrap();
 
@@ -161,6 +165,7 @@ fn environment_values_override_file_values() {
     assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9444);
     assert_eq!(config.copilot_timeout, 900);
+    assert_eq!(config.web_search_model, "gpt-5.6-luna");
 }
 
 #[test]

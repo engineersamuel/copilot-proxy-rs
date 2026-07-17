@@ -63,6 +63,8 @@ pub struct AppConfig {
     pub copilot_retry_base_delay: f64,
     #[serde(deserialize_with = "deserialize_u32")]
     pub copilot_max_rate: u32,
+    #[serde(deserialize_with = "deserialize_string")]
+    pub web_search_model: String,
     #[serde(deserialize_with = "deserialize_f64")]
     pub context_guard_threshold: f64,
     #[serde(deserialize_with = "deserialize_string")]
@@ -143,6 +145,7 @@ impl Default for AppConfig {
             copilot_retry_max: 3,
             copilot_retry_base_delay: 1.0,
             copilot_max_rate: 15,
+            web_search_model: "gpt-5.6-sol".to_string(),
             context_guard_threshold: 0.90,
             bedrock_region_prefix: "us".to_string(),
             aws_region: "us-west-2".to_string(),
@@ -194,6 +197,8 @@ struct FileConfig {
     copilot_retry_base_delay: Option<f64>,
     #[serde(deserialize_with = "deserialize_opt_u32")]
     copilot_max_rate: Option<u32>,
+    #[serde(deserialize_with = "deserialize_opt_string")]
+    web_search_model: Option<String>,
     #[serde(deserialize_with = "deserialize_opt_f64")]
     context_guard_threshold: Option<f64>,
     #[serde(deserialize_with = "deserialize_opt_string")]
@@ -318,6 +323,11 @@ impl AppConfig {
         if let Some(v) = file.copilot_max_rate {
             self.copilot_max_rate = v;
         }
+        if let Some(v) = file.web_search_model {
+            if !v.is_empty() {
+                self.web_search_model = v;
+            }
+        }
         if let Some(v) = file.context_guard_threshold {
             self.context_guard_threshold = v;
         }
@@ -428,6 +438,11 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
         &mut config.copilot_retry_base_delay,
     );
     apply_parse(env, "COPILOT_MAX_RATE", &mut config.copilot_max_rate);
+    apply_string(
+        env,
+        "COPILOT_PROXY_RS_WEB_SEARCH_MODEL",
+        &mut config.web_search_model,
+    );
     apply_parse(
         env,
         "CONTEXT_GUARD_THRESHOLD",
