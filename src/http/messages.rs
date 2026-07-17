@@ -88,6 +88,7 @@ async fn messages_inner(
         .models
         .get_copilot_openai_model(&requested_model)
         .await;
+    let has_web_search = crate::translate::responses_formats::has_anthropic_web_search_tool(&body);
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
     let summary = summarize_effective_request(ApiFamily::Messages, Some(&requested_model), &body);
     tracing::info!(
@@ -105,6 +106,27 @@ async fn messages_inner(
     );
     if stream {
         let mut stream_body = body.clone();
+        if has_web_search {
+            let mut responses_body =
+                crate::translate::responses_formats::anthropic_web_search_to_responses_request(
+                    &stream_body,
+                    &state.config.web_search_model,
+                );
+            responses_body.insert("stream".to_string(), Value::Bool(true));
+            let upstream = state
+                .copilot
+                .stream_responses(responses_body, metadata)
+                .await
+                .map_err(anthropic_copilot_error)?;
+            let byte_stream = crate::http::sse::map_sse_lines(
+                upstream.bytes_stream(),
+                crate::translate::responses_formats::responses_sse_to_anthropic_sse_line,
+            );
+            return Ok(Response::builder()
+                .header(http::header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(byte_stream))
+                .unwrap());
+        }
         if state
             .models
             .model_supports_messages_api(&copilot_model)
@@ -161,7 +183,22 @@ async fn messages_inner(
             ));
         }
     }
-    let response = if state
+    let response = if has_web_search {
+        let responses_body =
+            crate::translate::responses_formats::anthropic_web_search_to_responses_request(
+                &body,
+                &state.config.web_search_model,
+            );
+        let responses = state
+            .copilot
+            .post_responses(responses_body, metadata.clone())
+            .await
+            .map_err(anthropic_copilot_error)?;
+        crate::translate::responses_formats::responses_to_anthropic_message_response(
+            &responses,
+            &requested_model,
+        )
+    } else if state
         .models
         .model_supports_messages_api(&copilot_model)
         .await

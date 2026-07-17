@@ -145,6 +145,7 @@ Important variables:
 | `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated WebSocket origin allowlist for `/v1/responses`. Empty means no origin filtering. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
+| `COPILOT_PROXY_RS_WEB_SEARCH_MODEL` | Responses-capable model used to translate Anthropic hosted web-search requests. Defaults to `gpt-5.6-sol`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
 
 ### Large Codex conversations

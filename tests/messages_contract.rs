@@ -623,6 +623,171 @@ async fn messages_bridge_converts_anthropic_tools_and_tool_history_for_responses
 }
 
 #[tokio::test]
+async fn messages_routes_anthropic_web_search_through_copilot_responses() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_web_search",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "id": "search_1",
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "query": "official Rust website"
+                        }
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "https://www.rust-lang.org/"
+                        }]
+                    }
+                ],
+                "usage": {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-beta", "web-search-2025-03-05")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-sonnet-5",
+                        "max_tokens":128,
+                        "tools":[{
+                            "type":"web_search_20250305",
+                            "name":"web_search",
+                            "max_uses":1,
+                            "allowed_domains":["rust-lang.org"]
+                        }],
+                        "messages":[{"role":"user","content":"Find the official Rust website"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["model"], "gpt-5.6-sol");
+    assert_eq!(outbound["tools"][0]["type"], "web_search");
+    assert_eq!(
+        outbound["tools"][0]["filters"]["allowed_domains"][0],
+        "rust-lang.org"
+    );
+    assert_eq!(outbound["tool_choice"], "required");
+
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "claude-sonnet-5");
+    assert_eq!(body["content"][0]["type"], "text");
+    assert_eq!(body["content"][0]["text"], "https://www.rust-lang.org/");
+    assert_eq!(body["stop_reason"], "end_turn");
+}
+
+#[tokio::test]
+async fn messages_streams_anthropic_web_search_through_copilot_responses() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                concat!(
+                    "event: response.created\n",
+                    r#"data: {"type":"response.created","response":{"id":"resp_search","model":"gpt-5.6-sol","usage":{"input_tokens":8,"output_tokens":0}}}"#
+                ),
+                concat!(
+                    "event: response.output_item.added\n",
+                    r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"web_search_call","id":"search_1","status":"in_progress"}}"#
+                ),
+                concat!(
+                    "event: response.content_part.added\n",
+                    r#"data: {"type":"response.content_part.added","output_index":1,"content_index":0,"part":{"type":"output_text","text":""}}"#
+                ),
+                concat!(
+                    "event: response.output_text.delta\n",
+                    r#"data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"https://www.rust-lang.org/"}"#
+                ),
+                concat!(
+                    "event: response.content_part.done\n",
+                    r#"data: {"type":"response.content_part.done","output_index":1,"content_index":0,"part":{"type":"output_text","text":"https://www.rust-lang.org/"}}"#
+                ),
+                concat!(
+                    "event: response.completed\n",
+                    r#"data: {"type":"response.completed","response":{"id":"resp_search","status":"completed","output":[{"type":"web_search_call","id":"search_1","status":"completed"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"https://www.rust-lang.org/"}]}],"usage":{"input_tokens":8,"output_tokens":4}}}"#
+                ),
+                "data: [DONE]",
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-sonnet-5",
+                        "stream":true,
+                        "max_tokens":128,
+                        "tools":[{"type":"web_search_20250305","name":"web_search"}],
+                        "messages":[{"role":"user","content":"Find the official Rust website"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains("event: message_start"), "{text}");
+    assert!(text.contains("https://www.rust-lang.org/"), "{text}");
+    assert!(text.contains(r#""stop_reason":"end_turn""#), "{text}");
+    assert!(text.contains("data: [DONE]"), "{text}");
+}
+
+#[tokio::test]
 async fn messages_bridge_preserves_prompt_cache_controls_for_responses() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
