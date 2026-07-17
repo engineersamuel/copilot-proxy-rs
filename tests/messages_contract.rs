@@ -173,6 +173,15 @@ async fn messages_streams_anthropic_sse_from_copilot() {
 async fn messages_stream_translates_responses_function_calls_to_anthropic_tool_use() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
         .mock
         .respond_sse(
             "POST",
@@ -239,6 +248,15 @@ data: {"type":"response.completed","response":{"id":"resp_tool","status":"comple
 #[tokio::test]
 async fn messages_bridge_translates_responses_function_calls_to_anthropic_tool_use() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
     fixture
         .mock
         .respond_json(
@@ -465,6 +483,15 @@ async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
 async fn messages_bridge_encodes_follow_up_assistant_text_as_output_text() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
         .mock
         .respond_json(
             "POST",
@@ -515,6 +542,15 @@ async fn messages_bridge_encodes_follow_up_assistant_text_as_output_text() {
 #[tokio::test]
 async fn messages_bridge_converts_anthropic_tools_and_tool_history_for_responses() {
     let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
     fixture
         .mock
         .respond_json(

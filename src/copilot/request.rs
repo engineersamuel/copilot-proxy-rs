@@ -92,11 +92,7 @@ pub fn compute_initiator(body: &Map<String, Value>, strict_continuation: bool) -
 }
 
 pub fn filter_anthropic_beta_header(beta: &str) -> Option<String> {
-    let supported = [
-        "interleaved-thinking",
-        "context-management",
-        "advanced-tool-use",
-    ];
+    let supported = ["interleaved-thinking", "advanced-tool-use"];
     let filtered: Vec<&str> = beta
         .split(',')
         .map(str::trim)
@@ -254,6 +250,7 @@ pub fn adapt_thinking_for_copilot(
     model: &str,
     supported_efforts: Option<&SupportedEfforts>,
 ) {
+    body.remove("context_management");
     strip_structured_output(body);
     adapt_output_config_effort(body, supported_efforts);
 
@@ -325,7 +322,11 @@ fn is_adaptive_capable_model(model: &str) -> bool {
     is_adaptive_only_model(model)
         || matches!(
             model,
-            "claude-opus-4.6" | "claude-opus-4-6" | "claude-sonnet-4.6" | "claude-sonnet-4-6"
+            "claude-opus-4.6"
+                | "claude-opus-4-6"
+                | "claude-sonnet-4.6"
+                | "claude-sonnet-4-6"
+                | "claude-sonnet-5"
         )
 }
 
