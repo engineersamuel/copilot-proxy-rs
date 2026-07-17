@@ -40,7 +40,7 @@ fn initiator_is_agent_for_tool_continuations_and_user_for_plain_user_turns() {
 fn anthropic_beta_filter_keeps_only_copilot_supported_prefixes() {
     assert_eq!(
         filter_anthropic_beta_header(
-            "interleaved-thinking-2025-05-14, unknown-beta, advanced-tool-use-2025-01-01"
+            "interleaved-thinking-2025-05-14, context-management-2025-06-27, unknown-beta, advanced-tool-use-2025-01-01"
         ),
         Some("interleaved-thinking-2025-05-14, advanced-tool-use-2025-01-01".to_string())
     );
@@ -150,6 +150,23 @@ fn anthropic_thinking_adapts_effort_and_mode_for_copilot() {
     assert_eq!(non_adaptive["thinking"]["type"], "enabled");
     assert_eq!(non_adaptive["thinking"]["budget_tokens"], 10000);
     assert!(non_adaptive.get("output_config").is_none());
+
+    let mut sonnet_five = serde_json::json!({
+        "model": "claude-sonnet-5",
+        "thinking": {"type": "adaptive", "display": "omitted"},
+        "context_management": {
+            "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+        },
+        "output_config": {"effort": "medium"}
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    adapt_thinking_for_copilot(&mut sonnet_five, "claude-sonnet-5", Some(&efforts));
+    assert_eq!(sonnet_five["thinking"]["type"], "adaptive");
+    assert_eq!(sonnet_five["thinking"]["display"], "omitted");
+    assert_eq!(sonnet_five["output_config"]["effort"], "medium");
+    assert!(sonnet_five.get("context_management").is_none());
 }
 
 #[test]

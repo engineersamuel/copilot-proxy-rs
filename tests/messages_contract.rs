@@ -170,6 +170,143 @@ async fn messages_streams_anthropic_sse_from_copilot() {
 }
 
 #[tokio::test]
+async fn messages_stream_translates_responses_function_calls_to_anthropic_tool_use() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_tool","model":"gpt-5.5","usage":{"input_tokens":4,"output_tokens":0}}}"#,
+                r#"event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"toolu_1","name":"Bash","arguments":""}}"#,
+                r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":0,"call_id":"toolu_1","delta":"{\"command\":\"pwd\"}"}"#,
+                r#"event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"toolu_1","name":"Bash","arguments":"{\"command\":\"pwd\"}"}}"#,
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_tool","status":"completed","output":[{"type":"function_call","call_id":"toolu_1","name":"Bash","arguments":"{\"command\":\"pwd\"}"}],"usage":{"input_tokens":4,"output_tokens":3}}}"#,
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "stream":true,
+                        "max_tokens":64,
+                        "tools":[{"name":"Bash","input_schema":{"type":"object"}}],
+                        "messages":[{"role":"user","content":"inspect"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains(r#""type":"tool_use""#), "{text}");
+    assert!(text.contains(r#""id":"toolu_1""#), "{text}");
+    assert!(text.contains(r#""name":"Bash""#), "{text}");
+    assert!(text.contains(r#""type":"input_json_delta""#), "{text}");
+    assert!(
+        text.contains(r#""partial_json":"{\"command\":\"pwd\"}""#),
+        "{text}"
+    );
+    assert!(text.contains(r#""stop_reason":"tool_use""#), "{text}");
+    assert!(text.contains("event: message_stop"), "{text}");
+}
+
+#[tokio::test]
+async fn messages_bridge_translates_responses_function_calls_to_anthropic_tool_use() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_tool",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type":"function_call",
+                    "call_id":"toolu_1",
+                    "name":"Bash",
+                    "arguments":"{\"command\":\"pwd\"}"
+                }],
+                "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "max_tokens":64,
+                        "tools":[{"name":"Bash","input_schema":{"type":"object"}}],
+                        "messages":[{"role":"user","content":"inspect"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["content"][0]["type"], "tool_use");
+    assert_eq!(body["content"][0]["id"], "toolu_1");
+    assert_eq!(body["content"][0]["name"], "Bash");
+    assert_eq!(body["content"][0]["input"]["command"], "pwd");
+    assert_eq!(body["stop_reason"], "tool_use");
+}
+
+#[tokio::test]
 async fn messages_routes_gpt55_to_responses_and_returns_anthropic_response() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -228,6 +365,63 @@ async fn messages_routes_gpt55_to_responses_and_returns_anthropic_response() {
 }
 
 #[tokio::test]
+async fn messages_refreshes_models_before_endpoint_selection() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "gpt-dynamic-responses",
+                    "owned_by": "openai",
+                    "supported_endpoints": ["/responses"]
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_messages_refresh",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"refreshed bridge"}]}],
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-dynamic-responses","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let body = response_json(response).await;
+    assert_eq!(body["content"][0]["text"], "refreshed bridge");
+}
+
+#[tokio::test]
 async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -283,6 +477,149 @@ async fn messages_bridge_converts_anthropic_content_blocks_for_responses() {
     assert_eq!(outbound["instructions"], "You are concise.");
     assert_eq!(outbound["input"][0]["content"][0]["type"], "input_text");
     assert_eq!(outbound["input"][0]["content"][0]["text"], "hello");
+}
+
+#[tokio::test]
+async fn messages_bridge_encodes_follow_up_assistant_text_as_output_text() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_messages_follow_up",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+                "usage": {"input_tokens": 8, "output_tokens": 1, "total_tokens": 9}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "max_tokens":64,
+                        "messages":[
+                            {"role":"user","content":"inspect the project"},
+                            {"role":"assistant","content":"I will inspect it."},
+                            {"role":"user","content":"continue"}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["input"][1]["role"], "assistant");
+    assert_eq!(outbound["input"][1]["content"][0]["type"], "output_text");
+}
+
+#[tokio::test]
+async fn messages_bridge_converts_anthropic_tools_and_tool_history_for_responses() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_messages_tools",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+                "usage": {"input_tokens": 8, "output_tokens": 1, "total_tokens": 9}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "max_tokens":64,
+                        "tools":[{
+                            "name":"Bash",
+                            "description":"Run a shell command",
+                            "input_schema":{
+                                "type":"object",
+                                "properties":{"command":{"type":"string"}},
+                                "required":["command"]
+                            }
+                        }],
+                        "messages":[
+                            {"role":"user","content":"inspect the project"},
+                            {"role":"assistant","content":[
+                                {"type":"text","text":"I will inspect it."},
+                                {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}
+                            ]},
+                            {"role":"user","content":[
+                                {"type":"tool_result","tool_use_id":"toolu_1","content":"project path"}
+                            ]}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["tools"][0]["type"], "function");
+    assert_eq!(outbound["tools"][0]["name"], "Bash");
+    assert_eq!(outbound["tools"][0]["parameters"]["required"][0], "command");
+    assert_eq!(outbound["input"][1]["content"][0]["type"], "output_text");
+    assert_eq!(outbound["input"][2]["type"], "function_call");
+    assert_eq!(outbound["input"][2]["call_id"], "toolu_1");
+    assert_eq!(outbound["input"][2]["name"], "Bash");
+    assert_eq!(outbound["input"][2]["arguments"], r#"{"command":"pwd"}"#);
+    assert_eq!(outbound["input"][3]["type"], "function_call_output");
+    assert_eq!(outbound["input"][3]["call_id"], "toolu_1");
+    assert_eq!(outbound["input"][3]["output"], "project path");
 }
 
 #[tokio::test]
