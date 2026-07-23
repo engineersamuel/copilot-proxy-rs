@@ -31,13 +31,13 @@ pub fn request_has_valid_api_key(headers: &HeaderMap, configured_api_key: &str) 
 }
 
 pub fn request_has_allowed_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
-    if allowed_origins.is_empty() {
+    let Some(origin) = headers.get(http::header::ORIGIN) else {
         return true;
-    }
+    };
 
-    headers
-        .get(http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
+    origin
+        .to_str()
+        .ok()
         .is_some_and(|origin| allowed_origins.iter().any(|allowed| allowed == origin))
 }
 

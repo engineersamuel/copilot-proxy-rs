@@ -145,7 +145,7 @@ async fn responses_websocket_rejects_disallowed_origin_when_configured() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     let mut config = (*fixture.state.config).clone();
     config.api_key = "local-secret".to_string();
-    config.allowed_origins = vec!["http://localhost:3000".to_string()];
+    config.allowed_origins = vec!["https://trusted.example".to_string()];
     let addr = start_proxy_with_config(config).await;
 
     let mut request = format!("ws://{addr}/v1/responses")
@@ -156,7 +156,7 @@ async fn responses_websocket_rejects_disallowed_origin_when_configured() {
         .insert("authorization", "Bearer local-secret".parse().unwrap());
     request
         .headers_mut()
-        .insert("origin", "https://evil.example".parse().unwrap());
+        .insert("origin", "https://trusted.example.evil".parse().unwrap());
 
     let err = connect_async(request).await.unwrap_err();
 
@@ -164,6 +164,71 @@ async fn responses_websocket_rejects_disallowed_origin_when_configured() {
         err.to_string().contains("HTTP error"),
         "expected rejected websocket upgrade, got {err}"
     );
+}
+
+#[tokio::test]
+async fn responses_websocket_rejects_origin_when_allowlist_is_empty() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let addr = start_proxy_with_config(AppConfig::default()).await;
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "https://evil.example".parse().unwrap());
+
+    let err = connect_async(request).await.unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(response) = err else {
+        panic!("expected rejected websocket upgrade");
+    };
+
+    assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn responses_websocket_allows_missing_origin_when_allowlist_is_empty() {
+    let addr = start_proxy_with_config(AppConfig::default()).await;
+    let url = format!("ws://{addr}/v1/responses");
+
+    let (_, response) = connect_async(&url).await.unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+}
+
+#[tokio::test]
+async fn responses_websocket_allows_missing_origin_when_allowlist_is_configured() {
+    let config = AppConfig {
+        allowed_origins: vec!["https://trusted.example".to_string()],
+        ..AppConfig::default()
+    };
+    let addr = start_proxy_with_config(config).await;
+    let url = format!("ws://{addr}/v1/responses");
+
+    let (_, response) = connect_async(&url).await.unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+}
+
+#[tokio::test]
+async fn responses_websocket_allows_exact_matching_origin() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let config = AppConfig {
+        allowed_origins: vec!["https://trusted.example".to_string()],
+        ..AppConfig::default()
+    };
+    let addr = start_proxy_with_config(config).await;
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "https://trusted.example".parse().unwrap());
+
+    let (_, response) = connect_async(request).await.unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
 }
 
 #[tokio::test]
