@@ -411,20 +411,28 @@ fn atomic_groups(items: &[ConversationItem]) -> Vec<Vec<ConversationItem>> {
     let mut index = 0;
 
     while index < items.len() {
-        let mut group = vec![items[index].clone()];
-        let has_matching_result = matches!(
-            (&items[index], items.get(index + 1)),
-            (
-                ConversationItem::ToolCall { id, .. },
-                Some(ConversationItem::ToolResult { call_id, .. })
-            ) if call_id == id
-        );
-        if has_matching_result {
-            group.push(items[index + 1].clone());
+        let ConversationItem::ToolCall { .. } = &items[index] else {
+            groups.push(vec![items[index].clone()]);
+            index += 1;
+            continue;
+        };
+
+        let mut group = Vec::new();
+        let mut call_ids = Vec::new();
+        while let Some(ConversationItem::ToolCall { id, .. }) = items.get(index) {
+            call_ids.push(id.clone());
+            group.push(items[index].clone());
             index += 1;
         }
+        while let Some(ConversationItem::ToolResult { call_id, .. }) = items.get(index) {
+            if !call_ids.iter().any(|id| id == call_id) {
+                break;
+            }
+            group.push(items[index].clone());
+            index += 1;
+        }
+
         groups.push(group);
-        index += 1;
     }
 
     groups
@@ -563,7 +571,7 @@ fn to_anthropic_message(item: &ConversationItem) -> Value {
 
 fn summary_as_openai_item(summary: &str) -> Value {
     json!({
-        "role": "developer",
+        "role": "user",
         "content": [{
             "type": "input_text",
             "text": format!("Compacted conversation state:\n{summary}")
