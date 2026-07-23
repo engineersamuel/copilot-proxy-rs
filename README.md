@@ -142,7 +142,7 @@ Important variables:
 | `COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK` | Required for `0.0.0.0`, `::`, or other non-loopback binds. |
 | `COPILOT_PROXY_RS_CONTAINER_LOOPBACK_ONLY` | Allows container-internal `0.0.0.0` binds when the host port is published only on loopback. |
 | `COPILOT_PROXY_RS_API_KEY` | Optional inbound API key. When set, Copilot-backed routes require `Authorization: Bearer <key>` or `x-api-key: <key>`. |
-| `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated WebSocket origin allowlist for `/v1/responses`. Empty means no origin filtering. |
+| `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated exact WebSocket Origin allowlist for `/v1/responses`. Requests without an Origin header are allowed; requests with an Origin header are rejected when this is empty or has no exact match. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
 | `COPILOT_PROXY_RS_WEB_SEARCH_MODEL` | Responses-capable model used to translate Anthropic hosted web-search requests. Defaults to `gpt-5.6-sol`. |
@@ -213,10 +213,11 @@ expose this process directly to a network or the public internet. For alpha
 releases, the service refuses non-loopback bind addresses unless
 `COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK=true` is set.
 
-WebSocket clients can be protected with `COPILOT_PROXY_RS_API_KEY` and
-`COPILOT_PROXY_RS_ALLOWED_ORIGINS`. Keep the proxy local-only unless you have
-configured inbound authentication, origin controls, and trusted network
-boundaries.
+Browser WebSocket clients must configure `COPILOT_PROXY_RS_ALLOWED_ORIGINS`
+with their exact Origin strings. Native clients that omit Origin remain
+compatible. Use `COPILOT_PROXY_RS_API_KEY` and keep the proxy local-only unless
+you have configured inbound authentication, origin controls, and trusted
+network boundaries.
 
 ## Docker
 
