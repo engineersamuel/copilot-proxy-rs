@@ -437,6 +437,13 @@ impl AppConfig {
                     message: "must be non-empty".to_string(),
                 });
             }
+            if local_model.base_url.trim() != local_model.base_url {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "base_url",
+                    message: "must contain no surrounding whitespace".to_string(),
+                });
+            }
 
             let base_url = reqwest::Url::parse(&local_model.base_url).map_err(|source| {
                 ConfigError::InvalidLocalModel {

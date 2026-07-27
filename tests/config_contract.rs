@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use copilot_proxy_rs::config::{AppConfig, EnvSource};
+use copilot_proxy_rs::config::{AppConfig, ConfigError, EnvSource};
 
 fn repo_tempdir(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -90,6 +90,36 @@ fn invalid_local_model_names_the_id_and_field() {
     assert!(error.contains("qwen-local"));
     assert!(error.contains("base_url"));
     assert!(error.contains("http or https"));
+}
+
+#[test]
+fn local_model_base_url_rejects_surrounding_whitespace() {
+    let temp = repo_tempdir("config-spaced-local-base-url-");
+    fs::write(
+        temp.path().join("config.json"),
+        r#"{"local_models":{"qwen-spaced":{"base_url":" http://example.com/v1 ","upstream_model":"model.gguf"}}}"#,
+    )
+    .unwrap();
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    let error = AppConfig::load_from_env(&env).unwrap_err();
+
+    match error {
+        ConfigError::InvalidLocalModel {
+            model_id,
+            field,
+            message,
+        } => assert_eq!(
+            (model_id.as_str(), field, message.as_str()),
+            (
+                "qwen-spaced",
+                "base_url",
+                "must contain no surrounding whitespace"
+            )
+        ),
+        other => panic!("expected InvalidLocalModel, got {other}"),
+    }
 }
 
 #[test]
