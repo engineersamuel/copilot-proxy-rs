@@ -24,18 +24,20 @@ pub struct PreparedResponsesRequest {
     pub cache_status: PreviousResponseCacheStatus,
 }
 
-pub async fn prepare_responses_request(
+#[derive(Debug, Clone)]
+pub struct ExpandedResponsesInput {
+    pub body: Map<String, Value>,
+    pub previous_identity: Option<ResponsesTurnIdentity>,
+    pub cache_status: PreviousResponseCacheStatus,
+}
+
+pub async fn expand_previous_response(
     store: &ResponsesStateStore,
-    body: Map<String, Value>,
-    request_id: String,
-    headers: &HeaderMap,
-    copilot_model: String,
-    supported_efforts: Option<&SupportedEfforts>,
-) -> PreparedResponsesRequest {
-    let mut effective_body = body;
+    mut body: Map<String, Value>,
+) -> ExpandedResponsesInput {
     let mut cache_status = PreviousResponseCacheStatus::NotRequested;
     let mut previous_identity = None;
-    if let Some(previous) = effective_body
+    if let Some(previous) = body
         .get("previous_response_id")
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -45,13 +47,32 @@ pub async fn prepare_responses_request(
             cache_status = PreviousResponseCacheStatus::Hit;
             let mut expanded = entry.transcript;
             previous_identity = Some(entry.identity);
-            if let Some(input) = normalize_input_items(effective_body.get("input")) {
+            if let Some(input) = normalize_input_items(body.get("input")) {
                 expanded.extend(input);
             }
-            effective_body.insert("input".to_string(), Value::Array(expanded));
-            effective_body.remove("previous_response_id");
+            body.insert("input".to_string(), Value::Array(expanded));
+            body.remove("previous_response_id");
         }
     }
+    ExpandedResponsesInput {
+        body,
+        previous_identity,
+        cache_status,
+    }
+}
+
+pub async fn prepare_responses_request(
+    store: &ResponsesStateStore,
+    body: Map<String, Value>,
+    request_id: String,
+    headers: &HeaderMap,
+    copilot_model: String,
+    supported_efforts: Option<&SupportedEfforts>,
+) -> PreparedResponsesRequest {
+    let expanded = expand_previous_response(store, body).await;
+    let mut effective_body = expanded.body;
+    let previous_identity = expanded.previous_identity;
+    let cache_status = expanded.cache_status;
     effective_body.insert("model".to_string(), Value::String(copilot_model));
     adapt_responses_reasoning_effort(&mut effective_body, supported_efforts);
     adapt_responses_tools_for_copilot(&mut effective_body);
@@ -133,7 +154,10 @@ mod tests {
     use http::HeaderMap;
     use serde_json::{Value, json};
 
-    use super::{PreviousResponseCacheStatus, normalize_input_items, prepare_responses_request};
+    use super::{
+        PreviousResponseCacheStatus, expand_previous_response, normalize_input_items,
+        prepare_responses_request,
+    };
     use crate::responses::state::{ResponsesStateStore, ResponsesTurnIdentity};
 
     fn parse_body(s: &str) -> serde_json::Map<String, Value> {
@@ -245,5 +269,71 @@ mod tests {
     #[test]
     fn normalize_missing_input_returns_none() {
         assert!(normalize_input_items(None).is_none());
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_not_requested_without_an_id() {
+        let body = parse_body(r#"{"model":"local","input":"hello"}"#);
+
+        let expanded =
+            expand_previous_response(&ResponsesStateStore::default(), body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, None);
+        assert_eq!(
+            expanded.cache_status,
+            PreviousResponseCacheStatus::NotRequested
+        );
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_miss_and_retains_the_id() {
+        let body =
+            parse_body(r#"{"model":"local","input":"hello","previous_response_id":"missing"}"#);
+
+        let expanded =
+            expand_previous_response(&ResponsesStateStore::default(), body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, None);
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Miss);
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_hit_and_expands_the_transcript() {
+        let store = ResponsesStateStore::default();
+        let identity = ResponsesTurnIdentity {
+            interaction_id: "iid-expanded".to_string(),
+            agent_task_id: "atid-expanded".to_string(),
+        };
+        store
+            .cache_response_state(
+                "resp_expand",
+                vec![json!({"role": "user", "content": "first"})],
+                vec![json!({"role": "assistant", "content": "reply"})],
+                identity.clone(),
+                false,
+            )
+            .await;
+        let body = parse_body(
+            r#"{"model":"local","input":"follow-up","previous_response_id":"resp_expand"}"#,
+        );
+
+        let expanded = expand_previous_response(&store, body).await;
+
+        assert_eq!(expanded.previous_identity, Some(identity));
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
+        assert!(!expanded.body.contains_key("previous_response_id"));
+        assert_eq!(
+            expanded.body["input"],
+            json!([
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "follow-up"}]
+                }
+            ])
+        );
     }
 }
