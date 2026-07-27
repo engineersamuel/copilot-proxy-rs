@@ -455,32 +455,29 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
         };
         let is_typed_response_create =
             body.get("type").and_then(Value::as_str) == Some("response.create");
-        let is_response_create = body.get("type").is_none() || is_typed_response_create;
-        if is_response_create {
-            let requested_model = body
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if state
-                .models
-                .configured_local_target(requested_model)
-                .is_some()
-            {
-                let _ = client_ws
-                    .send(Message::Text(
-                        serde_json::json!({
-                            "type": "error",
-                            "error": {
-                                "type": "invalid_request_error",
-                                "message": "Local models do not support Responses WebSocket"
-                            }
-                        })
-                        .to_string()
-                        .into(),
-                    ))
-                    .await;
-                continue;
-            }
+        let requested_model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if state
+            .models
+            .configured_local_target(requested_model)
+            .is_some()
+        {
+            let _ = client_ws
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "Local models do not support Responses WebSocket"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+            continue;
         }
         if is_typed_response_create {
             body.remove("type");

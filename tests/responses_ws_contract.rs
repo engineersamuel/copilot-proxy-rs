@@ -389,6 +389,82 @@ async fn responses_websocket_rejects_bare_prefixed_local_model_and_keeps_socket_
 }
 
 #[tokio::test]
+async fn responses_websocket_rejects_malformed_local_event_types_without_copilot_work() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (ws_backend_addr, backend_open_count) = mock_ws_backend_addr().await;
+    let (mut state, _temp, mock) = state_with_ws_backend(ws_backend_addr).await;
+    Arc::make_mut(&mut state.config).api_key = "local-secret".to_string();
+    let addr = start_proxy(state).await;
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer local-secret".parse().unwrap());
+    let (mut ws, _) = connect_async(request).await.unwrap();
+
+    for (event_type, model) in [
+        (serde_json::Value::Null, "qwen3-coder-30b-local"),
+        (serde_json::json!(7), "github-copilot/qwen3-coder-30b-local"),
+        (
+            serde_json::json!({"unexpected": true}),
+            "qwen3-coder-30b-local",
+        ),
+        (
+            serde_json::json!("response.cancel"),
+            "github-copilot/qwen3-coder-30b-local",
+        ),
+    ] {
+        ws.send(Message::Text(
+            serde_json::json!({
+                "type": event_type,
+                "model": model,
+                "input": "private local input"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+        let message = ws.next().await.unwrap().unwrap();
+        let Message::Text(text) = message else {
+            panic!("expected text frame, got {message:?}");
+        };
+        let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            event["error"]["message"],
+            "Local models do not support Responses WebSocket"
+        );
+        assert_eq!(backend_open_count.load(Ordering::SeqCst), 0);
+        assert_eq!(mock.hits("GET", "/models").await, 0);
+        assert_eq!(mock.hits("GET", "/copilot/token").await, 0);
+    }
+
+    ws.send(Message::Text(
+        serde_json::json!({
+            "type": "response.create",
+            "model": "gpt-5.5",
+            "input": "non-local input"
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let message = ws.next().await.unwrap().unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected text frame, got {message:?}");
+    };
+    let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(event["type"], "response.completed");
+    assert_eq!(backend_open_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn responses_websocket_prewarm_generate_false_returns_created_and_completed() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     let addr = start_proxy(fixture.state).await;
