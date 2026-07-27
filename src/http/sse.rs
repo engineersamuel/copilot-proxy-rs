@@ -58,3 +58,43 @@ where
         }
     }
 }
+
+pub(crate) fn map_sse_lines_many<S, F>(
+    stream: S,
+    mut mapper: F,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    F: FnMut(&str) -> Vec<String> + Send + 'static,
+{
+    let mut src = Box::pin(stream);
+    async_stream::stream! {
+        let mut buf = Vec::new();
+        while let Some(chunk_result) = src.next().await {
+            match chunk_result {
+                Err(error) => {
+                    yield Err(std::io::Error::other(error));
+                    return;
+                }
+                Ok(chunk) => buf.extend_from_slice(&chunk),
+            }
+            while let Some(newline) = buf.iter().position(|byte| *byte == b'\n') {
+                let line = String::from_utf8_lossy(&buf[..newline])
+                    .trim_end_matches('\r')
+                    .to_string();
+                buf.drain(..=newline);
+                for event in mapper(&line) {
+                    yield Ok(Bytes::from(format!("{event}\n\n")));
+                }
+            }
+        }
+        if !buf.is_empty() {
+            let line = String::from_utf8_lossy(&buf)
+                .trim_end_matches('\r')
+                .to_string();
+            for event in mapper(&line) {
+                yield Ok(Bytes::from(format!("{event}\n\n")));
+            }
+        }
+    }
+}

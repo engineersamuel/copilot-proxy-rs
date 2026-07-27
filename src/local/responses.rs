@@ -9,6 +9,30 @@ pub enum LocalToolKind {
     Custom,
 }
 
+impl LocalToolKind {
+    fn stream_item_id(self, response_id: &str, tool_index: usize) -> String {
+        let prefix = match self {
+            Self::Function => "fc",
+            Self::Custom => "ctc",
+        };
+        format!("{prefix}_{response_id}_{tool_index}")
+    }
+
+    fn stream_delta_event(self) -> &'static str {
+        match self {
+            Self::Function => "response.function_call_arguments.delta",
+            Self::Custom => "response.custom_tool_call_input.delta",
+        }
+    }
+
+    fn stream_done_event(self) -> &'static str {
+        match self {
+            Self::Function => "response.function_call_arguments.done",
+            Self::Custom => "response.custom_tool_call_input.done",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ResponsesTranslationError {
     #[error("unsupported Responses input: {0}")]
@@ -26,6 +50,525 @@ pub struct TranslatedResponsesRequest {
     pub chat_body: Map<String, Value>,
     pub input_items: Vec<Value>,
     pub tool_kinds: BTreeMap<String, LocalToolKind>,
+}
+
+#[derive(Debug, Clone)]
+struct StreamingToolCall {
+    tool_index: usize,
+    output_index: usize,
+    call_id: String,
+    name: String,
+    arguments: String,
+    kind: LocalToolKind,
+    added: bool,
+    done: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamStatus {
+    InProgress,
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+impl StreamStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ChatToResponsesStream {
+    response_id: String,
+    public_model: String,
+    tool_kinds: BTreeMap<String, LocalToolKind>,
+    text: String,
+    text_output_index: Option<usize>,
+    text_done: bool,
+    tool_calls: BTreeMap<usize, StreamingToolCall>,
+    next_output_index: usize,
+    usage: Value,
+    status: StreamStatus,
+    incomplete_details: Value,
+    started: bool,
+    finish_seen: bool,
+    terminal: bool,
+}
+
+impl ChatToResponsesStream {
+    pub fn new(
+        response_id: String,
+        public_model: String,
+        tool_kinds: BTreeMap<String, LocalToolKind>,
+    ) -> Self {
+        Self {
+            response_id,
+            public_model,
+            tool_kinds,
+            text: String::new(),
+            text_output_index: None,
+            text_done: false,
+            tool_calls: BTreeMap::new(),
+            next_output_index: 0,
+            usage: Value::Null,
+            status: StreamStatus::InProgress,
+            incomplete_details: Value::Null,
+            started: false,
+            finish_seen: false,
+            terminal: false,
+        }
+    }
+
+    pub fn map_line(&mut self, line: &str) -> Vec<String> {
+        let Some(data) = line.strip_prefix("data:").map(str::trim_start) else {
+            return Vec::new();
+        };
+        if self.terminal {
+            return Vec::new();
+        }
+        if data == "[DONE]" {
+            let mut events = self.start_events();
+            match self.finish_events() {
+                Ok(finish_events) => events.extend(finish_events),
+                Err(()) => return self.failed_event(),
+            }
+            events.extend(self.complete_event());
+            return events;
+        }
+
+        let chunk: Value = match serde_json::from_str(data) {
+            Ok(chunk) => chunk,
+            Err(_) => return self.failed_event(),
+        };
+        let Some(chunk) = chunk.as_object() else {
+            return self.failed_event();
+        };
+        let mut events = self.start_events();
+
+        if let Some(usage) = chunk.get("usage") {
+            match translate_chat_usage(Some(usage)) {
+                Ok(usage) => self.usage = usage,
+                Err(_) => return self.failed_event(),
+            }
+        }
+
+        if let Some(choices) = chunk.get("choices") {
+            let Some(choices) = choices.as_array() else {
+                return self.failed_event();
+            };
+            if let Some(choice) = choices.first() {
+                let Some(choice) = choice.as_object() else {
+                    return self.failed_event();
+                };
+                if let Some(delta) = choice.get("delta") {
+                    let Some(delta) = delta.as_object() else {
+                        return self.failed_event();
+                    };
+                    if let Some(content) = delta.get("content") {
+                        match content {
+                            Value::String(content) if !content.is_empty() => {
+                                events.extend(self.text_delta_events(content));
+                            }
+                            Value::String(_) | Value::Null => {}
+                            _ => return self.failed_event(),
+                        }
+                    }
+                    if let Some(tool_calls) = delta.get("tool_calls") {
+                        let Some(tool_calls) = tool_calls.as_array() else {
+                            return self.failed_event();
+                        };
+                        for call in tool_calls {
+                            match self.tool_delta_events(call) {
+                                Ok(call_events) => events.extend(call_events),
+                                Err(()) => return self.failed_event(),
+                            }
+                        }
+                    }
+                }
+                if let Some(finish_reason) = choice.get("finish_reason") {
+                    if !finish_reason.is_null() {
+                        let Ok((status, incomplete_details)) =
+                            translate_finish_reason(Some(finish_reason))
+                        else {
+                            return self.failed_event();
+                        };
+                        self.status = match status {
+                            "completed" => StreamStatus::Completed,
+                            "incomplete" => StreamStatus::Incomplete,
+                            _ => return self.failed_event(),
+                        };
+                        self.incomplete_details = incomplete_details;
+                        self.finish_seen = true;
+                        match self.finish_events() {
+                            Ok(finish_events) => events.extend(finish_events),
+                            Err(()) => return self.failed_event(),
+                        }
+                    }
+                }
+            }
+        } else if !chunk.contains_key("usage") {
+            return self.failed_event();
+        }
+
+        if self.finish_seen && !self.usage.is_null() {
+            events.extend(self.complete_event());
+        }
+        events
+    }
+
+    pub fn output_items(&self) -> Vec<Value> {
+        let mut output = Vec::new();
+        if let Some(index) = self.text_output_index {
+            output.push((index, self.text_item()));
+        }
+        output.extend(self.tool_calls.values().map(|call| {
+            (
+                call.output_index,
+                streaming_tool_item(&self.response_id, call),
+            )
+        }));
+        output.sort_by_key(|(index, _)| *index);
+        output.into_iter().map(|(_, item)| item).collect()
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.terminal && self.status == StreamStatus::Completed
+    }
+
+    pub fn completed_response(&self) -> Value {
+        self.response_value(self.status.as_str())
+    }
+
+    pub fn fail(&mut self) -> Vec<String> {
+        self.failed_event()
+    }
+
+    fn start_events(&mut self) -> Vec<String> {
+        if self.started {
+            return Vec::new();
+        }
+        self.started = true;
+        let response = self.response_value("in_progress");
+        vec![
+            stream_event("response.created", json!({"response": response})),
+            stream_event(
+                "response.in_progress",
+                json!({"response": self.response_value("in_progress")}),
+            ),
+        ]
+    }
+
+    fn text_delta_events(&mut self, delta: &str) -> Vec<String> {
+        let output_index = *self.text_output_index.get_or_insert_with(|| {
+            let index = self.next_output_index;
+            self.next_output_index += 1;
+            index
+        });
+        let first = self.text.is_empty();
+        self.text.push_str(delta);
+        let mut events = Vec::new();
+        if first {
+            events.push(stream_event(
+                "response.output_item.added",
+                json!({
+                    "output_index": output_index,
+                    "item": {
+                        "id": format!("msg_{}", self.response_id),
+                        "type": "message",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": []
+                    }
+                }),
+            ));
+            events.push(stream_event(
+                "response.content_part.added",
+                json!({
+                    "item_id": format!("msg_{}", self.response_id),
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []}
+                }),
+            ));
+        }
+        events.push(stream_event(
+            "response.output_text.delta",
+            json!({
+                "item_id": format!("msg_{}", self.response_id),
+                "output_index": output_index,
+                "content_index": 0,
+                "delta": delta
+            }),
+        ));
+        events
+    }
+
+    fn tool_delta_events(&mut self, value: &Value) -> Result<Vec<String>, ()> {
+        let call = value.as_object().ok_or(())?;
+        let index = call.get("index").and_then(Value::as_u64).ok_or(())? as usize;
+        let function = call.get("function").and_then(Value::as_object);
+        let name_delta = function
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let arguments_delta = function
+            .and_then(|function| function.get("arguments"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default();
+
+        if !self.tool_calls.contains_key(&index) {
+            let Some(kind) = self.tool_kinds.get(name_delta).copied() else {
+                return Err(());
+            };
+            let output_index = self.next_output_index;
+            self.next_output_index += 1;
+            self.tool_calls.insert(
+                index,
+                StreamingToolCall {
+                    tool_index: index,
+                    output_index,
+                    call_id: call_id.to_string(),
+                    name: name_delta.to_string(),
+                    arguments: String::new(),
+                    kind,
+                    added: false,
+                    done: false,
+                },
+            );
+        }
+
+        let call = self.tool_calls.get_mut(&index).ok_or(())?;
+        if !call_id.is_empty() && call.call_id.is_empty() {
+            call.call_id.push_str(call_id);
+        }
+        if !name_delta.is_empty() && call.name != name_delta {
+            call.name.push_str(name_delta);
+        }
+        call.arguments.push_str(arguments_delta);
+        let item_id = call.kind.stream_item_id(&self.response_id, call.tool_index);
+        let mut events = Vec::new();
+        if !call.added {
+            call.added = true;
+            let item = match call.kind {
+                LocalToolKind::Function => json!({
+                    "id": item_id,
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "call_id": call.call_id,
+                    "name": call.name,
+                    "arguments": ""
+                }),
+                LocalToolKind::Custom => json!({
+                    "id": item_id,
+                    "type": "custom_tool_call",
+                    "status": "in_progress",
+                    "call_id": call.call_id,
+                    "name": call.name,
+                    "input": ""
+                }),
+            };
+            events.push(stream_event(
+                "response.output_item.added",
+                json!({"output_index": call.output_index, "item": item}),
+            ));
+        }
+        if !arguments_delta.is_empty() {
+            let event_type = call.kind.stream_delta_event();
+            events.push(stream_event(
+                event_type,
+                json!({
+                    "item_id": item_id,
+                    "output_index": call.output_index,
+                    "delta": arguments_delta
+                }),
+            ));
+        }
+        Ok(events)
+    }
+
+    fn finish_events(&mut self) -> Result<Vec<String>, ()> {
+        let mut events = Vec::new();
+        if let Some(output_index) = self.text_output_index {
+            if !self.text_done {
+                self.text_done = true;
+                let item_id = format!("msg_{}", self.response_id);
+                events.push(stream_event(
+                    "response.output_text.done",
+                    json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "text": self.text
+                    }),
+                ));
+                events.push(stream_event(
+                    "response.content_part.done",
+                    json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": self.text, "annotations": []}
+                    }),
+                ));
+                events.push(stream_event(
+                    "response.output_item.done",
+                    json!({"output_index": output_index, "item": self.text_item()}),
+                ));
+            }
+        }
+        for call in self.tool_calls.values_mut() {
+            if call.done {
+                continue;
+            }
+            let custom_input = match call.kind {
+                LocalToolKind::Function => String::new(),
+                LocalToolKind::Custom => custom_tool_input(&call.arguments).ok_or(())?,
+            };
+            call.done = true;
+            let item_id = call.kind.stream_item_id(&self.response_id, call.tool_index);
+            let done_value = match call.kind {
+                LocalToolKind::Function => json!({
+                    "item_id": item_id,
+                    "output_index": call.output_index,
+                    "arguments": call.arguments
+                }),
+                LocalToolKind::Custom => json!({
+                    "item_id": item_id,
+                    "output_index": call.output_index,
+                    "input": custom_input
+                }),
+            };
+            events.push(stream_event(call.kind.stream_done_event(), done_value));
+            events.push(stream_event(
+                "response.output_item.done",
+                json!({
+                    "output_index": call.output_index,
+                    "item": streaming_tool_item(&self.response_id, call)
+                }),
+            ));
+        }
+        Ok(events)
+    }
+
+    fn complete_event(&mut self) -> Vec<String> {
+        if self.terminal {
+            return Vec::new();
+        }
+        self.terminal = true;
+        if self.status == StreamStatus::InProgress {
+            self.status = StreamStatus::Completed;
+        }
+        let event_type = if self.status == StreamStatus::Incomplete {
+            "response.incomplete"
+        } else {
+            "response.completed"
+        };
+        vec![stream_event(
+            event_type,
+            json!({"response": self.response_value(self.status.as_str())}),
+        )]
+    }
+
+    fn failed_event(&mut self) -> Vec<String> {
+        if self.terminal {
+            return Vec::new();
+        }
+        self.terminal = true;
+        self.status = StreamStatus::Failed;
+        vec![stream_event(
+            "response.failed",
+            json!({"response": self.response_value("failed")}),
+        )]
+    }
+
+    fn response_value(&self, status: &str) -> Value {
+        let error = if status == "failed" {
+            json!({"code": "invalid_response", "message": "local model returned invalid response"})
+        } else {
+            Value::Null
+        };
+        json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": current_epoch_seconds(),
+            "status": status,
+            "background": false,
+            "error": error,
+            "incomplete_details": self.incomplete_details,
+            "instructions": null,
+            "max_output_tokens": null,
+            "model": self.public_model,
+            "output": self.output_items(),
+            "parallel_tool_calls": true,
+            "previous_response_id": null,
+            "reasoning": {"effort": null, "summary": null},
+            "store": false,
+            "temperature": null,
+            "text": {"format": {"type": "text"}, "verbosity": "low"},
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": null,
+            "truncation": "disabled",
+            "usage": self.usage
+        })
+    }
+
+    fn text_item(&self) -> Value {
+        json!({
+            "id": format!("msg_{}", self.response_id),
+            "type": "message",
+            "status": if self.text_done { "completed" } else { "in_progress" },
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": self.text,
+                "annotations": []
+            }]
+        })
+    }
+}
+
+fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Value {
+    match call.kind {
+        LocalToolKind::Function => json!({
+            "id": call.kind.stream_item_id(response_id, call.tool_index),
+            "type": "function_call",
+            "status": if call.done { "completed" } else { "in_progress" },
+            "call_id": call.call_id,
+            "name": call.name,
+            "arguments": call.arguments
+        }),
+        LocalToolKind::Custom => json!({
+            "id": call.kind.stream_item_id(response_id, call.tool_index),
+            "type": "custom_tool_call",
+            "status": if call.done { "completed" } else { "in_progress" },
+            "call_id": call.call_id,
+            "name": call.name,
+            "input": custom_tool_input(&call.arguments).unwrap_or_default()
+        }),
+    }
+}
+
+fn custom_tool_input(arguments: &str) -> Option<String> {
+    serde_json::from_str::<Value>(arguments)
+        .ok()?
+        .get("input")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn stream_event(event_type: &str, mut data: Value) -> String {
+    if let Some(data) = data.as_object_mut() {
+        data.insert("type".to_string(), Value::String(event_type.to_string()));
+    }
+    format!("event: {event_type}\ndata: {data}")
 }
 
 pub fn responses_to_chat(
@@ -790,7 +1333,199 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{LocalToolKind, ResponsesTranslationError, chat_to_responses, responses_to_chat};
+    use super::{
+        ChatToResponsesStream, LocalToolKind, ResponsesTranslationError, chat_to_responses,
+        responses_to_chat,
+    };
+
+    #[test]
+    fn chat_sse_translates_text_lifecycle_and_usage() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_stream".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+        let lines = [
+            r#"data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}]}"#,
+            r#"data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}"#,
+            r#"data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#,
+            "data: [DONE]",
+        ];
+
+        let events = lines
+            .into_iter()
+            .flat_map(|line| adapter.map_line(line))
+            .map(|event| {
+                let data = event
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap();
+                serde_json::from_str::<Value>(data).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let event_types = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            event_types,
+            [
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        assert_eq!(
+            adapter.completed_response()["model"],
+            "qwen3-coder-30b-local"
+        );
+        assert_eq!(adapter.completed_response()["usage"]["input_tokens"], 2);
+    }
+
+    #[test]
+    fn chat_sse_translates_function_and_custom_tool_lifecycles_once() {
+        let tool_kinds = BTreeMap::from([
+            ("calculate".to_string(), LocalToolKind::Function),
+            ("shell".to_string(), LocalToolKind::Custom),
+        ]);
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_tools".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            tool_kinds,
+        );
+        let chunks = [
+            json!({
+                "choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "id": "call_function", "function": {
+                        "name": "calculate", "arguments": "{\"x\":"
+                    }},
+                    {"index": 1, "id": "call_custom", "function": {
+                        "name": "shell", "arguments": "{\"input\":\"te"
+                    }}
+                ]}}]
+            }),
+            json!({
+                "choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "function": {"arguments": "1}"}},
+                    {"index": 1, "function": {"arguments": "xt\"}"}}
+                ]}}]
+            }),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+        let mut events = chunks
+            .into_iter()
+            .flat_map(|chunk| adapter.map_line(&format!("data: {chunk}")))
+            .collect::<Vec<_>>();
+        events.extend(adapter.map_line("data: [DONE]"));
+        let events = events
+            .iter()
+            .map(|event| {
+                let data = event
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap();
+                serde_json::from_str::<Value>(data).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.added")
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.done")
+                .count(),
+            2
+        );
+        let function_done = events
+            .iter()
+            .find(|event| event["type"] == "response.function_call_arguments.done")
+            .unwrap();
+        assert_eq!(function_done["arguments"], r#"{"x":1}"#);
+        let custom_done = events
+            .iter()
+            .find(|event| event["type"] == "response.custom_tool_call_input.done")
+            .unwrap();
+        assert_eq!(custom_done["input"], "text");
+    }
+
+    #[test]
+    fn chat_sse_malformed_json_fails_once() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_bad_stream".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+
+        let failed = adapter.map_line("data: {");
+
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].starts_with("event: response.failed\n"));
+        assert!(adapter.map_line("data: [DONE]").is_empty());
+    }
+
+    #[test]
+    fn chat_sse_invalid_custom_tool_input_fails_once() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_bad_custom".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("shell".to_string(), LocalToolKind::Custom)]),
+        );
+        adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_custom",
+                "function": {"name": "shell", "arguments": "not-json"}
+            }]}}]})
+        ));
+
+        let terminal =
+            adapter.map_line(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+        assert!(adapter.map_line("data: [DONE]").is_empty());
+    }
+
+    #[test]
+    fn chat_sse_length_finish_emits_incomplete_terminal() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_incomplete_stream".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+        adapter.map_line(
+            r#"data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#,
+        );
+
+        let terminal = adapter.map_line(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#,
+        );
+        let terminal = terminal
+            .last()
+            .and_then(|event| event.lines().find_map(|line| line.strip_prefix("data: ")))
+            .and_then(|data| serde_json::from_str::<Value>(data).ok())
+            .unwrap();
+
+        assert_eq!(terminal["type"], "response.incomplete");
+        assert_eq!(terminal["response"]["status"], "incomplete");
+        assert!(!adapter.is_completed());
+        assert!(adapter.map_line("data: [DONE]").is_empty());
+    }
 
     #[test]
     fn chat_response_translates_text_function_call_and_usage() {

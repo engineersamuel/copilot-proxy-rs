@@ -232,12 +232,129 @@ async fn handle_local_responses(
         Err(error) => return openai_responses_translation_error(error).into_response(),
     };
     if stream {
-        return openai_error(
-            http::StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "local Responses streaming is not yet supported",
-        )
-        .into_response();
+        let upstream = match state.local.stream_chat(&target, translated.chat_body).await {
+            Ok(upstream) => upstream,
+            Err(error) => return openai_local_error(error).into_response(),
+        };
+        let is_event_stream = upstream
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|media_type| media_type.trim() == "text/event-stream")
+            });
+        if !is_event_stream {
+            return openai_error(
+                http::StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            )
+            .into_response();
+        }
+
+        let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+        let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::local::responses::ChatToResponsesStream::new(
+                response_id.clone(),
+                target.public_id.clone(),
+                translated.tool_kinds,
+            ),
+        ));
+        let mapper_adapter = adapter.clone();
+        let mapped = crate::http::sse::map_sse_lines_many(upstream.bytes_stream(), move |line| {
+            mapper_adapter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .map_line(line)
+        });
+        let cache_state = state.clone();
+        let cache_response_id = response_id;
+        let mut cache_payload = Some((translated.input_items, identity));
+        let byte_stream = async_stream::stream! {
+            futures_util::pin_mut!(mapped);
+            while let Some(event) = mapped.next().await {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(_) => {
+                        let failed_events = adapter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .fail();
+                        for failed_event in failed_events {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                                "{failed_event}\n\n"
+                            )));
+                        }
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                            b"data: [DONE]\n\n",
+                        ));
+                        return;
+                    }
+                };
+                let terminal_event = std::str::from_utf8(&event).ok().and_then(|text| {
+                    if text.starts_with("event: response.completed\n") {
+                        Some(true)
+                    } else if text.starts_with("event: response.incomplete\n")
+                        || text.starts_with("event: response.failed\n")
+                    {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+                yield Ok::<Bytes, std::io::Error>(event);
+                let Some(completed_event) = terminal_event else {
+                    continue;
+                };
+                let (completed, output) = {
+                    let adapter = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        completed_event && adapter.is_completed(),
+                        adapter.output_items(),
+                    )
+                };
+                if completed {
+                    if let Some((input, identity)) = cache_payload.take() {
+                        let has_tool_calls = output.iter().any(|item| {
+                            item.get("type")
+                                .and_then(Value::as_str)
+                                .is_some_and(|kind| {
+                                    matches!(kind, "function_call" | "custom_tool_call")
+                                })
+                        });
+                        cache_state
+                            .responses
+                            .cache_response_state(
+                                &cache_response_id,
+                                input,
+                                output,
+                                identity,
+                                has_tool_calls,
+                            )
+                            .await;
+                    }
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+            let failed_events = adapter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .fail();
+            for failed_event in failed_events {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{failed_event}\n\n")));
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+        };
+        return Response::builder()
+            .header(http::header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(byte_stream))
+            .unwrap();
     }
 
     let chat = match state.local.post_chat(&target, translated.chat_body).await {
