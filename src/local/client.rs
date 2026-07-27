@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use reqwest::{Client, Response};
 use serde_json::{Map, Value};
 
 use crate::models::LocalModelTarget;
 
 const MAX_ERROR_CHARS: usize = 4096;
+const MAX_ERROR_BYTES: usize = 4 * MAX_ERROR_CHARS;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, thiserror::Error)]
@@ -37,11 +39,14 @@ impl LocalBackend {
         target: &LocalModelTarget,
         body: Map<String, Value>,
     ) -> Result<Value, LocalModelError> {
-        self.send(target, body)
+        let response_body = self
+            .send(target, body)
             .await?
-            .json()
+            .bytes()
             .await
-            .map_err(|_| LocalModelError::InvalidJson)
+            .map_err(map_transport_error)?;
+
+        serde_json::from_slice(&response_body).map_err(|_| LocalModelError::InvalidJson)
     }
 
     pub async fn stream_chat(
@@ -94,7 +99,7 @@ async fn checked_response(response: Response) -> Result<Response, LocalModelErro
         return Ok(response);
     }
 
-    let detail = response.text().await.unwrap_or_default();
+    let detail = read_error_detail(response).await?;
     let detail = if detail.is_empty() {
         status
             .canonical_reason()
@@ -107,4 +112,22 @@ async fn checked_response(response: Response) -> Result<Response, LocalModelErro
         status: status.as_u16(),
         detail,
     })
+}
+
+async fn read_error_detail(response: Response) -> Result<String, LocalModelError> {
+    let mut body = Vec::with_capacity(MAX_ERROR_BYTES);
+    let mut chunks = response.bytes_stream();
+    while body.len() < MAX_ERROR_BYTES {
+        let Some(chunk) = chunks.next().await else {
+            break;
+        };
+        let chunk = chunk.map_err(map_transport_error)?;
+        let remaining = MAX_ERROR_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+
+    Ok(String::from_utf8_lossy(&body)
+        .chars()
+        .take(MAX_ERROR_CHARS)
+        .collect())
 }
