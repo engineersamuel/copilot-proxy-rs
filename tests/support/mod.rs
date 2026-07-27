@@ -73,7 +73,7 @@ impl Default for MockState {
 
 #[derive(Debug, Clone)]
 pub struct MockServer {
-    base_url: String,
+    pub base_url: String,
     state: MockState,
 }
 

@@ -11,6 +11,7 @@ use copilot_proxy_rs::auth::CopilotAuth;
 use copilot_proxy_rs::config::{AppConfig, EnvSource};
 use copilot_proxy_rs::copilot::client::{CopilotBackend, CopilotEndpoints};
 use copilot_proxy_rs::http::router;
+use copilot_proxy_rs::local::LocalBackend;
 use copilot_proxy_rs::models::ModelRegistry;
 use copilot_proxy_rs::state::AppState;
 
@@ -30,6 +31,7 @@ async fn start_proxy_with_config(config: AppConfig) -> SocketAddr {
         backend: fixture.state.backend,
         models: fixture.state.models,
         copilot: fixture.state.copilot,
+        local: Arc::new(LocalBackend::new()),
         responses: fixture.state.responses,
     };
     start_proxy(state).await

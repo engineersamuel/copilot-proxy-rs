@@ -3,6 +3,7 @@ use axum::extract::rejection::BytesRejection;
 use http::{HeaderMap, StatusCode};
 
 use crate::errors::{anthropic_error, openai_error};
+use crate::local::LocalModelError;
 use crate::request_body::RequestBodyError;
 
 pub(crate) fn request_body_rejection_details(
@@ -85,6 +86,34 @@ pub(crate) fn openai_copilot_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
             other.to_string(),
+        ),
+    }
+}
+
+#[expect(dead_code, reason = "wired into local chat routing in the next task")]
+pub(crate) fn openai_local_error(
+    error: LocalModelError,
+) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
+    match error {
+        LocalModelError::Timeout => openai_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "server_error",
+            "local model request timed out",
+        ),
+        LocalModelError::Transport => openai_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model connection failed",
+        ),
+        LocalModelError::Http { status, detail } => openai_error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            "server_error",
+            detail,
+        ),
+        LocalModelError::InvalidJson => openai_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model returned invalid JSON",
         ),
     }
 }
