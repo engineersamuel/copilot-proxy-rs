@@ -42,6 +42,57 @@ fn defaults_match_copilot_proxy_rs() {
 }
 
 #[test]
+fn local_models_default_to_empty() {
+    assert!(AppConfig::default().local_models.is_empty());
+}
+
+#[test]
+fn local_models_load_from_json() {
+    let temp = repo_tempdir("config-local-model-");
+    fs::write(
+        temp.path().join("config.json"),
+        r#"{
+          "local_models": {
+            "qwen3-coder-30b-local": {
+              "base_url": "http://100.98.223.125:8080/v1",
+              "upstream_model": "models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+    let local = config.local_models.get("qwen3-coder-30b-local").unwrap();
+
+    assert_eq!(local.base_url, "http://100.98.223.125:8080/v1");
+    assert_eq!(
+        local.upstream_model,
+        r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    );
+}
+
+#[test]
+fn invalid_local_model_names_the_id_and_field() {
+    let temp = repo_tempdir("config-invalid-local-model-");
+    fs::write(
+        temp.path().join("config.json"),
+        r#"{"local_models":{"qwen-local":{"base_url":"ftp://host/v1","upstream_model":"model.gguf"}}}"#,
+    )
+    .unwrap();
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    let error = AppConfig::load_from_env(&env).unwrap_err().to_string();
+
+    assert!(error.contains("qwen-local"));
+    assert!(error.contains("base_url"));
+    assert!(error.contains("http or https"));
+}
+
+#[test]
 fn loopback_bind_is_publication_safe_by_default() {
     let config = AppConfig {
         host: "127.0.0.1".to_string(),
