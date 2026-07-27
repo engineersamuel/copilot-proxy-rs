@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
@@ -37,12 +37,7 @@ pub fn responses_to_chat(
         let instructions = required_string(&instructions, "instructions")?;
         messages.push(json!({"role": "system", "content": instructions}));
     }
-    messages.extend(
-        input_items
-            .iter()
-            .map(input_item_to_chat_message)
-            .collect::<Result<Vec<_>, _>>()?,
-    );
+    messages.extend(translate_input_items(&input_items)?);
 
     let mut tool_kinds = BTreeMap::new();
     let tools = body
@@ -51,7 +46,7 @@ pub fn responses_to_chat(
         .transpose()?;
     let tool_choice = body
         .remove("tool_choice")
-        .map(translate_tool_choice)
+        .map(|choice| translate_tool_choice(choice, &tool_kinds))
         .transpose()?;
 
     let mut chat_body = Map::new();
@@ -100,8 +95,8 @@ fn normalize_input(input: Option<Value>) -> Result<Vec<Value>, ResponsesTranslat
             "content": [{"type": "input_text", "text": text}]
         })]),
         Some(Value::Array(items)) => Ok(items),
-        Some(value) => Err(ResponsesTranslationError::UnsupportedInput(
-            value_kind(&value).to_string(),
+        Some(_) => Err(ResponsesTranslationError::InvalidRequest(
+            "input must be a string or array".to_string(),
         )),
         None => Err(ResponsesTranslationError::InvalidRequest(
             "missing input".to_string(),
@@ -109,7 +104,75 @@ fn normalize_input(input: Option<Value>) -> Result<Vec<Value>, ResponsesTranslat
     }
 }
 
-fn input_item_to_chat_message(item: &Value) -> Result<Value, ResponsesTranslationError> {
+fn translate_input_items(input_items: &[Value]) -> Result<Vec<Value>, ResponsesTranslationError> {
+    let mut messages = Vec::new();
+    let mut pending_tool_calls = Vec::new();
+    let mut call_ids = BTreeSet::new();
+    let mut output_call_ids = BTreeSet::new();
+    for item in input_items {
+        let (object, item_type) = input_item(item)?;
+        match item_type {
+            "function_call" => {
+                register_call_id(object, &mut call_ids)?;
+                pending_tool_calls.push(translate_function_call(object)?);
+            }
+            "custom_tool_call" => {
+                register_call_id(object, &mut call_ids)?;
+                pending_tool_calls.push(translate_custom_tool_call(object)?);
+            }
+            "message" => {
+                flush_tool_calls(&mut messages, &mut pending_tool_calls);
+                messages.push(translate_message(object)?);
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                validate_output_call_id(object, &call_ids, &mut output_call_ids)?;
+                flush_tool_calls(&mut messages, &mut pending_tool_calls);
+                messages.push(translate_tool_call_output(object)?);
+            }
+            unsupported => {
+                return Err(ResponsesTranslationError::UnsupportedInput(
+                    unsupported.to_string(),
+                ));
+            }
+        }
+    }
+    flush_tool_calls(&mut messages, &mut pending_tool_calls);
+    Ok(messages)
+}
+
+fn register_call_id(
+    call: &Map<String, Value>,
+    call_ids: &mut BTreeSet<String>,
+) -> Result<(), ResponsesTranslationError> {
+    let call_id = required_field_string(call, "call_id")?;
+    if !call_ids.insert(call_id.to_string()) {
+        return Err(ResponsesTranslationError::InvalidRequest(format!(
+            "duplicate tool call id: {call_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_output_call_id(
+    output: &Map<String, Value>,
+    call_ids: &BTreeSet<String>,
+    output_call_ids: &mut BTreeSet<String>,
+) -> Result<(), ResponsesTranslationError> {
+    let call_id = required_field_string(output, "call_id")?;
+    if !call_ids.contains(call_id) {
+        return Err(ResponsesTranslationError::InvalidRequest(format!(
+            "unmatched tool output call id: {call_id}"
+        )));
+    }
+    if !output_call_ids.insert(call_id.to_string()) {
+        return Err(ResponsesTranslationError::InvalidRequest(format!(
+            "duplicate tool output call id: {call_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn input_item(item: &Value) -> Result<(&Map<String, Value>, &str), ResponsesTranslationError> {
     let object = item
         .as_object()
         .ok_or_else(|| ResponsesTranslationError::UnsupportedInput(value_kind(item).to_string()))?;
@@ -122,14 +185,15 @@ fn input_item_to_chat_message(item: &Value) -> Result<Value, ResponsesTranslatio
             ));
         }
     };
-    match item_type {
-        "message" => translate_message(object),
-        "function_call" => translate_function_call(object),
-        "function_call_output" | "custom_tool_call_output" => translate_tool_call_output(object),
-        "custom_tool_call" => translate_custom_tool_call(object),
-        unsupported => Err(ResponsesTranslationError::UnsupportedInput(
-            unsupported.to_string(),
-        )),
+    Ok((object, item_type))
+}
+
+fn flush_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+    if !pending_tool_calls.is_empty() {
+        messages.push(json!({
+            "role": "assistant",
+            "tool_calls": std::mem::take(pending_tool_calls)
+        }));
     }
 }
 
@@ -180,12 +244,9 @@ fn translate_function_call(call: &Map<String, Value>) -> Result<Value, Responses
     let name = required_field_string(call, "name")?;
     let arguments = required_field_string(call, "arguments")?;
     Ok(json!({
-        "role": "assistant",
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": name, "arguments": arguments}
-        }]
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments}
     }))
 }
 
@@ -197,12 +258,9 @@ fn translate_custom_tool_call(
     let input = required_field_string(call, "input")?;
     let arguments = json!({"input": input}).to_string();
     Ok(json!({
-        "role": "assistant",
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": name, "arguments": arguments}
-        }]
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments}
     }))
 }
 
@@ -213,15 +271,39 @@ fn translate_tool_call_output(
     let content = output.get("output").ok_or_else(|| {
         ResponsesTranslationError::InvalidRequest("tool output missing output".to_string())
     })?;
-    let content = match content {
-        Value::String(text) => text.clone(),
-        value => value.to_string(),
-    };
+    let content = translate_tool_output_content(content)?;
     Ok(json!({
         "role": "tool",
         "tool_call_id": call_id,
         "content": content
     }))
+}
+
+fn translate_tool_output_content(output: &Value) -> Result<String, ResponsesTranslationError> {
+    match output {
+        Value::String(text) => Ok(text.clone()),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|part| {
+                let part = part.as_object().ok_or_else(|| {
+                    ResponsesTranslationError::InvalidRequest(
+                        "tool output content block must be an object".to_string(),
+                    )
+                })?;
+                let part_type = required_field_string(part, "type")?;
+                if !matches!(part_type, "input_text" | "output_text" | "text") {
+                    return Err(ResponsesTranslationError::InvalidRequest(format!(
+                        "unsupported tool output content type: {part_type}"
+                    )));
+                }
+                required_field_string(part, "text").map(str::to_string)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|text| text.join("")),
+        _ => Err(ResponsesTranslationError::InvalidRequest(
+            "tool output must be a string or array".to_string(),
+        )),
+    }
 }
 
 fn translate_tools(
@@ -268,7 +350,15 @@ fn translate_tool(
                 );
             }
             function.insert("parameters".to_string(), parameters.clone());
-            tool_kinds.insert(name.to_string(), LocalToolKind::Function);
+            if let Some(strict) = tool.get("strict") {
+                let strict = strict.as_bool().ok_or_else(|| {
+                    ResponsesTranslationError::InvalidRequest(format!(
+                        "function tool {name} strict must be a boolean"
+                    ))
+                })?;
+                function.insert("strict".to_string(), Value::Bool(strict));
+            }
+            register_tool_kind(tool_kinds, name, LocalToolKind::Function)?;
             Ok(json!({"type": "function", "function": function}))
         }
         "custom" | "freeform" => {
@@ -278,7 +368,7 @@ fn translate_tool(
                 .map(|value| required_string(value, "tool description"))
                 .transpose()?
                 .unwrap_or_default();
-            tool_kinds.insert(name.to_string(), LocalToolKind::Custom);
+            register_tool_kind(tool_kinds, name, LocalToolKind::Custom)?;
             Ok(json!({
                 "type": "function",
                 "function": {
@@ -302,14 +392,53 @@ fn translate_tool(
     }
 }
 
-fn translate_tool_choice(choice: Value) -> Result<Value, ResponsesTranslationError> {
+fn register_tool_kind(
+    tool_kinds: &mut BTreeMap<String, LocalToolKind>,
+    name: &str,
+    kind: LocalToolKind,
+) -> Result<(), ResponsesTranslationError> {
+    if tool_kinds.insert(name.to_string(), kind).is_some() {
+        return Err(ResponsesTranslationError::InvalidRequest(format!(
+            "duplicate tool name: {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn translate_tool_choice(
+    choice: Value,
+    tool_kinds: &BTreeMap<String, LocalToolKind>,
+) -> Result<Value, ResponsesTranslationError> {
     match choice {
-        Value::String(choice) => Ok(Value::String(choice)),
+        Value::String(choice) if matches!(choice.as_str(), "auto" | "none" | "required") => {
+            Ok(Value::String(choice))
+        }
+        Value::String(choice) => Err(ResponsesTranslationError::InvalidRequest(format!(
+            "invalid tool_choice string: {choice}"
+        ))),
         Value::Object(choice) => {
             let choice_type = required_field_string(&choice, "type")?;
             match choice_type {
                 "function" | "custom" | "freeform" => {
                     let name = required_field_string(&choice, "name")?;
+                    let expected_kind = if choice_type == "function" {
+                        LocalToolKind::Function
+                    } else {
+                        LocalToolKind::Custom
+                    };
+                    match tool_kinds.get(name) {
+                        None => {
+                            return Err(ResponsesTranslationError::InvalidRequest(format!(
+                                "tool_choice references unknown tool: {name}"
+                            )));
+                        }
+                        Some(kind) if *kind != expected_kind => {
+                            return Err(ResponsesTranslationError::InvalidRequest(format!(
+                                "tool_choice kind mismatch for tool: {name}"
+                            )));
+                        }
+                        Some(_) => {}
+                    }
                     Ok(json!({"type": "function", "function": {"name": name}}))
                 }
                 unsupported => Err(ResponsesTranslationError::UnsupportedTool(
@@ -545,6 +674,424 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             ResponsesTranslationError::InvalidRequest("missing required field type".to_string())
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_malformed_top_level_input() {
+        let result = responses_to_chat(
+            json!({"model": "local", "input": {"unexpected": true}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "input must be a string or array".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_missing_input() {
+        let result = responses_to_chat(
+            json!({"model": "local"}).as_object().unwrap().clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest("missing input".to_string())
+        );
+    }
+
+    #[test]
+    fn responses_request_groups_consecutive_calls_before_ordered_outputs_and_messages() {
+        let translated = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": "call_2",
+                        "name": "second",
+                        "input": "run"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "one"
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_2",
+                        "output": "two"
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "next"}]
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        )
+        .unwrap();
+
+        assert_eq!(
+            translated.chat_body["messages"],
+            json!([
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "first", "arguments": "{}"}
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {
+                                "name": "second",
+                                "arguments": "{\"input\":\"run\"}"
+                            }
+                        }
+                    ]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "one"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "two"},
+                {"role": "user", "content": "next"}
+            ])
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_duplicate_call_ids() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": "call_1",
+                        "name": "second",
+                        "input": "run"
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest("duplicate tool call id: call_1".to_string())
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_unmatched_tool_outputs() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": "call_missing",
+                    "output": "orphaned"
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "unmatched tool output call id: call_missing".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_duplicate_tool_outputs() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "one"
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_1",
+                        "output": "again"
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "duplicate tool output call id: call_1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_flattens_multipart_tool_outputs_in_order() {
+        let translated = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": [
+                            {"type": "input_text", "text": "one"},
+                            {"type": "output_text", "text": " two"},
+                            {"type": "text", "text": " three"}
+                        ]
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        )
+        .unwrap();
+
+        assert_eq!(
+            translated.chat_body["messages"][1],
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "one two three"})
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_unsupported_tool_output_blocks() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": [{"type": "input_image", "image_url": "data:image/png"}]
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "unsupported tool output content type: input_image".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_duplicate_tool_names_across_kinds() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "shared",
+                        "parameters": {"type": "object"}
+                    },
+                    {"type": "custom", "name": "shared"}
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest("duplicate tool name: shared".to_string())
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_unknown_named_tool_choice() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tools": [{
+                    "type": "function",
+                    "name": "known",
+                    "parameters": {"type": "object"}
+                }],
+                "tool_choice": {"type": "function", "name": "missing"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "tool_choice references unknown tool: missing".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_named_tool_choice_kind_mismatch() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tools": [{
+                    "type": "function",
+                    "name": "known",
+                    "parameters": {"type": "object"}
+                }],
+                "tool_choice": {"type": "custom", "name": "known"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "tool_choice kind mismatch for tool: known".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_copies_boolean_function_tool_strict() {
+        let translated = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tools": [{
+                    "type": "function",
+                    "name": "known",
+                    "parameters": {"type": "object"},
+                    "strict": true
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        )
+        .unwrap();
+
+        assert_eq!(translated.chat_body["tools"][0]["function"]["strict"], true);
+    }
+
+    #[test]
+    fn responses_request_rejects_non_boolean_function_tool_strict() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tools": [{
+                    "type": "function",
+                    "name": "known",
+                    "parameters": {"type": "object"},
+                    "strict": "true"
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "function tool known strict must be a boolean".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_arbitrary_string_tool_choice() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": "hello",
+                "tool_choice": "sometimes"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "invalid tool_choice string: sometimes".to_string()
+            )
         );
     }
 }

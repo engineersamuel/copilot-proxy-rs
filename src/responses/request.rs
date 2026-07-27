@@ -45,13 +45,13 @@ pub async fn expand_previous_response(
         cache_status = PreviousResponseCacheStatus::Miss;
         if let Some(entry) = store.get_cached_response_state(&previous).await {
             cache_status = PreviousResponseCacheStatus::Hit;
-            let mut expanded = entry.transcript;
             previous_identity = Some(entry.identity);
             if let Some(input) = normalize_input_items(body.get("input")) {
+                let mut expanded = entry.transcript;
                 expanded.extend(input);
+                body.insert("input".to_string(), Value::Array(expanded));
+                body.remove("previous_response_id");
             }
-            body.insert("input".to_string(), Value::Array(expanded));
-            body.remove("previous_response_id");
         }
     }
     ExpandedResponsesInput {
@@ -335,5 +335,57 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_preserves_malformed_current_input_on_cache_hit() {
+        let store = ResponsesStateStore::default();
+        let identity = ResponsesTurnIdentity {
+            interaction_id: "iid-malformed".to_string(),
+            agent_task_id: "atid-malformed".to_string(),
+        };
+        store
+            .cache_response_state(
+                "resp_malformed",
+                vec![json!({"role": "user", "content": "old"})],
+                vec![json!({"role": "assistant", "content": "old reply"})],
+                identity.clone(),
+                false,
+            )
+            .await;
+        let body = parse_body(
+            r#"{"model":"local","input":{"unexpected":true},"previous_response_id":"resp_malformed"}"#,
+        );
+
+        let expanded = expand_previous_response(&store, body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, Some(identity));
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_preserves_missing_current_input_on_cache_hit() {
+        let store = ResponsesStateStore::default();
+        let identity = ResponsesTurnIdentity {
+            interaction_id: "iid-missing".to_string(),
+            agent_task_id: "atid-missing".to_string(),
+        };
+        store
+            .cache_response_state(
+                "resp_missing_input",
+                vec![json!({"role": "user", "content": "old"})],
+                vec![json!({"role": "assistant", "content": "old reply"})],
+                identity.clone(),
+                false,
+            )
+            .await;
+        let body = parse_body(r#"{"model":"local","previous_response_id":"resp_missing_input"}"#);
+
+        let expanded = expand_previous_response(&store, body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, Some(identity));
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
     }
 }
