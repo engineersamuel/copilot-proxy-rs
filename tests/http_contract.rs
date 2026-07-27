@@ -163,6 +163,49 @@ async fn configured_local_model_is_listed_and_resolved() {
 }
 
 #[tokio::test]
+async fn configured_local_model_capabilities_match_catalog() {
+    let mut local_models = qwen_local_models();
+    local_models.insert(
+        "gpt-5.6-sol".to_string(),
+        LocalModelConfig {
+            base_url: "http://127.0.0.1:8080/v1".to_string(),
+            upstream_model: "local-gpt-5.6-sol".to_string(),
+        },
+    );
+    let registry = ModelRegistry::with_models(BTreeMap::new(), local_models);
+    let mut capabilities = Vec::new();
+
+    for model in [
+        "qwen3-coder-30b-local",
+        "github-copilot/qwen3-coder-30b-local",
+        "gpt-5.6-sol",
+    ] {
+        capabilities.push((
+            model,
+            registry.model_supports_chat_completions_api(model).await,
+            registry.model_supports_responses_api(model).await,
+            registry.model_supports_responses_ws(model).await,
+            registry.model_supports_messages_api(model).await,
+        ));
+    }
+
+    assert_eq!(
+        capabilities,
+        vec![
+            ("qwen3-coder-30b-local", true, true, false, false),
+            (
+                "github-copilot/qwen3-coder-30b-local",
+                true,
+                true,
+                false,
+                false,
+            ),
+            ("gpt-5.6-sol", true, true, false, false),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn health_returns_status_version_backend_and_runtime() {
     let app = router(AppState::new(AppConfig::default()));
     let response = app

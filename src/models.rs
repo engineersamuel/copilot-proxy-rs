@@ -38,6 +38,7 @@ pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
 
 const GPT56_MODEL_CREATED: u64 = 1_783_555_200;
 const GPT56_SUPPORTED_ENDPOINTS: &[&str] = &["/responses", "ws:/responses"];
+const LOCAL_MODEL_SUPPORTED_ENDPOINTS: &[&str] = &["/chat/completions", "/responses"];
 const GPT56_REASONING_EFFORTS: &[EffortLevel] = &[
     EffortLevel::Low,
     EffortLevel::Medium,
@@ -428,6 +429,13 @@ fn local_model_entry(model_id: &str) -> ModelEntry {
     }
 }
 
+fn local_supported_endpoints() -> Vec<String> {
+    LOCAL_MODEL_SUPPORTED_ENDPOINTS
+        .iter()
+        .map(|endpoint| (*endpoint).to_string())
+        .collect()
+}
+
 fn local_rich_model_entry(model_id: &str) -> CodexModelEntry {
     CodexModelEntry {
         slug: model_id.to_string(),
@@ -466,7 +474,7 @@ fn local_rich_model_entry(model_id: &str) -> CodexModelEntry {
         supports_search_tool: false,
         use_responses_lite: false,
         context_window_modes: Vec::new(),
-        supported_endpoints: vec!["/chat/completions".to_string(), "/responses".to_string()],
+        supported_endpoints: local_supported_endpoints(),
         source: ModelMetadataSource::Local,
     }
 }
@@ -764,6 +772,9 @@ impl ModelRegistry {
     }
 
     async fn supported_endpoints(&self, model: &str) -> Vec<String> {
+        if self.configured_local_target(model).is_some() {
+            return local_supported_endpoints();
+        }
         let model = canonical_model_id(model);
         let inner = self.inner.read().await;
         let dynamic: Vec<String> = inner
