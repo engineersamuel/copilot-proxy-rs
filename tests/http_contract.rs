@@ -13,12 +13,22 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use copilot_proxy_rs::auth::{AuthEndpoints, CopilotAuth};
-use copilot_proxy_rs::config::{AppConfig, EnvSource};
+use copilot_proxy_rs::config::{AppConfig, EnvSource, LocalModelConfig};
 use copilot_proxy_rs::copilot::client::{CopilotBackend, CopilotEndpoints};
 use copilot_proxy_rs::http::router;
-use copilot_proxy_rs::models::ModelRegistry;
+use copilot_proxy_rs::models::{ModelMetadataSource, ModelRegistry, ModelTarget};
 use copilot_proxy_rs::models::{infer_owned_by, model_list_for_snapshot};
 use copilot_proxy_rs::state::{AppState, BackendKind, BackendSnapshot};
+
+fn qwen_local_models() -> BTreeMap<String, LocalModelConfig> {
+    BTreeMap::from([(
+        "qwen3-coder-30b-local".to_string(),
+        LocalModelConfig {
+            base_url: "http://100.98.223.125:8080/v1".to_string(),
+            upstream_model: r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf".to_string(),
+        },
+    )])
+}
 
 fn repo_tempdir(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -114,6 +124,42 @@ fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
         sol.supported_endpoints,
         vec!["/responses".to_string(), "ws:/responses".to_string()]
     );
+}
+
+#[tokio::test]
+async fn configured_local_model_is_listed_and_resolved() {
+    let registry = ModelRegistry::with_models(BTreeMap::new(), qwen_local_models());
+    let response = registry
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+
+    assert!(
+        response
+            .data
+            .iter()
+            .any(|model| model.id == "qwen3-coder-30b-local")
+    );
+    let rich = response
+        .models
+        .iter()
+        .find(|model| model.slug == "qwen3-coder-30b-local")
+        .unwrap();
+    assert_eq!(rich.source, ModelMetadataSource::Local);
+    assert_eq!(
+        rich.supported_endpoints,
+        vec!["/chat/completions", "/responses"]
+    );
+
+    let target = registry.resolve_target("qwen3-coder-30b-local").await;
+    assert!(matches!(
+        target,
+        ModelTarget::Local(ref local)
+            if local.public_id == "qwen3-coder-30b-local"
+                && local.upstream_model == r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    ));
 }
 
 #[tokio::test]

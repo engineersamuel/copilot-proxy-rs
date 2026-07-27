@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::config::LocalModelConfig;
 use crate::state::BackendSnapshot;
 
 pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
@@ -149,6 +150,26 @@ pub struct ContextWindowMode {
 pub enum ModelMetadataSource {
     Dynamic,
     Static,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalModelTarget {
+    pub public_id: String,
+    pub base_url: String,
+    pub upstream_model: String,
+}
+
+impl LocalModelTarget {
+    pub fn chat_completions_url(&self) -> String {
+        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelTarget {
+    Copilot { model_id: String },
+    Local(LocalModelTarget),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -384,6 +405,7 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         comp_hash: match source {
             ModelMetadataSource::Dynamic => "dynamic",
             ModelMetadataSource::Static => "static",
+            ModelMetadataSource::Local => "local",
         }
         .to_string(),
         effective_context_window_percent: 95,
@@ -394,6 +416,58 @@ fn rich_model_entry(model_id: &str, dynamic_models: &[serde_json::Value]) -> Cod
         context_window_modes,
         supported_endpoints,
         source,
+    }
+}
+
+fn local_model_entry(model_id: &str) -> ModelEntry {
+    ModelEntry {
+        id: model_id.to_string(),
+        object: "model",
+        created: 1_700_000_000,
+        owned_by: "local".to_string(),
+    }
+}
+
+fn local_rich_model_entry(model_id: &str) -> CodexModelEntry {
+    CodexModelEntry {
+        slug: model_id.to_string(),
+        display_name: display_name(model_id),
+        description: format!("Local OpenAI-compatible model {model_id}"),
+        default_reasoning_level: None,
+        supported_reasoning_levels: Vec::new(),
+        shell_type: "shell_command".to_string(),
+        visibility: "list".to_string(),
+        supported_in_api: true,
+        priority: 100,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        availability_nux: None,
+        upgrade: None,
+        base_instructions: String::new(),
+        model_messages: serde_json::json!({}),
+        supports_reasoning_summaries: false,
+        default_reasoning_summary: "none".to_string(),
+        support_verbosity: false,
+        default_verbosity: "low".to_string(),
+        apply_patch_tool_type: "freeform".to_string(),
+        web_search_tool_type: "unsupported".to_string(),
+        truncation_policy: serde_json::json!({
+            "mode": "tokens",
+            "limit": 10000
+        }),
+        supports_parallel_tool_calls: true,
+        supports_image_detail_original: false,
+        context_window: None,
+        max_context_window: None,
+        comp_hash: "local".to_string(),
+        effective_context_window_percent: 95,
+        experimental_supported_tools: Vec::new(),
+        input_modalities: vec!["text".to_string()],
+        supports_search_tool: false,
+        use_responses_lite: false,
+        context_window_modes: Vec::new(),
+        supported_endpoints: vec!["/chat/completions".to_string(), "/responses".to_string()],
+        source: ModelMetadataSource::Local,
     }
 }
 
@@ -505,6 +579,7 @@ fn is_sensitive_metadata_key(key: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct ModelRegistry {
     inner: RwLock<ModelRegistryInner>,
+    local_models: BTreeMap<String, LocalModelConfig>,
 }
 
 #[derive(Debug, Default)]
@@ -528,11 +603,40 @@ impl ModelRegistry {
     }
 
     pub fn with_copilot_overrides(overrides: BTreeMap<String, String>) -> Self {
+        Self::with_models(overrides, BTreeMap::new())
+    }
+
+    pub fn with_models(
+        copilot_overrides: BTreeMap<String, String>,
+        local_models: BTreeMap<String, LocalModelConfig>,
+    ) -> Self {
         Self {
             inner: RwLock::new(ModelRegistryInner {
-                copilot_overrides: overrides,
+                copilot_overrides,
                 ..Default::default()
             }),
+            local_models,
+        }
+    }
+
+    pub fn configured_local_target(&self, model: &str) -> Option<LocalModelTarget> {
+        let public_id = strip_model_prefix(model);
+        self.local_models
+            .get(public_id)
+            .map(|config| LocalModelTarget {
+                public_id: public_id.to_string(),
+                base_url: config.base_url.clone(),
+                upstream_model: config.upstream_model.clone(),
+            })
+    }
+
+    pub async fn resolve_target(&self, model: &str) -> ModelTarget {
+        if let Some(local) = self.configured_local_target(model) {
+            ModelTarget::Local(local)
+        } else {
+            ModelTarget::Copilot {
+                model_id: self.get_copilot_openai_model(model).await,
+            }
         }
     }
 
@@ -568,10 +672,24 @@ impl ModelRegistry {
         let inner = self.inner.read().await;
         let dynamic_models = inner.models.clone();
         drop(inner);
+
+        let mut data: BTreeMap<String, ModelEntry> = copilot_models(&dynamic_models)
+            .into_iter()
+            .map(|entry| (entry.id.clone(), entry))
+            .collect();
+        let mut models: BTreeMap<String, CodexModelEntry> = rich_copilot_models(&dynamic_models)
+            .into_iter()
+            .map(|entry| (entry.slug.clone(), entry))
+            .collect();
+        for model_id in self.local_models.keys() {
+            data.insert(model_id.clone(), local_model_entry(model_id));
+            models.insert(model_id.clone(), local_rich_model_entry(model_id));
+        }
+
         ModelsListResponse {
             object: "list",
-            data: copilot_models(&dynamic_models),
-            models: rich_copilot_models(&dynamic_models),
+            data: data.into_values().collect(),
+            models: models.into_values().collect(),
         }
     }
 
