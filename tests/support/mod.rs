@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use copilot_proxy_rs::auth::{AuthEndpoints, CopilotAuth};
-use copilot_proxy_rs::config::{AppConfig, EnvSource};
+use copilot_proxy_rs::config::{AppConfig, EnvSource, LocalModelConfig};
 use copilot_proxy_rs::copilot::client::{CopilotBackend, CopilotEndpoints};
 use copilot_proxy_rs::models::ModelRegistry;
 use copilot_proxy_rs::state::AppState;
@@ -73,7 +73,7 @@ impl Default for MockState {
 
 #[derive(Debug, Clone)]
 pub struct MockServer {
-    base_url: String,
+    pub base_url: String,
     state: MockState,
 }
 
@@ -98,6 +98,21 @@ impl MockServer {
         self.state.routes.lock().await.insert(
             (method.to_string(), path.to_string()),
             MockRouteResponse::Json(status, body),
+        );
+    }
+
+    #[allow(dead_code)]
+    pub async fn respond_text(
+        &self,
+        method: &str,
+        path: &str,
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    ) {
+        self.state.routes.lock().await.insert(
+            (method.to_string(), path.to_string()),
+            MockRouteResponse::Text(status, content_type, body),
         );
     }
 
@@ -330,6 +345,51 @@ pub struct AppFixture {
 
 #[allow(dead_code)]
 impl AppFixture {
+    pub async fn with_mock_local() -> Self {
+        let mock = MockServer::start().await;
+        let base_url = format!("{}/v1", mock.base_url);
+        Self::with_mock_and_local_base_url(mock, base_url)
+    }
+
+    pub async fn with_local_base_url(base_url: &str) -> Self {
+        let mock = MockServer::start().await;
+        Self::with_mock_and_local_base_url(mock, base_url.to_string())
+    }
+
+    fn with_mock_and_local_base_url(mock: MockServer, base_url: String) -> Self {
+        let temp = repo_tempdir("app-fixture-local-");
+        let temp_path = temp.path().to_path_buf();
+        std::fs::write(temp_path.join("github_token"), "github-token").unwrap();
+        let env =
+            EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp_path.to_str().unwrap())]);
+        let mut config = AppConfig::default();
+        config.local_models.insert(
+            "qwen3-coder-30b-local".to_string(),
+            LocalModelConfig {
+                base_url,
+                upstream_model: r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf".to_string(),
+            },
+        );
+        let mut state = AppState::new(config);
+        let auth = Arc::new(CopilotAuth::with_env_for_tests(
+            state.config.clone(),
+            env,
+            mock.auth_endpoints(),
+            false,
+        ));
+        state.copilot = Arc::new(CopilotBackend::with_endpoints_for_tests(
+            state.config.clone(),
+            auth,
+            state.models.clone(),
+            mock.copilot_endpoints(),
+        ));
+        Self {
+            state,
+            mock,
+            _config_dir: temp,
+        }
+    }
+
     pub async fn with_mock_copilot() -> Self {
         let mock = MockServer::start().await;
         mock.respond_json(

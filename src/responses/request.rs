@@ -24,6 +24,43 @@ pub struct PreparedResponsesRequest {
     pub cache_status: PreviousResponseCacheStatus,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExpandedResponsesInput {
+    pub body: Map<String, Value>,
+    pub previous_identity: Option<ResponsesTurnIdentity>,
+    pub cache_status: PreviousResponseCacheStatus,
+}
+
+pub async fn expand_previous_response(
+    store: &ResponsesStateStore,
+    mut body: Map<String, Value>,
+) -> ExpandedResponsesInput {
+    let mut cache_status = PreviousResponseCacheStatus::NotRequested;
+    let mut previous_identity = None;
+    if let Some(previous) = body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        cache_status = PreviousResponseCacheStatus::Miss;
+        if let Some(entry) = store.get_cached_response_state(&previous).await {
+            cache_status = PreviousResponseCacheStatus::Hit;
+            previous_identity = Some(entry.identity);
+            let mut expanded = entry.transcript;
+            if let Some(input) = normalize_input_items(body.get("input")) {
+                expanded.extend(input);
+            }
+            body.insert("input".to_string(), Value::Array(expanded));
+            body.remove("previous_response_id");
+        }
+    }
+    ExpandedResponsesInput {
+        body,
+        previous_identity,
+        cache_status,
+    }
+}
+
 pub async fn prepare_responses_request(
     store: &ResponsesStateStore,
     body: Map<String, Value>,
@@ -32,66 +69,16 @@ pub async fn prepare_responses_request(
     copilot_model: String,
     supported_efforts: Option<&SupportedEfforts>,
 ) -> PreparedResponsesRequest {
-    let mut effective_body = body;
-    let mut cache_status = PreviousResponseCacheStatus::NotRequested;
-    let mut previous_identity = None;
-    if let Some(previous) = effective_body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    {
-        cache_status = PreviousResponseCacheStatus::Miss;
-        if let Some(entry) = store.get_cached_response_state(&previous).await {
-            cache_status = PreviousResponseCacheStatus::Hit;
-            let mut expanded = entry.transcript;
-            previous_identity = Some(entry.identity);
-            if let Some(input) = normalize_input_items(effective_body.get("input")) {
-                expanded.extend(input);
-            }
-            effective_body.insert("input".to_string(), Value::Array(expanded));
-            effective_body.remove("previous_response_id");
-        }
-    }
+    let expanded = expand_previous_response(store, body).await;
+    let mut effective_body = expanded.body;
+    let previous_identity = expanded.previous_identity;
+    let cache_status = expanded.cache_status;
     effective_body.insert("model".to_string(), Value::String(copilot_model));
     adapt_responses_reasoning_effort(&mut effective_body, supported_efforts);
     adapt_responses_tools_for_copilot(&mut effective_body);
-    let incoming_interaction_id = header_value(headers, "x-interaction-id")
-        .or_else(|| header_value(headers, "x-client-request-id"));
-    let prompt_cache_identity = incoming_interaction_id.as_deref().or_else(|| {
-        previous_identity
-            .as_ref()
-            .map(|identity| identity.interaction_id.as_str())
-    });
-    if !effective_body.contains_key("prompt_cache_key") {
-        if let Some(cache_identity) = prompt_cache_identity {
-            let model = effective_body
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            effective_body.insert(
-                "prompt_cache_key".to_string(),
-                Value::String(format!("{cache_identity}:{model}")),
-            );
-        }
-    }
-    let interaction_id = incoming_interaction_id
-        .or_else(|| {
-            previous_identity
-                .as_ref()
-                .map(|identity| identity.interaction_id.clone())
-        })
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let identity =
+        prepare_responses_turn_identity(&mut effective_body, headers, previous_identity.as_ref());
     let initiator = compute_initiator(&effective_body, true).to_string();
-    let identity = ResponsesTurnIdentity {
-        interaction_id: interaction_id.clone(),
-        agent_task_id: header_value(headers, "x-agent-task-id")
-            .or_else(|| {
-                previous_identity
-                    .as_ref()
-                    .map(|identity| identity.agent_task_id.clone())
-            })
-            .unwrap_or_else(|| interaction_id.clone()),
-    };
     let request_metadata = CopilotRequestMetadata {
         request_id: Some(request_id),
         initiator: Some(initiator),
@@ -106,6 +93,39 @@ pub async fn prepare_responses_request(
         request_metadata,
         identity,
         cache_status,
+    }
+}
+
+pub fn prepare_responses_turn_identity(
+    effective_body: &mut Map<String, Value>,
+    headers: &HeaderMap,
+    previous_identity: Option<&ResponsesTurnIdentity>,
+) -> ResponsesTurnIdentity {
+    let incoming_interaction_id = header_value(headers, "x-interaction-id")
+        .or_else(|| header_value(headers, "x-client-request-id"));
+    let prompt_cache_identity = incoming_interaction_id
+        .as_deref()
+        .or_else(|| previous_identity.map(|identity| identity.interaction_id.as_str()));
+    if !effective_body.contains_key("prompt_cache_key") {
+        if let Some(cache_identity) = prompt_cache_identity {
+            let model = effective_body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            effective_body.insert(
+                "prompt_cache_key".to_string(),
+                Value::String(format!("{cache_identity}:{model}")),
+            );
+        }
+    }
+    let interaction_id = incoming_interaction_id
+        .or_else(|| previous_identity.map(|identity| identity.interaction_id.clone()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    ResponsesTurnIdentity {
+        interaction_id: interaction_id.clone(),
+        agent_task_id: header_value(headers, "x-agent-task-id")
+            .or_else(|| previous_identity.map(|identity| identity.agent_task_id.clone()))
+            .unwrap_or_else(|| interaction_id.clone()),
     }
 }
 
@@ -133,7 +153,10 @@ mod tests {
     use http::HeaderMap;
     use serde_json::{Value, json};
 
-    use super::{PreviousResponseCacheStatus, normalize_input_items, prepare_responses_request};
+    use super::{
+        PreviousResponseCacheStatus, expand_previous_response, normalize_input_items,
+        prepare_responses_request,
+    };
     use crate::responses::state::{ResponsesStateStore, ResponsesTurnIdentity};
 
     fn parse_body(s: &str) -> serde_json::Map<String, Value> {
@@ -245,5 +268,120 @@ mod tests {
     #[test]
     fn normalize_missing_input_returns_none() {
         assert!(normalize_input_items(None).is_none());
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_not_requested_without_an_id() {
+        let body = parse_body(r#"{"model":"local","input":"hello"}"#);
+
+        let expanded =
+            expand_previous_response(&ResponsesStateStore::default(), body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, None);
+        assert_eq!(
+            expanded.cache_status,
+            PreviousResponseCacheStatus::NotRequested
+        );
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_miss_and_retains_the_id() {
+        let body =
+            parse_body(r#"{"model":"local","input":"hello","previous_response_id":"missing"}"#);
+
+        let expanded =
+            expand_previous_response(&ResponsesStateStore::default(), body.clone()).await;
+
+        assert_eq!(expanded.body, body);
+        assert_eq!(expanded.previous_identity, None);
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Miss);
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_reports_hit_and_expands_the_transcript() {
+        let store = ResponsesStateStore::default();
+        let identity = ResponsesTurnIdentity {
+            interaction_id: "iid-expanded".to_string(),
+            agent_task_id: "atid-expanded".to_string(),
+        };
+        store
+            .cache_response_state(
+                "resp_expand",
+                vec![json!({"role": "user", "content": "first"})],
+                vec![json!({"role": "assistant", "content": "reply"})],
+                identity.clone(),
+                false,
+            )
+            .await;
+        let body = parse_body(
+            r#"{"model":"local","input":"follow-up","previous_response_id":"resp_expand"}"#,
+        );
+
+        let expanded = expand_previous_response(&store, body).await;
+
+        assert_eq!(expanded.previous_identity, Some(identity));
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
+        assert!(!expanded.body.contains_key("previous_response_id"));
+        assert_eq!(
+            expanded.body["input"],
+            json!([
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "follow-up"}]
+                }
+            ])
+        );
+    }
+
+    async fn assert_cache_hit_uses_cached_transcript_only(current_input: Option<Value>) {
+        let store = ResponsesStateStore::default();
+        let identity = ResponsesTurnIdentity {
+            interaction_id: "iid-cached".to_string(),
+            agent_task_id: "atid-cached".to_string(),
+        };
+        store
+            .cache_response_state(
+                "resp_cached",
+                vec![json!({"role": "user", "content": "old"})],
+                vec![json!({"role": "assistant", "content": "old reply"})],
+                identity.clone(),
+                false,
+            )
+            .await;
+        let mut body = parse_body(r#"{"model":"local","previous_response_id":"resp_cached"}"#);
+        if let Some(current_input) = current_input {
+            body.insert("input".to_string(), current_input);
+        }
+
+        let expanded = expand_previous_response(&store, body).await;
+
+        assert!(!expanded.body.contains_key("previous_response_id"));
+        assert_eq!(
+            expanded.body["input"],
+            json!([
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "old reply"}
+            ])
+        );
+        assert_eq!(expanded.previous_identity, Some(identity));
+        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_malformed() {
+        assert_cache_hit_uses_cached_transcript_only(Some(json!({"unexpected": true}))).await;
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_missing() {
+        assert_cache_hit_uses_cached_transcript_only(None).await;
+    }
+
+    #[tokio::test]
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_null() {
+        assert_cache_hit_uses_cached_transcript_only(Some(Value::Null)).await;
     }
 }

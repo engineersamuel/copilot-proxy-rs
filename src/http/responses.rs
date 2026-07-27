@@ -9,8 +9,10 @@ use serde_json::{Map, Value};
 
 use crate::errors::openai_error;
 use crate::http::errors::{
-    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+    openai_copilot_error, openai_local_error, openai_responses_translation_error,
+    request_body_error_details, request_body_rejection_details,
 };
+use crate::models::LocalModelTarget;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
@@ -57,13 +59,16 @@ pub(crate) async fn responses(
             return openai_error(status, "invalid_request_error", message).into_response();
         }
     };
-    state.copilot.refresh_models_if_stale().await;
-    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if let Some(local_target) = state.models.configured_local_target(&requested_model) {
+        return handle_local_responses(state, headers, body, local_target).await;
+    }
+    state.copilot.refresh_models_if_stale().await;
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let copilot_model = state
         .models
         .get_copilot_openai_model(&requested_model)
@@ -184,6 +189,235 @@ pub(crate) async fn responses(
     Json(response).into_response()
 }
 
+async fn handle_local_responses(
+    state: AppState,
+    headers: HeaderMap,
+    body: Map<String, Value>,
+    target: LocalModelTarget,
+) -> Response {
+    let requested_previous_response_id = match body.get("previous_response_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(previous_response_id)) => Some(previous_response_id.clone()),
+        Some(_) => {
+            return openai_error(
+                http::StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "previous_response_id must be a string",
+            )
+            .into_response();
+        }
+    };
+    let expanded =
+        crate::responses::request::expand_previous_response(&state.responses, body).await;
+    if expanded.cache_status == PreviousResponseCacheStatus::Miss {
+        return openai_error(
+            http::StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "previous_response_id was not found",
+        )
+        .into_response();
+    }
+    let mut effective_body = expanded.body;
+    let identity = crate::responses::request::prepare_responses_turn_identity(
+        &mut effective_body,
+        &headers,
+        expanded.previous_identity.as_ref(),
+    );
+    let stream = effective_body
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let translated = match crate::local::responses_to_chat(effective_body, &target.upstream_model) {
+        Ok(translated) => translated,
+        Err(error) => return openai_responses_translation_error(error).into_response(),
+    };
+    if stream {
+        let upstream = match state.local.stream_chat(&target, translated.chat_body).await {
+            Ok(upstream) => upstream,
+            Err(error) => return openai_local_error(error).into_response(),
+        };
+        let is_event_stream = upstream
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                })
+            });
+        if !is_event_stream {
+            return openai_error(
+                http::StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            )
+            .into_response();
+        }
+
+        let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+        let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::local::responses::ChatToResponsesStream::new_with_previous_response_id(
+                response_id.clone(),
+                target.public_id.clone(),
+                (expanded.cache_status == PreviousResponseCacheStatus::Hit)
+                    .then(|| requested_previous_response_id.clone())
+                    .flatten(),
+                translated.tool_kinds,
+            ),
+        ));
+        let mapper_adapter = adapter.clone();
+        let mapped = crate::http::sse::map_sse_lines_many(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                mapper_adapter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map_line(line)
+            },
+        );
+        let cache_state = state.clone();
+        let cache_response_id = response_id;
+        let mut cache_payload = Some((translated.input_items, identity));
+        let byte_stream = async_stream::stream! {
+            futures_util::pin_mut!(mapped);
+            while let Some(event) = mapped.next().await {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(_) => {
+                        let failed_events = adapter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .fail();
+                        for failed_event in failed_events {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                                "{failed_event}\n\n"
+                            )));
+                        }
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                            b"data: [DONE]\n\n",
+                        ));
+                        return;
+                    }
+                };
+                let terminal_event = std::str::from_utf8(&event).ok().and_then(|text| {
+                    if text.starts_with("event: response.completed\n") {
+                        Some(true)
+                    } else if text.starts_with("event: response.incomplete\n")
+                        || text.starts_with("event: response.failed\n")
+                    {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+                let Some(completed_event) = terminal_event else {
+                    yield Ok::<Bytes, std::io::Error>(event);
+                    continue;
+                };
+                let (completed, output) = {
+                    let adapter = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        completed_event && adapter.is_completed(),
+                        adapter.output_items(),
+                    )
+                };
+                if completed {
+                    if let Some((input, identity)) = cache_payload.take() {
+                        let has_tool_calls = output.iter().any(|item| {
+                            item.get("type")
+                                .and_then(Value::as_str)
+                                .is_some_and(|kind| {
+                                    matches!(kind, "function_call" | "custom_tool_call")
+                                })
+                        });
+                        cache_state
+                            .responses
+                            .cache_response_state(
+                                &cache_response_id,
+                                input,
+                                output,
+                                identity,
+                                has_tool_calls,
+                            )
+                            .await;
+                    }
+                }
+                yield Ok::<Bytes, std::io::Error>(event);
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+            let failed_events = adapter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .fail();
+            for failed_event in failed_events {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{failed_event}\n\n")));
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+        };
+        return Response::builder()
+            .header(http::header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(byte_stream))
+            .unwrap();
+    }
+
+    let chat = match state.local.post_chat(&target, translated.chat_body).await {
+        Ok(chat) => chat,
+        Err(error) => return openai_local_error(error).into_response(),
+    };
+    let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+    let mut response = match crate::local::responses::chat_to_responses(
+        &chat,
+        &response_id,
+        &target.public_id,
+        &translated.tool_kinds,
+    ) {
+        Ok(response) => response,
+        Err(_) => {
+            return openai_error(
+                http::StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            )
+            .into_response();
+        }
+    };
+    if expanded.cache_status == PreviousResponseCacheStatus::Hit {
+        if let (Some(response), Some(previous_response_id)) =
+            (response.as_object_mut(), requested_previous_response_id)
+        {
+            response.insert(
+                "previous_response_id".to_string(),
+                Value::String(previous_response_id),
+            );
+        }
+    }
+    if let (Some("completed"), Some(output)) = (
+        response.get("status").and_then(Value::as_str),
+        response.get("output").and_then(Value::as_array).cloned(),
+    ) {
+        let has_tool_calls = output.iter().any(|item| {
+            item.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "function_call" | "custom_tool_call"))
+        });
+        state
+            .responses
+            .cache_response_state(
+                response_id,
+                translated.input_items,
+                output,
+                identity,
+                has_tool_calls,
+            )
+            .await;
+    }
+    Json(response).into_response()
+}
+
 pub(crate) async fn responses_ws(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -222,7 +456,33 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
                 continue;
             }
         };
-        if body.get("type").and_then(Value::as_str) == Some("response.create") {
+        let is_typed_response_create =
+            body.get("type").and_then(Value::as_str) == Some("response.create");
+        let requested_model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if state
+            .models
+            .configured_local_target(requested_model)
+            .is_some()
+        {
+            let _ = client_ws
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "Local models do not support Responses WebSocket"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+            continue;
+        }
+        if is_typed_response_create {
             body.remove("type");
         }
         if body.get("generate").and_then(Value::as_bool) == Some(false) {
@@ -349,10 +609,26 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
     }
 }
 
+fn is_local_response_id(response_id: &str) -> bool {
+    response_id.starts_with("resp_local_")
+}
+
+fn unsupported_local_response_resource() -> Response {
+    openai_error(
+        http::StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        "Retrieval and cancellation of local response resources are unsupported",
+    )
+    .into_response()
+}
+
 pub(crate) async fn responses_retrieve(
     State(state): State<AppState>,
     Path(response_id): Path<String>,
 ) -> Response {
+    if is_local_response_id(&response_id) {
+        return unsupported_local_response_resource();
+    }
     match state.copilot.get_response(&response_id, None).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => openai_copilot_error(err).into_response(),
@@ -363,6 +639,9 @@ pub(crate) async fn responses_cancel(
     State(state): State<AppState>,
     Path(response_id): Path<String>,
 ) -> Response {
+    if is_local_response_id(&response_id) {
+        return unsupported_local_response_resource();
+    }
     match state.copilot.cancel_response(&response_id, None).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => openai_copilot_error(err).into_response(),

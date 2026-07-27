@@ -13,5 +13,6 @@
   "copilot_retry_base_delay": 1.0,
   "copilot_max_rate": 15,
   "web_search_model": "gpt-5.6-sol",
+  "local_models": {},
   "log_level": "INFO"
 }

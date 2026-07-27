@@ -3,6 +3,8 @@ use axum::extract::rejection::BytesRejection;
 use http::{HeaderMap, StatusCode};
 
 use crate::errors::{anthropic_error, openai_error};
+use crate::local::LocalModelError;
+use crate::local::ResponsesTranslationError;
 use crate::request_body::RequestBodyError;
 
 pub(crate) fn request_body_rejection_details(
@@ -89,6 +91,50 @@ pub(crate) fn openai_copilot_error(
     }
 }
 
+pub(crate) fn openai_local_error(
+    error: LocalModelError,
+) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
+    match error {
+        LocalModelError::Timeout => openai_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "server_error",
+            "local model request timed out",
+        ),
+        LocalModelError::Transport => openai_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model connection failed",
+        ),
+        LocalModelError::Http { status, detail } => openai_error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            "server_error",
+            detail,
+        ),
+        LocalModelError::InvalidJson => openai_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model returned invalid JSON",
+        ),
+    }
+}
+
+pub(crate) fn openai_responses_translation_error(
+    error: ResponsesTranslationError,
+) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
+    const MAX_ERROR_CHARS: usize = 512;
+    const TRUNCATION_MARKER: &str = "...";
+
+    let mut message = error.to_string();
+    if message.chars().count() > MAX_ERROR_CHARS {
+        message = message
+            .chars()
+            .take(MAX_ERROR_CHARS - TRUNCATION_MARKER.chars().count())
+            .collect();
+        message.push_str(TRUNCATION_MARKER);
+    }
+    openai_error(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+}
+
 pub(crate) fn anthropic_copilot_error(
     error: crate::copilot::errors::CopilotError,
 ) -> (StatusCode, Json<crate::errors::AnthropicErrorResponse>) {
@@ -113,5 +159,22 @@ pub(crate) fn anthropic_copilot_error(
             "server_error",
             other.to_string(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openai_responses_translation_error;
+    use crate::local::ResponsesTranslationError;
+
+    #[test]
+    fn responses_translation_error_bounds_multibyte_message_by_characters() {
+        let (_, body) = openai_responses_translation_error(
+            ResponsesTranslationError::UnsupportedTool("é".repeat(600)),
+        );
+        let message = &body.0.error.message;
+
+        assert!(message.chars().count() <= 512, "{message}");
+        assert!(message.ends_with("..."), "{message}");
     }
 }

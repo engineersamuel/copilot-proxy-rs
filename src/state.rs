@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use crate::auth::CopilotAuth;
 use crate::config::AppConfig;
 use crate::copilot::client::CopilotBackend;
+use crate::local::LocalBackend;
 use crate::models::ModelRegistry;
 use crate::responses::state::ResponsesStateStore;
 
@@ -14,6 +15,7 @@ pub struct AppState {
     pub backend: Arc<BackendState>,
     pub models: Arc<ModelRegistry>,
     pub copilot: Arc<CopilotBackend>,
+    pub local: Arc<LocalBackend>,
     pub responses: Arc<ResponsesStateStore>,
 }
 
@@ -34,8 +36,9 @@ impl AppState {
                 "unrecognized fallback_backend; ignoring"
             );
         }
-        let models = Arc::new(ModelRegistry::with_copilot_overrides(
+        let models = Arc::new(ModelRegistry::with_models(
             config.model_overrides.copilot.clone(),
+            config.local_models.clone(),
         ));
         let auth = Arc::new(CopilotAuth::new(config.clone()));
         let copilot = Arc::new(CopilotBackend::new(config.clone(), auth, models.clone()));
@@ -44,6 +47,7 @@ impl AppState {
             config,
             models,
             copilot,
+            local: Arc::new(LocalBackend::new()),
             responses: Arc::new(ResponsesStateStore::default()),
         }
     }
@@ -58,6 +62,7 @@ impl AppState {
             config,
             models,
             copilot,
+            local: Arc::new(LocalBackend::new()),
             responses: Arc::new(ResponsesStateStore::default()),
         }
     }

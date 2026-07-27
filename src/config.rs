@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,6 +20,12 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("invalid local model {model_id:?} field {field}: {message}")]
+    InvalidLocalModel {
+        model_id: String,
+        field: &'static str,
+        message: String,
+    },
     #[error(
         "refusing non-loopback bind address {host:?}; set COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK=true only behind trusted network controls or inbound auth"
     )]
@@ -31,6 +37,12 @@ pub enum ConfigError {
 pub struct ModelOverrides {
     pub copilot: BTreeMap<String, String>,
     pub bedrock: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LocalModelConfig {
+    pub base_url: String,
+    pub upstream_model: String,
 }
 
 fn is_loopback_bind_host(host: &str) -> bool {
@@ -101,6 +113,7 @@ pub struct AppConfig {
     #[serde(deserialize_with = "deserialize_string_vec")]
     pub search_provider_order: Vec<String>,
     pub model_overrides: ModelOverrides,
+    pub local_models: BTreeMap<String, LocalModelConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,6 +178,7 @@ impl Default for AppConfig {
             enabled_mcp_servers: BTreeMap::new(),
             search_provider_order: vec!["tavily".to_string(), "exa".to_string()],
             model_overrides: ModelOverrides::default(),
+            local_models: BTreeMap::new(),
         }
     }
 }
@@ -235,6 +249,7 @@ struct FileConfig {
     #[serde(deserialize_with = "deserialize_opt_string_vec")]
     search_provider_order: Option<Vec<String>>,
     model_overrides: ModelOverrides,
+    local_models: BTreeMap<String, LocalModelConfig>,
 }
 
 impl AppConfig {
@@ -266,6 +281,7 @@ impl AppConfig {
         }
 
         apply_env_overrides(&mut config, env);
+        config.validate_local_models()?;
         Ok(config)
     }
 
@@ -400,6 +416,62 @@ impl AppConfig {
         if !file.model_overrides.bedrock.is_empty() {
             self.model_overrides.bedrock = file.model_overrides.bedrock;
         }
+        if !file.local_models.is_empty() {
+            self.local_models = file.local_models;
+        }
+    }
+
+    fn validate_local_models(&self) -> Result<(), ConfigError> {
+        for (model_id, local_model) in &self.local_models {
+            if model_id.trim().is_empty() || model_id.trim() != model_id {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "id",
+                    message: "must be non-empty and contain no surrounding whitespace".to_string(),
+                });
+            }
+            if local_model.upstream_model.trim().is_empty() {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "upstream_model",
+                    message: "must be non-empty".to_string(),
+                });
+            }
+            if local_model.base_url.trim() != local_model.base_url {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "base_url",
+                    message: "must contain no surrounding whitespace".to_string(),
+                });
+            }
+
+            let base_url = reqwest::Url::parse(&local_model.base_url).map_err(|source| {
+                ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "base_url",
+                    message: source.to_string(),
+                }
+            })?;
+            if !matches!(base_url.scheme(), "http" | "https") {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "base_url",
+                    message: "scheme must be http or https".to_string(),
+                });
+            }
+            if base_url.host().is_none()
+                || base_url.query().is_some()
+                || base_url.fragment().is_some()
+            {
+                return Err(ConfigError::InvalidLocalModel {
+                    model_id: model_id.clone(),
+                    field: "base_url",
+                    message: "must contain a host and no query or fragment".to_string(),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
