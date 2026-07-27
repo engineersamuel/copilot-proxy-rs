@@ -453,7 +453,10 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
                 continue;
             }
         };
-        if body.get("type").and_then(Value::as_str) == Some("response.create") {
+        let is_typed_response_create =
+            body.get("type").and_then(Value::as_str) == Some("response.create");
+        let is_response_create = body.get("type").is_none() || is_typed_response_create;
+        if is_response_create {
             let requested_model = body
                 .get("model")
                 .and_then(Value::as_str)
@@ -478,6 +481,8 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
                     .await;
                 continue;
             }
+        }
+        if is_typed_response_create {
             body.remove("type");
         }
         if body.get("generate").and_then(Value::as_bool) == Some(false) {

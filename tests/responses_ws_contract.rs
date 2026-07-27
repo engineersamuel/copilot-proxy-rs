@@ -2,13 +2,14 @@ mod support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use copilot_proxy_rs::auth::CopilotAuth;
-use copilot_proxy_rs::config::{AppConfig, EnvSource};
+use copilot_proxy_rs::config::{AppConfig, EnvSource, LocalModelConfig};
 use copilot_proxy_rs::copilot::client::{CopilotBackend, CopilotEndpoints};
 use copilot_proxy_rs::http::router;
 use copilot_proxy_rs::local::LocalBackend;
@@ -37,17 +38,25 @@ async fn start_proxy_with_config(config: AppConfig) -> SocketAddr {
     start_proxy(state).await
 }
 
-async fn mock_ws_backend_addr() -> SocketAddr {
+async fn mock_ws_backend_addr() -> (SocketAddr, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let open_count = Arc::new(AtomicUsize::new(0));
+    let handler_open_count = open_count.clone();
     tokio::spawn(async move {
-        let app = axum::Router::new().route("/responses", axum::routing::get(backend_ws_handler));
+        let app = axum::Router::new()
+            .route("/responses", axum::routing::get(backend_ws_handler))
+            .with_state(handler_open_count);
         axum::serve(listener, app).await.unwrap();
     });
-    addr
+    (addr, open_count)
 }
 
-async fn backend_ws_handler(ws: axum::extract::WebSocketUpgrade) -> axum::response::Response {
+async fn backend_ws_handler(
+    axum::extract::State(open_count): axum::extract::State<Arc<AtomicUsize>>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> axum::response::Response {
+    open_count.fetch_add(1, Ordering::SeqCst);
     ws.on_upgrade(|mut socket| async move {
         use axum::extract::ws::Message as AxMessage;
         if let Some(Ok(message)) = socket.recv().await {
@@ -80,7 +89,9 @@ async fn backend_ws_handler(ws: axum::extract::WebSocketUpgrade) -> axum::respon
     })
 }
 
-async fn state_with_ws_backend(ws_backend_addr: SocketAddr) -> (AppState, tempfile::TempDir) {
+async fn state_with_ws_backend(
+    ws_backend_addr: SocketAddr,
+) -> (AppState, tempfile::TempDir, support::MockServer) {
     let mock = support::MockServer::start().await;
     mock.respond_json(
         "GET",
@@ -100,14 +111,25 @@ async fn state_with_ws_backend(ws_backend_addr: SocketAddr) -> (AppState, tempfi
     std::fs::write(temp.path().join("github_token"), "github-token").unwrap();
     let env =
         EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
-    let config = Arc::new(AppConfig::load_from_env(&env).unwrap());
+    let mut config = AppConfig::load_from_env(&env).unwrap();
+    config.local_models.insert(
+        "qwen3-coder-30b-local".to_string(),
+        LocalModelConfig {
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            upstream_model: r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf".to_string(),
+        },
+    );
+    let config = Arc::new(config);
     let auth = Arc::new(CopilotAuth::with_env_for_tests(
         config.clone(),
         env,
         mock.auth_endpoints(),
         false,
     ));
-    let models = Arc::new(ModelRegistry::new());
+    let models = Arc::new(ModelRegistry::with_models(
+        config.model_overrides.copilot.clone(),
+        config.local_models.clone(),
+    ));
     let endpoints = CopilotEndpoints {
         responses_ws_url: format!("ws://{}/responses", ws_backend_addr),
         ..mock.copilot_endpoints()
@@ -119,7 +141,7 @@ async fn state_with_ws_backend(ws_backend_addr: SocketAddr) -> (AppState, tempfi
         endpoints,
     ));
     let state = AppState::with_parts_for_tests(config, models, copilot);
-    (state, temp)
+    (state, temp, mock)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -306,6 +328,67 @@ async fn responses_websocket_rejects_local_model_without_copilot_work() {
 }
 
 #[tokio::test]
+async fn responses_websocket_rejects_bare_prefixed_local_model_and_keeps_socket_usable() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (ws_backend_addr, backend_open_count) = mock_ws_backend_addr().await;
+    let (mut state, _temp, mock) = state_with_ws_backend(ws_backend_addr).await;
+    Arc::make_mut(&mut state.config).api_key = "local-secret".to_string();
+    let addr = start_proxy(state).await;
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer local-secret".parse().unwrap());
+    let (mut ws, _) = connect_async(request).await.unwrap();
+
+    ws.send(Message::Text(
+        serde_json::json!({
+            "model": "github-copilot/qwen3-coder-30b-local",
+            "input": "private local input"
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+
+    let message = ws.next().await.unwrap().unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected text frame, got {message:?}");
+    };
+    let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(event["type"], "error");
+    assert_eq!(event["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        event["error"]["message"],
+        "Local models do not support Responses WebSocket"
+    );
+    assert_eq!(backend_open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(mock.hits("GET", "/models").await, 0);
+    assert_eq!(mock.hits("GET", "/copilot/token").await, 0);
+
+    ws.send(Message::Text(
+        serde_json::json!({
+            "model": "gpt-5.5",
+            "input": "non-local input"
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let message = ws.next().await.unwrap().unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected text frame, got {message:?}");
+    };
+    let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(event["type"], "response.completed");
+    assert_eq!(backend_open_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn responses_websocket_prewarm_generate_false_returns_created_and_completed() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     let addr = start_proxy(fixture.state).await;
@@ -349,8 +432,8 @@ async fn responses_websocket_prewarm_generate_false_returns_created_and_complete
 
 #[tokio::test]
 async fn responses_websocket_forwards_prepared_effort_adapted_body() {
-    let ws_backend_addr = mock_ws_backend_addr().await;
-    let (state, _temp) = state_with_ws_backend(ws_backend_addr).await;
+    let (ws_backend_addr, _backend_open_count) = mock_ws_backend_addr().await;
+    let (state, _temp, _mock) = state_with_ws_backend(ws_backend_addr).await;
     state
         .models
         .set_copilot_models(vec![serde_json::json!({
@@ -390,8 +473,8 @@ async fn responses_websocket_forwards_prepared_effort_adapted_body() {
 
 #[tokio::test]
 async fn responses_websocket_bridges_backend_completed_event() {
-    let ws_backend_addr = mock_ws_backend_addr().await;
-    let (state, _temp) = state_with_ws_backend(ws_backend_addr).await;
+    let (ws_backend_addr, _backend_open_count) = mock_ws_backend_addr().await;
+    let (state, _temp, _mock) = state_with_ws_backend(ws_backend_addr).await;
     let addr = start_proxy(state).await;
 
     let url = format!("ws://{addr}/v1/responses");

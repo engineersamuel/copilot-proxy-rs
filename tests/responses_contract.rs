@@ -1217,7 +1217,7 @@ async fn responses_retrieve_and_cancel_proxy_to_copilot() {
 }
 
 #[tokio::test]
-async fn local_response_retrieval_is_rejected_without_copilot_work() {
+async fn local_response_resources_retrieval_is_rejected_without_copilot_work() {
     let fixture = support::AppFixture::with_mock_local().await;
 
     let response = router(fixture.state.clone())
@@ -1249,7 +1249,7 @@ async fn local_response_retrieval_is_rejected_without_copilot_work() {
 }
 
 #[tokio::test]
-async fn local_response_cancellation_is_rejected_without_copilot_work() {
+async fn local_response_resources_cancellation_is_rejected_without_copilot_work() {
     let fixture = support::AppFixture::with_mock_local().await;
 
     let response = router(fixture.state.clone())
