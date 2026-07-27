@@ -56,10 +56,11 @@ pub struct TranslatedResponsesRequest {
 struct StreamingToolCall {
     tool_index: usize,
     output_index: usize,
-    call_id: String,
-    name: String,
+    call_id: Option<String>,
+    name: Option<String>,
     arguments: String,
-    kind: LocalToolKind,
+    kind: Option<LocalToolKind>,
+    type_seen: bool,
     added: bool,
     done: bool,
 }
@@ -87,6 +88,8 @@ impl StreamStatus {
 pub struct ChatToResponsesStream {
     response_id: String,
     public_model: String,
+    previous_response_id: Option<String>,
+    created_at: u64,
     tool_kinds: BTreeMap<String, LocalToolKind>,
     text: String,
     text_output_index: Option<usize>,
@@ -107,9 +110,20 @@ impl ChatToResponsesStream {
         public_model: String,
         tool_kinds: BTreeMap<String, LocalToolKind>,
     ) -> Self {
+        Self::new_with_previous_response_id(response_id, public_model, None, tool_kinds)
+    }
+
+    pub fn new_with_previous_response_id(
+        response_id: String,
+        public_model: String,
+        previous_response_id: Option<String>,
+        tool_kinds: BTreeMap<String, LocalToolKind>,
+    ) -> Self {
         Self {
             response_id,
             public_model,
+            previous_response_id,
+            created_at: current_epoch_seconds(),
             tool_kinds,
             text: String::new(),
             text_output_index: None,
@@ -133,7 +147,10 @@ impl ChatToResponsesStream {
             return Vec::new();
         }
         if data == "[DONE]" {
-            let mut events = self.start_events();
+            if !self.finish_seen {
+                return self.failed_event();
+            }
+            let mut events = Vec::new();
             match self.finish_events() {
                 Ok(finish_events) => events.extend(finish_events),
                 Err(()) => return self.failed_event(),
@@ -149,6 +166,9 @@ impl ChatToResponsesStream {
         let Some(chunk) = chunk.as_object() else {
             return self.failed_event();
         };
+        if self.finish_seen {
+            return self.map_post_finish_chunk(chunk);
+        }
         let mut events = self.start_events();
 
         if let Some(usage) = chunk.get("usage") {
@@ -222,16 +242,33 @@ impl ChatToResponsesStream {
         events
     }
 
+    fn map_post_finish_chunk(&mut self, chunk: &Map<String, Value>) -> Vec<String> {
+        let choices_are_empty = match chunk.get("choices") {
+            None => true,
+            Some(Value::Array(choices)) => choices.is_empty(),
+            Some(_) => false,
+        };
+        if !choices_are_empty || !chunk.contains_key("usage") {
+            return self.failed_event();
+        }
+        match translate_chat_usage(chunk.get("usage")) {
+            Ok(usage) => self.usage = usage,
+            Err(_) => return self.failed_event(),
+        }
+        if self.usage.is_null() {
+            Vec::new()
+        } else {
+            self.complete_event()
+        }
+    }
+
     pub fn output_items(&self) -> Vec<Value> {
         let mut output = Vec::new();
         if let Some(index) = self.text_output_index {
             output.push((index, self.text_item()));
         }
-        output.extend(self.tool_calls.values().map(|call| {
-            (
-                call.output_index,
-                streaming_tool_item(&self.response_id, call),
-            )
+        output.extend(self.tool_calls.values().filter_map(|call| {
+            streaming_tool_item(&self.response_id, call).map(|item| (call.output_index, item))
         }));
         output.sort_by_key(|(index, _)| *index);
         output.into_iter().map(|(_, item)| item).collect()
@@ -310,23 +347,46 @@ impl ChatToResponsesStream {
     }
 
     fn tool_delta_events(&mut self, value: &Value) -> Result<Vec<String>, ()> {
-        let call = value.as_object().ok_or(())?;
-        let index = call.get("index").and_then(Value::as_u64).ok_or(())? as usize;
-        let function = call.get("function").and_then(Value::as_object);
-        let name_delta = function
-            .and_then(|function| function.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let arguments_delta = function
-            .and_then(|function| function.get("arguments"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default();
-
+        let fragment = value.as_object().ok_or(())?;
+        let index = fragment
+            .get("index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or(())?;
+        let call_type = match fragment.get("type") {
+            None => None,
+            Some(Value::String(call_type)) if call_type == "function" => Some(()),
+            Some(_) => return Err(()),
+        };
+        let call_id = match fragment.get("id") {
+            None => None,
+            Some(Value::String(call_id)) if !call_id.is_empty() => Some(call_id.as_str()),
+            Some(_) => return Err(()),
+        };
+        let (name, arguments_delta) = match fragment.get("function") {
+            None => (None, None),
+            Some(Value::Object(function)) => {
+                let name = match function.get("name") {
+                    None => None,
+                    Some(Value::String(name)) if !name.is_empty() => Some(name.as_str()),
+                    Some(_) => return Err(()),
+                };
+                let arguments = match function.get("arguments") {
+                    None => None,
+                    Some(Value::String(arguments)) => Some(arguments.as_str()),
+                    Some(_) => return Err(()),
+                };
+                (name, arguments)
+            }
+            Some(_) => return Err(()),
+        };
+        let kind = name
+            .map(|name| self.tool_kinds.get(name).copied().ok_or(()))
+            .transpose()?;
         if !self.tool_calls.contains_key(&index) {
-            let Some(kind) = self.tool_kinds.get(name_delta).copied() else {
+            if index != self.tool_calls.len() {
                 return Err(());
-            };
+            }
             let output_index = self.next_output_index;
             self.next_output_index += 1;
             self.tool_calls.insert(
@@ -334,10 +394,11 @@ impl ChatToResponsesStream {
                 StreamingToolCall {
                     tool_index: index,
                     output_index,
-                    call_id: call_id.to_string(),
-                    name: name_delta.to_string(),
+                    call_id: None,
+                    name: None,
                     arguments: String::new(),
-                    kind,
+                    kind: None,
+                    type_seen: false,
                     added: false,
                     done: false,
                 },
@@ -345,32 +406,55 @@ impl ChatToResponsesStream {
         }
 
         let call = self.tool_calls.get_mut(&index).ok_or(())?;
-        if !call_id.is_empty() && call.call_id.is_empty() {
-            call.call_id.push_str(call_id);
+        if call_type.is_some() {
+            if call.type_seen {
+                return Err(());
+            }
+            call.type_seen = true;
         }
-        if !name_delta.is_empty() && call.name != name_delta {
-            call.name.push_str(name_delta);
+        if let Some(call_id) = call_id {
+            if call.call_id.is_some() {
+                return Err(());
+            }
+            call.call_id = Some(call_id.to_string());
         }
-        call.arguments.push_str(arguments_delta);
-        let item_id = call.kind.stream_item_id(&self.response_id, call.tool_index);
+        if let Some(name) = name {
+            if call.name.is_some() {
+                return Err(());
+            }
+            call.name = Some(name.to_string());
+            call.kind = kind;
+        }
+        if let Some(arguments_delta) = arguments_delta {
+            call.arguments.push_str(arguments_delta);
+        }
+
         let mut events = Vec::new();
-        if !call.added {
+        let metadata = call
+            .call_id
+            .clone()
+            .zip(call.name.clone())
+            .zip(call.kind)
+            .map(|((call_id, name), kind)| (call_id, name, kind));
+        if !call.added && metadata.is_some() {
             call.added = true;
-            let item = match call.kind {
+            let (call_id, name, kind) = metadata.ok_or(())?;
+            let item_id = kind.stream_item_id(&self.response_id, call.tool_index);
+            let item = match kind {
                 LocalToolKind::Function => json!({
                     "id": item_id,
                     "type": "function_call",
                     "status": "in_progress",
-                    "call_id": call.call_id,
-                    "name": call.name,
+                    "call_id": call_id,
+                    "name": name,
                     "arguments": ""
                 }),
                 LocalToolKind::Custom => json!({
                     "id": item_id,
                     "type": "custom_tool_call",
                     "status": "in_progress",
-                    "call_id": call.call_id,
-                    "name": call.name,
+                    "call_id": call_id,
+                    "name": name,
                     "input": ""
                 }),
             };
@@ -378,13 +462,22 @@ impl ChatToResponsesStream {
                 "response.output_item.added",
                 json!({"output_index": call.output_index, "item": item}),
             ));
-        }
-        if !arguments_delta.is_empty() {
-            let event_type = call.kind.stream_delta_event();
+            if !call.arguments.is_empty() {
+                events.push(stream_event(
+                    kind.stream_delta_event(),
+                    json!({
+                        "item_id": item_id,
+                        "output_index": call.output_index,
+                        "delta": call.arguments
+                    }),
+                ));
+            }
+        } else if call.added && arguments_delta.is_some_and(|delta| !delta.is_empty()) {
+            let kind = call.kind.ok_or(())?;
             events.push(stream_event(
-                event_type,
+                kind.stream_delta_event(),
                 json!({
-                    "item_id": item_id,
+                    "item_id": kind.stream_item_id(&self.response_id, call.tool_index),
                     "output_index": call.output_index,
                     "delta": arguments_delta
                 }),
@@ -394,6 +487,7 @@ impl ChatToResponsesStream {
     }
 
     fn finish_events(&mut self) -> Result<Vec<String>, ()> {
+        self.validate_tool_calls()?;
         let mut events = Vec::new();
         if let Some(output_index) = self.text_output_index {
             if !self.text_done {
@@ -427,13 +521,14 @@ impl ChatToResponsesStream {
             if call.done {
                 continue;
             }
-            let custom_input = match call.kind {
+            let kind = call.kind.ok_or(())?;
+            let custom_input = match kind {
                 LocalToolKind::Function => String::new(),
                 LocalToolKind::Custom => custom_tool_input(&call.arguments).ok_or(())?,
             };
             call.done = true;
-            let item_id = call.kind.stream_item_id(&self.response_id, call.tool_index);
-            let done_value = match call.kind {
+            let item_id = kind.stream_item_id(&self.response_id, call.tool_index);
+            let done_value = match kind {
                 LocalToolKind::Function => json!({
                     "item_id": item_id,
                     "output_index": call.output_index,
@@ -445,16 +540,46 @@ impl ChatToResponsesStream {
                     "input": custom_input
                 }),
             };
-            events.push(stream_event(call.kind.stream_done_event(), done_value));
+            events.push(stream_event(kind.stream_done_event(), done_value));
             events.push(stream_event(
                 "response.output_item.done",
                 json!({
                     "output_index": call.output_index,
-                    "item": streaming_tool_item(&self.response_id, call)
+                    "item": streaming_tool_item(&self.response_id, call).ok_or(())?
                 }),
             ));
         }
         Ok(events)
+    }
+
+    fn validate_tool_calls(&self) -> Result<(), ()> {
+        let mut call_ids = BTreeSet::new();
+        let mut previous_output_index = None;
+        for (expected_index, (index, call)) in self.tool_calls.iter().enumerate() {
+            if *index != expected_index || call.tool_index != expected_index || !call.added {
+                return Err(());
+            }
+            if previous_output_index.is_some_and(|previous| call.output_index <= previous) {
+                return Err(());
+            }
+            previous_output_index = Some(call.output_index);
+
+            let call_id = call
+                .call_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .ok_or(())?;
+            let name = call
+                .name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .ok_or(())?;
+            let kind = call.kind.ok_or(())?;
+            if self.tool_kinds.get(name).copied() != Some(kind) || !call_ids.insert(call_id) {
+                return Err(());
+            }
+        }
+        Ok(())
     }
 
     fn complete_event(&mut self) -> Vec<String> {
@@ -497,7 +622,7 @@ impl ChatToResponsesStream {
         json!({
             "id": self.response_id,
             "object": "response",
-            "created_at": current_epoch_seconds(),
+            "created_at": self.created_at,
             "status": status,
             "background": false,
             "error": error,
@@ -507,7 +632,7 @@ impl ChatToResponsesStream {
             "model": self.public_model,
             "output": self.output_items(),
             "parallel_tool_calls": true,
-            "previous_response_id": null,
+            "previous_response_id": self.previous_response_id,
             "reasoning": {"effort": null, "summary": null},
             "store": false,
             "temperature": null,
@@ -535,25 +660,28 @@ impl ChatToResponsesStream {
     }
 }
 
-fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Value {
-    match call.kind {
+fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Option<Value> {
+    let call_id = call.call_id.as_deref()?;
+    let name = call.name.as_deref()?;
+    let kind = call.kind?;
+    Some(match kind {
         LocalToolKind::Function => json!({
-            "id": call.kind.stream_item_id(response_id, call.tool_index),
+            "id": kind.stream_item_id(response_id, call.tool_index),
             "type": "function_call",
             "status": if call.done { "completed" } else { "in_progress" },
-            "call_id": call.call_id,
-            "name": call.name,
+            "call_id": call_id,
+            "name": name,
             "arguments": call.arguments
         }),
         LocalToolKind::Custom => json!({
-            "id": call.kind.stream_item_id(response_id, call.tool_index),
+            "id": kind.stream_item_id(response_id, call.tool_index),
             "type": "custom_tool_call",
             "status": if call.done { "completed" } else { "in_progress" },
-            "call_id": call.call_id,
-            "name": call.name,
+            "call_id": call_id,
+            "name": name,
             "input": custom_tool_input(&call.arguments).unwrap_or_default()
         }),
-    }
+    })
 }
 
 fn custom_tool_input(arguments: &str) -> Option<String> {
@@ -1525,6 +1653,179 @@ mod tests {
         assert_eq!(terminal["response"]["status"], "incomplete");
         assert!(!adapter.is_completed());
         assert!(adapter.map_line("data: [DONE]").is_empty());
+    }
+
+    #[test]
+    fn chat_sse_done_without_finish_reason_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_unfinished".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+        adapter.map_line(r#"data: {"choices":[{"delta":{"content":"partial"}}]}"#);
+
+        let terminal = adapter.map_line("data: [DONE]");
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+        assert!(!adapter.is_completed());
+    }
+
+    #[test]
+    fn chat_sse_delta_after_finish_reason_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_post_finish".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+        adapter.map_line(r#"data: {"choices":[{"delta":{"content":"done"}}]}"#);
+        adapter.map_line(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#);
+
+        let terminal = adapter.map_line(r#"data: {"choices":[{"delta":{"content":"late"}}]}"#);
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+        assert!(!adapter.is_completed());
+    }
+
+    #[test]
+    fn chat_sse_accepts_id_then_name_tool_metadata() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_staggered".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        let lines = [
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function"
+            }]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "function": {"name": "calculate", "arguments": "{\"x\":1}"}
+            }]}}]}),
+            json!({
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+            }),
+        ];
+
+        let events = lines
+            .into_iter()
+            .flat_map(|line| adapter.map_line(&format!("data: {line}")))
+            .collect::<Vec<_>>();
+
+        assert!(
+            events.iter().any(|event| {
+                event.starts_with("event: response.function_call_arguments.delta\n")
+            })
+        );
+        assert!(
+            events
+                .last()
+                .is_some_and(|event| event.starts_with("event: response.completed\n"))
+        );
+        assert_eq!(adapter.output_items()[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_sse_duplicate_tool_call_ids_fail_at_finish() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_duplicate_calls".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_duplicate", "function": {
+                    "name": "calculate", "arguments": "{}"
+                }},
+                {"index": 1, "id": "call_duplicate", "function": {
+                    "name": "calculate", "arguments": "{}"
+                }}
+            ]}}]})
+        ));
+
+        let terminal =
+            adapter.map_line(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+    }
+
+    #[test]
+    fn chat_sse_conflicting_tool_metadata_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_conflicting_call".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "function": {"name": "calculate"}
+            }]}}]})
+        ));
+
+        let terminal = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_2", "function": {"arguments": "{}"}
+            }]}}]})
+        ));
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+    }
+
+    #[test]
+    fn chat_sse_out_of_order_tool_index_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_ordered_calls".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+
+        let terminal = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1, "id": "call_1", "function": {
+                    "name": "calculate", "arguments": "{}"
+                }
+            }]}}]})
+        ));
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+    }
+
+    #[test]
+    fn chat_sse_created_at_is_stable_across_events() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_stable_time".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::new(),
+        );
+        let created = adapter
+            .map_line(r#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#);
+        let created_at = created[0]
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .and_then(|data| serde_json::from_str::<Value>(data).ok())
+            .and_then(|event| event["response"]["created_at"].as_u64())
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+        let completed = adapter.map_line(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        );
+        let completed_at = completed
+            .last()
+            .and_then(|event| event.lines().find_map(|line| line.strip_prefix("data: ")))
+            .and_then(|data| serde_json::from_str::<Value>(data).ok())
+            .and_then(|event| event["response"]["created_at"].as_u64())
+            .unwrap();
+
+        assert_eq!(completed_at, created_at);
     }
 
     #[test]

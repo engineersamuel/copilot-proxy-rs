@@ -10,7 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 
+use copilot_proxy_rs::config::{AppConfig, LocalModelConfig};
 use copilot_proxy_rs::http::router;
+use copilot_proxy_rs::state::AppState;
 
 #[tokio::test]
 async fn local_responses_routes_buffered_request_without_copilot_work() {
@@ -570,6 +572,380 @@ async fn local_responses_stream_incomplete_finishes_with_done_and_does_not_cache
     assert_eq!(text.matches("data: [DONE]").count(), 1);
     let response_id = streamed_response_id(&text);
     assert_local_response_not_cached(&fixture, &response_id).await;
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_responses_stream_caches_before_completed_is_visible() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"first reply"},"finish_reason":null}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"first input","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body();
+    let mut visible = String::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.unwrap();
+        if let Ok(data) = frame.into_data() {
+            visible.push_str(&String::from_utf8_lossy(&data));
+        }
+        if visible.contains("event: response.completed\n") {
+            break;
+        }
+    }
+    let response_id = streamed_response_id(&visible);
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "second reply"}
+                }],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
+            }),
+        )
+        .await;
+
+    let follow_up = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "second input",
+                        "previous_response_id": response_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(outbound["messages"][1]["content"], "first reply");
+}
+
+#[tokio::test]
+async fn local_responses_stream_echoes_previous_response_id() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "first reply"}
+                }],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+            }),
+        )
+        .await;
+    let first = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"first input"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let first_id = response_json(first).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"second reply"},"finish_reason":null}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "second input",
+                        "stream": true,
+                        "previous_response_id": first_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    let snapshots = text
+        .split("\n\n")
+        .filter_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let event = serde_json::from_str::<Value>(data).ok()?;
+            event.get("response").cloned()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!snapshots.is_empty());
+    assert!(
+        snapshots
+            .iter()
+            .all(|response| response["previous_response_id"] == first_id)
+    );
+}
+
+#[tokio::test]
+async fn local_responses_stream_rejects_oversized_sse_line_without_cache() {
+    let mock = support::MockServer::start().await;
+    let content = "x".repeat(700);
+    let line = format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "choices": [{"delta": {"content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })
+    );
+    let (first, second) = line.as_bytes().split_at(600);
+    mock.respond_sse_split_chunks("POST", "/v1/chat/completions", 200, vec![first, second])
+        .await;
+    let mut config = AppConfig {
+        max_decoded_body_bytes: 512,
+        ..Default::default()
+    };
+    config.local_models.insert(
+        "qwen3-coder-30b-local".to_string(),
+        LocalModelConfig {
+            base_url: format!("{}/v1", mock.base_url),
+            upstream_model: "upstream-local".to_string(),
+        },
+    );
+    let state = AppState::new(config);
+    let response = router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"hello","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        text.matches("event: response.failed").count(),
+        1,
+        "{text:?}"
+    );
+    assert_eq!(
+        text.matches("event: response.completed").count(),
+        0,
+        "{text:?}"
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1, "{text:?}");
+    let failed_id = text
+        .split("\n\n")
+        .find_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let event = serde_json::from_str::<Value>(data).ok()?;
+            (event["type"] == "response.failed")
+                .then(|| event["response"]["id"].as_str().map(str::to_string))?
+        })
+        .unwrap();
+    let follow_up = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "again",
+                        "previous_response_id": failed_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(mock.hits("POST", "/v1/chat/completions").await, 1);
+}
+
+#[tokio::test]
+async fn local_responses_stream_accepts_case_insensitive_content_type() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_text(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            "Text/Event-Stream; Charset=UTF-8",
+            concat!(
+                r#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#,
+                "\n\n",
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n",
+                "data: [DONE]\n\n"
+            )
+            .to_string(),
+        )
+        .await;
+
+    let text = request_local_responses_stream(&fixture).await;
+
+    assert!(text.contains("event: response.completed\n"));
+    assert_eq!(text.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
+async fn local_responses_stream_malformed_tool_calls_fail_without_cache() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_duplicate","function":{"name":"calculate","arguments":"{}"}},{"index":1,"id":"call_duplicate","function":{"name":"calculate","arguments":"{}"}}]},"finish_reason":null}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "calculate",
+                        "stream": true,
+                        "tools": [{
+                            "type": "function",
+                            "name": "calculate",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        text.matches("event: response.failed").count(),
+        1,
+        "{text:?}"
+    );
+    assert_eq!(
+        text.matches("event: response.completed").count(),
+        0,
+        "{text:?}"
+    );
+    let failed_id = text
+        .split("\n\n")
+        .find_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let event = serde_json::from_str::<Value>(data).ok()?;
+            (event["type"] == "response.failed")
+                .then(|| event["response"]["id"].as_str().map(str::to_string))?
+        })
+        .unwrap();
+    assert_local_response_not_cached(&fixture, &failed_id).await;
     assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
     assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
     assert_eq!(fixture.mock.hits("GET", "/models").await, 0);

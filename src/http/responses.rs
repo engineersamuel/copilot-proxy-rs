@@ -241,10 +241,9 @@ async fn handle_local_responses(
             .get(http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|media_type| media_type.trim() == "text/event-stream")
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                })
             });
         if !is_event_stream {
             return openai_error(
@@ -257,19 +256,26 @@ async fn handle_local_responses(
 
         let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
         let adapter = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::local::responses::ChatToResponsesStream::new(
+            crate::local::responses::ChatToResponsesStream::new_with_previous_response_id(
                 response_id.clone(),
                 target.public_id.clone(),
+                (expanded.cache_status == PreviousResponseCacheStatus::Hit)
+                    .then(|| requested_previous_response_id.clone())
+                    .flatten(),
                 translated.tool_kinds,
             ),
         ));
         let mapper_adapter = adapter.clone();
-        let mapped = crate::http::sse::map_sse_lines_many(upstream.bytes_stream(), move |line| {
-            mapper_adapter
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .map_line(line)
-        });
+        let mapped = crate::http::sse::map_sse_lines_many(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                mapper_adapter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map_line(line)
+            },
+        );
         let cache_state = state.clone();
         let cache_response_id = response_id;
         let mut cache_payload = Some((translated.input_items, identity));
@@ -305,8 +311,8 @@ async fn handle_local_responses(
                         None
                     }
                 });
-                yield Ok::<Bytes, std::io::Error>(event);
                 let Some(completed_event) = terminal_event else {
+                    yield Ok::<Bytes, std::io::Error>(event);
                     continue;
                 };
                 let (completed, output) = {
@@ -339,6 +345,7 @@ async fn handle_local_responses(
                             .await;
                     }
                 }
+                yield Ok::<Bytes, std::io::Error>(event);
                 yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
                 return;
             }
