@@ -195,10 +195,18 @@ async fn handle_local_responses(
     body: Map<String, Value>,
     target: LocalModelTarget,
 ) -> Response {
-    let requested_previous_response_id = body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let requested_previous_response_id = match body.get("previous_response_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(previous_response_id)) => Some(previous_response_id.clone()),
+        Some(_) => {
+            return openai_error(
+                http::StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "previous_response_id must be a string",
+            )
+            .into_response();
+        }
+    };
     let expanded =
         crate::responses::request::expand_previous_response(&state.responses, body).await;
     if expanded.cache_status == PreviousResponseCacheStatus::Miss {

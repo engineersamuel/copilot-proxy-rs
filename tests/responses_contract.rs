@@ -217,6 +217,39 @@ async fn local_responses_rejects_unknown_previous_response_before_transport() {
 }
 
 #[tokio::test]
+async fn local_responses_rejects_non_string_previous_response_id_before_transport() {
+    for invalid_previous_response_id in [serde_json::json!(42), serde_json::json!({"id": 42})] {
+        let fixture = support::AppFixture::with_mock_local().await;
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "qwen3-coder-30b-local",
+                            "input": "follow-up",
+                            "previous_response_id": invalid_previous_response_id
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 0);
+        assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+        assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+        assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+    }
+}
+
+#[tokio::test]
 async fn local_responses_maps_malformed_upstream_response_without_copilot_fallback() {
     let fixture = support::AppFixture::with_mock_local().await;
     fixture
