@@ -454,6 +454,30 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
             }
         };
         if body.get("type").and_then(Value::as_str) == Some("response.create") {
+            let requested_model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if state
+                .models
+                .configured_local_target(requested_model)
+                .is_some()
+            {
+                let _ = client_ws
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "Local models do not support Responses WebSocket"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await;
+                continue;
+            }
             body.remove("type");
         }
         if body.get("generate").and_then(Value::as_bool) == Some(false) {
@@ -580,10 +604,26 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
     }
 }
 
+fn is_local_response_id(response_id: &str) -> bool {
+    response_id.starts_with("resp_local_")
+}
+
+fn unsupported_local_response_resource() -> Response {
+    openai_error(
+        http::StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        "Retrieval and cancellation of local response resources are unsupported",
+    )
+    .into_response()
+}
+
 pub(crate) async fn responses_retrieve(
     State(state): State<AppState>,
     Path(response_id): Path<String>,
 ) -> Response {
+    if is_local_response_id(&response_id) {
+        return unsupported_local_response_resource();
+    }
     match state.copilot.get_response(&response_id, None).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => openai_copilot_error(err).into_response(),
@@ -594,6 +634,9 @@ pub(crate) async fn responses_cancel(
     State(state): State<AppState>,
     Path(response_id): Path<String>,
 ) -> Response {
+    if is_local_response_id(&response_id) {
+        return unsupported_local_response_resource();
+    }
     match state.copilot.cancel_response(&response_id, None).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => openai_copilot_error(err).into_response(),

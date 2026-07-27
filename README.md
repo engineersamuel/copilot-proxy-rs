@@ -193,6 +193,26 @@ reasoning efforts; live Copilot metadata overrides them when available.
 Context-window fields are reported only when Copilot advertises them; otherwise
 they are `null` and `context_window_modes` is empty.
 
+Configured local models are declared in `config.json`, for example:
+
+```json
+{
+  "local_models": {
+    "qwen3-coder-30b-local": {
+      "base_url": "http://100.98.223.125:8080/v1",
+      "upstream_model": "models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    }
+  }
+}
+```
+
+Configured definitions appear in `/v1/models` without health probing. Their
+public IDs route before any Copilot model refresh. Chat Completions and
+Responses HTTP/SSE are supported. Responses WebSocket, response retrieval and
+cancellation, automatic discovery, and outbound API keys are unsupported.
+Local failures never fall back to Copilot. Use plain HTTP only over trusted
+private transport such as Tailscale.
+
 You can define local request aliases in `config.json` with
 `model_overrides.copilot`, for example:
 

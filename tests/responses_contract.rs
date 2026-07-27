@@ -1217,6 +1217,71 @@ async fn responses_retrieve_and_cancel_proxy_to_copilot() {
 }
 
 #[tokio::test]
+async fn local_response_retrieval_is_rejected_without_copilot_work() {
+    let fixture = support::AppFixture::with_mock_local().await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses/resp_local_example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Retrieval and cancellation of local response resources are unsupported"
+    );
+    assert_eq!(
+        fixture
+            .mock
+            .hits("GET", "/responses/resp_local_example")
+            .await,
+        0
+    );
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_response_cancellation_is_rejected_without_copilot_work() {
+    let fixture = support::AppFixture::with_mock_local().await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses/resp_local_example/cancel")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Retrieval and cancellation of local response resources are unsupported"
+    );
+    assert_eq!(
+        fixture
+            .mock
+            .hits("POST", "/responses/resp_local_example/cancel")
+            .await,
+        0
+    );
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
 async fn responses_streams_sse_passthrough() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
