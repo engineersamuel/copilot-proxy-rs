@@ -195,6 +195,71 @@ async fn local_responses_expands_cached_transcript_for_second_turn() {
 }
 
 #[tokio::test]
+async fn local_buffered_incomplete_response_is_not_available_for_follow_up() {
+    for finish_reason in ["length", "content_filter"] {
+        let fixture = support::AppFixture::with_mock_local().await;
+        fixture
+            .mock
+            .respond_json(
+                "POST",
+                "/v1/chat/completions",
+                200,
+                serde_json::json!({
+                    "choices": [{
+                        "finish_reason": finish_reason,
+                        "message": {"content": "partial reply"}
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }),
+            )
+            .await;
+
+        let first = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"qwen3-coder-30b-local","input":"first input"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        assert_eq!(first_body["status"], "incomplete");
+        let first_id = first_body["id"].as_str().unwrap();
+
+        let follow_up = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "qwen3-coder-30b-local",
+                            "input": "second input",
+                            "previous_response_id": first_id
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(follow_up.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+        assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+        assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+        assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+    }
+}
+
+#[tokio::test]
 async fn local_responses_rejects_unknown_previous_response_before_transport() {
     let fixture = support::AppFixture::with_mock_local().await;
     let response = router(fixture.state.clone())

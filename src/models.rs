@@ -628,7 +628,11 @@ impl ModelRegistry {
     }
 
     pub fn configured_local_target(&self, model: &str) -> Option<LocalModelTarget> {
-        let public_id = strip_model_prefix(model);
+        let public_id = if self.local_models.contains_key(model) {
+            model
+        } else {
+            strip_model_prefix(model)
+        };
         self.local_models
             .get(public_id)
             .map(|config| LocalModelTarget {

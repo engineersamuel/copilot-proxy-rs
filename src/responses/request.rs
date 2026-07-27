@@ -46,12 +46,12 @@ pub async fn expand_previous_response(
         if let Some(entry) = store.get_cached_response_state(&previous).await {
             cache_status = PreviousResponseCacheStatus::Hit;
             previous_identity = Some(entry.identity);
+            let mut expanded = entry.transcript;
             if let Some(input) = normalize_input_items(body.get("input")) {
-                let mut expanded = entry.transcript;
                 expanded.extend(input);
-                body.insert("input".to_string(), Value::Array(expanded));
-                body.remove("previous_response_id");
             }
+            body.insert("input".to_string(), Value::Array(expanded));
+            body.remove("previous_response_id");
         }
     }
     ExpandedResponsesInput {
@@ -336,55 +336,52 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn expand_previous_response_preserves_malformed_current_input_on_cache_hit() {
+    async fn assert_cache_hit_uses_cached_transcript_only(current_input: Option<Value>) {
         let store = ResponsesStateStore::default();
         let identity = ResponsesTurnIdentity {
-            interaction_id: "iid-malformed".to_string(),
-            agent_task_id: "atid-malformed".to_string(),
+            interaction_id: "iid-cached".to_string(),
+            agent_task_id: "atid-cached".to_string(),
         };
         store
             .cache_response_state(
-                "resp_malformed",
+                "resp_cached",
                 vec![json!({"role": "user", "content": "old"})],
                 vec![json!({"role": "assistant", "content": "old reply"})],
                 identity.clone(),
                 false,
             )
             .await;
-        let body = parse_body(
-            r#"{"model":"local","input":{"unexpected":true},"previous_response_id":"resp_malformed"}"#,
+        let mut body = parse_body(r#"{"model":"local","previous_response_id":"resp_cached"}"#);
+        if let Some(current_input) = current_input {
+            body.insert("input".to_string(), current_input);
+        }
+
+        let expanded = expand_previous_response(&store, body).await;
+
+        assert!(!expanded.body.contains_key("previous_response_id"));
+        assert_eq!(
+            expanded.body["input"],
+            json!([
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "old reply"}
+            ])
         );
-
-        let expanded = expand_previous_response(&store, body.clone()).await;
-
-        assert_eq!(expanded.body, body);
         assert_eq!(expanded.previous_identity, Some(identity));
         assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
     }
 
     #[tokio::test]
-    async fn expand_previous_response_preserves_missing_current_input_on_cache_hit() {
-        let store = ResponsesStateStore::default();
-        let identity = ResponsesTurnIdentity {
-            interaction_id: "iid-missing".to_string(),
-            agent_task_id: "atid-missing".to_string(),
-        };
-        store
-            .cache_response_state(
-                "resp_missing_input",
-                vec![json!({"role": "user", "content": "old"})],
-                vec![json!({"role": "assistant", "content": "old reply"})],
-                identity.clone(),
-                false,
-            )
-            .await;
-        let body = parse_body(r#"{"model":"local","previous_response_id":"resp_missing_input"}"#);
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_malformed() {
+        assert_cache_hit_uses_cached_transcript_only(Some(json!({"unexpected": true}))).await;
+    }
 
-        let expanded = expand_previous_response(&store, body.clone()).await;
+    #[tokio::test]
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_missing() {
+        assert_cache_hit_uses_cached_transcript_only(None).await;
+    }
 
-        assert_eq!(expanded.body, body);
-        assert_eq!(expanded.previous_identity, Some(identity));
-        assert_eq!(expanded.cache_status, PreviousResponseCacheStatus::Hit);
+    #[tokio::test]
+    async fn expand_previous_response_uses_cached_transcript_when_current_input_is_null() {
+        assert_cache_hit_uses_cached_transcript_only(Some(Value::Null)).await;
     }
 }

@@ -163,6 +163,117 @@ async fn configured_local_model_is_listed_and_resolved() {
 }
 
 #[tokio::test]
+async fn prefixed_configured_local_model_keeps_its_exact_public_id() {
+    let registry = ModelRegistry::with_models(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "github-copilot/foo".to_string(),
+            LocalModelConfig {
+                base_url: "http://127.0.0.1:8080/v1".to_string(),
+                upstream_model: "exact-prefixed-target".to_string(),
+            },
+        )]),
+    );
+
+    let catalog = registry
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+    assert!(
+        catalog
+            .data
+            .iter()
+            .any(|model| model.id == "github-copilot/foo")
+    );
+    assert!(catalog.models.iter().any(|model| {
+        model.slug == "github-copilot/foo" && model.source == ModelMetadataSource::Local
+    }));
+
+    let target = registry.resolve_target("github-copilot/foo").await;
+    assert!(matches!(
+        target,
+        ModelTarget::Local(ref local)
+            if local.public_id == "github-copilot/foo"
+                && local.upstream_model == "exact-prefixed-target"
+    ));
+}
+
+#[tokio::test]
+async fn prefixed_local_request_falls_back_to_unprefixed_key_but_exact_key_wins_collision() {
+    let fallback_registry = ModelRegistry::with_models(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "foo".to_string(),
+            LocalModelConfig {
+                base_url: "http://127.0.0.1:8080/v1".to_string(),
+                upstream_model: "fallback-target".to_string(),
+            },
+        )]),
+    );
+    let fallback_catalog = fallback_registry
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+    assert!(fallback_catalog.data.iter().any(|model| model.id == "foo"));
+    assert!(
+        !fallback_catalog
+            .data
+            .iter()
+            .any(|model| model.id == "github-copilot/foo")
+    );
+    let fallback = fallback_registry.resolve_target("github-copilot/foo").await;
+    assert!(matches!(
+        fallback,
+        ModelTarget::Local(ref local)
+            if local.public_id == "foo" && local.upstream_model == "fallback-target"
+    ));
+
+    let collision_registry = ModelRegistry::with_models(
+        BTreeMap::new(),
+        BTreeMap::from([
+            (
+                "foo".to_string(),
+                LocalModelConfig {
+                    base_url: "http://127.0.0.1:8080/v1".to_string(),
+                    upstream_model: "fallback-target".to_string(),
+                },
+            ),
+            (
+                "github-copilot/foo".to_string(),
+                LocalModelConfig {
+                    base_url: "http://127.0.0.1:8081/v1".to_string(),
+                    upstream_model: "exact-target".to_string(),
+                },
+            ),
+        ]),
+    );
+    let collision_catalog = collision_registry
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+    for configured_id in ["foo", "github-copilot/foo"] {
+        assert!(collision_catalog.models.iter().any(|model| {
+            model.slug == configured_id && model.source == ModelMetadataSource::Local
+        }));
+    }
+    let exact = collision_registry
+        .resolve_target("github-copilot/foo")
+        .await;
+    assert!(matches!(
+        exact,
+        ModelTarget::Local(ref local)
+            if local.public_id == "github-copilot/foo"
+                && local.upstream_model == "exact-target"
+    ));
+}
+
+#[tokio::test]
 async fn configured_local_model_capabilities_match_catalog() {
     let mut local_models = qwen_local_models();
     local_models.insert(

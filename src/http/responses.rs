@@ -395,7 +395,10 @@ async fn handle_local_responses(
             );
         }
     }
-    if let Some(output) = response.get("output").and_then(Value::as_array).cloned() {
+    if let (Some("completed"), Some(output)) = (
+        response.get("status").and_then(Value::as_str),
+        response.get("output").and_then(Value::as_array).cloned(),
+    ) {
         let has_tool_calls = output.iter().any(|item| {
             item.get("type")
                 .and_then(Value::as_str)
