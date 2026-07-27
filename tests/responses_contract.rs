@@ -21,6 +21,7 @@ async fn local_responses_routes_buffered_request_without_copilot_work() {
             200,
             serde_json::json!({
                 "choices": [{
+                    "finish_reason": "tool_calls",
                     "message": {
                         "role": "assistant",
                         "content": "hello",
@@ -111,7 +112,10 @@ async fn local_responses_expands_cached_transcript_for_second_turn() {
                 (
                     200,
                     serde_json::json!({
-                        "choices": [{"message": {"content": "first reply"}}],
+                        "choices": [{
+                            "finish_reason": "stop",
+                            "message": {"content": "first reply"}
+                        }],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
                     }),
                     vec![],
@@ -119,7 +123,10 @@ async fn local_responses_expands_cached_transcript_for_second_turn() {
                 (
                     200,
                     serde_json::json!({
-                        "choices": [{"message": {"content": "second reply"}}],
+                        "choices": [{
+                            "finish_reason": "stop",
+                            "message": {"content": "second reply"}
+                        }],
                         "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
                     }),
                     vec![],
@@ -165,6 +172,8 @@ async fn local_responses_expands_cached_transcript_for_second_turn() {
         .await
         .unwrap();
     assert_eq!(second.status(), StatusCode::OK);
+    let second_body = response_json(second).await;
+    assert_eq!(second_body["previous_response_id"], first_id);
 
     let upstream = fixture
         .mock
@@ -179,6 +188,32 @@ async fn local_responses_expands_cached_transcript_for_second_turn() {
             {"role": "user", "content": "second input"}
         ])
     );
+}
+
+#[tokio::test]
+async fn local_responses_rejects_unknown_previous_response_before_transport() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"follow-up","previous_response_id":"resp_local_missing"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
 }
 
 #[tokio::test]

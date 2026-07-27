@@ -195,8 +195,20 @@ async fn handle_local_responses(
     body: Map<String, Value>,
     target: LocalModelTarget,
 ) -> Response {
+    let requested_previous_response_id = body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let expanded =
         crate::responses::request::expand_previous_response(&state.responses, body).await;
+    if expanded.cache_status == PreviousResponseCacheStatus::Miss {
+        return openai_error(
+            http::StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "previous_response_id was not found",
+        )
+        .into_response();
+    }
     let mut effective_body = expanded.body;
     let identity = crate::responses::request::prepare_responses_turn_identity(
         &mut effective_body,
@@ -225,7 +237,7 @@ async fn handle_local_responses(
         Err(error) => return openai_local_error(error).into_response(),
     };
     let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
-    let response = match crate::local::responses::chat_to_responses(
+    let mut response = match crate::local::responses::chat_to_responses(
         &chat,
         &response_id,
         &target.public_id,
@@ -241,6 +253,16 @@ async fn handle_local_responses(
             .into_response();
         }
     };
+    if expanded.cache_status == PreviousResponseCacheStatus::Hit {
+        if let (Some(response), Some(previous_response_id)) =
+            (response.as_object_mut(), requested_previous_response_id)
+        {
+            response.insert(
+                "previous_response_id".to_string(),
+                Value::String(previous_response_id),
+            );
+        }
+    }
     if let Some(output) = response.get("output").and_then(Value::as_array).cloned() {
         let has_tool_calls = output.iter().any(|item| {
             item.get("type")

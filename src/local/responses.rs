@@ -94,13 +94,24 @@ pub fn chat_to_responses(
     public_model: &str,
     tool_kinds: &BTreeMap<String, LocalToolKind>,
 ) -> Result<Value, ResponsesTranslationError> {
-    let message = chat
+    let choice = chat
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_response("choices[0] must be an object"))?;
+    let (status, incomplete_details) = translate_finish_reason(choice.get("finish_reason"))?;
+    let message = choice
+        .get("message")
         .and_then(Value::as_object)
         .ok_or_else(|| invalid_response("choices[0].message must be an object"))?;
+    if let Some(role) = message.get("role") {
+        if role.as_str() != Some("assistant") {
+            return Err(invalid_response(
+                "choices[0].message.role must be assistant",
+            ));
+        }
+    }
     let mut output = Vec::new();
     match message.get("content") {
         Some(Value::String(content)) if !content.is_empty() => {
@@ -123,6 +134,7 @@ pub fn chat_to_responses(
         let calls = tool_calls
             .as_array()
             .ok_or_else(|| invalid_response("message.tool_calls must be an array"))?;
+        validate_unique_tool_call_ids(calls)?;
         for (index, call) in calls.iter().enumerate() {
             output.push(translate_chat_tool_call(
                 call,
@@ -137,10 +149,10 @@ pub fn chat_to_responses(
         "id": response_id,
         "object": "response",
         "created_at": current_epoch_seconds(),
-        "status": "completed",
+        "status": status,
         "background": false,
         "error": null,
-        "incomplete_details": null,
+        "incomplete_details": incomplete_details,
         "instructions": null,
         "max_output_tokens": null,
         "model": public_model,
@@ -157,6 +169,38 @@ pub fn chat_to_responses(
         "truncation": "disabled",
         "usage": usage
     }))
+}
+
+fn translate_finish_reason(
+    finish_reason: Option<&Value>,
+) -> Result<(&'static str, Value), ResponsesTranslationError> {
+    match finish_reason.and_then(Value::as_str) {
+        Some("stop" | "tool_calls") => Ok(("completed", Value::Null)),
+        Some("length") => Ok(("incomplete", json!({"reason": "max_output_tokens"}))),
+        Some("content_filter") => Ok(("incomplete", json!({"reason": "content_filter"}))),
+        Some(reason) => Err(invalid_response(format!(
+            "unsupported choices[0].finish_reason {reason}"
+        ))),
+        None => Err(invalid_response(
+            "choices[0].finish_reason must be a string",
+        )),
+    }
+}
+
+fn validate_unique_tool_call_ids(calls: &[Value]) -> Result<(), ResponsesTranslationError> {
+    let mut call_ids = BTreeSet::new();
+    for call in calls {
+        let object = call
+            .as_object()
+            .ok_or_else(|| invalid_response("tool call must be an object"))?;
+        let call_id = response_field_string(object, "id", "tool call")?;
+        if !call_ids.insert(call_id) {
+            return Err(invalid_response(format!(
+                "duplicate tool call id {call_id}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn translate_chat_tool_call(
@@ -744,7 +788,7 @@ fn value_kind(value: &Value) -> &'static str {
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{LocalToolKind, ResponsesTranslationError, chat_to_responses, responses_to_chat};
 
@@ -754,6 +798,7 @@ mod tests {
         let response = chat_to_responses(
             &json!({
                 "choices": [{
+                    "finish_reason": "tool_calls",
                     "message": {
                         "role": "assistant",
                         "content": "hello",
@@ -834,6 +879,7 @@ mod tests {
         let response = chat_to_responses(
             &json!({
                 "choices": [{
+                    "finish_reason": "tool_calls",
                     "message": {
                         "content": null,
                         "tool_calls": [{
@@ -875,6 +921,130 @@ mod tests {
             let error = chat_to_responses(
                 &malformed,
                 "resp_local_bad",
+                "qwen3-coder-30b-local",
+                &BTreeMap::new(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                ResponsesTranslationError::InvalidResponse(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn chat_response_maps_incomplete_finish_reasons() {
+        for (finish_reason, expected_reason) in [
+            ("length", "max_output_tokens"),
+            ("content_filter", "content_filter"),
+        ] {
+            let response = chat_to_responses(
+                &json!({
+                    "choices": [{
+                        "finish_reason": finish_reason,
+                        "message": {"role": "assistant", "content": "partial"}
+                    }]
+                }),
+                "resp_local_incomplete",
+                "qwen3-coder-30b-local",
+                &BTreeMap::new(),
+            )
+            .unwrap();
+
+            assert_eq!(response["status"], "incomplete");
+            assert_eq!(
+                response["incomplete_details"],
+                json!({"reason": expected_reason})
+            );
+        }
+    }
+
+    #[test]
+    fn chat_response_rejects_invalid_finish_reasons() {
+        for finish_reason in [Value::Null, json!("unknown"), json!(7)] {
+            let error = chat_to_responses(
+                &json!({
+                    "choices": [{
+                        "finish_reason": finish_reason,
+                        "message": {"role": "assistant", "content": "hello"}
+                    }]
+                }),
+                "resp_local_bad_finish",
+                "qwen3-coder-30b-local",
+                &BTreeMap::new(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                ResponsesTranslationError::InvalidResponse(_)
+            ));
+        }
+
+        let missing = chat_to_responses(
+            &json!({"choices": [{"message": {"content": "hello"}}]}),
+            "resp_local_missing_finish",
+            "qwen3-coder-30b-local",
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            ResponsesTranslationError::InvalidResponse(_)
+        ));
+    }
+
+    #[test]
+    fn chat_response_rejects_duplicate_tool_call_ids() {
+        let tool_kinds = BTreeMap::from([
+            ("first_tool".to_string(), LocalToolKind::Function),
+            ("second_tool".to_string(), LocalToolKind::Function),
+        ]);
+        let error = chat_to_responses(
+            &json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_duplicate",
+                                "type": "function",
+                                "function": {"name": "first_tool", "arguments": "{}"}
+                            },
+                            {
+                                "id": "call_duplicate",
+                                "type": "function",
+                                "function": {"name": "second_tool", "arguments": "{}"}
+                            }
+                        ]
+                    }
+                }]
+            }),
+            "resp_local_duplicate",
+            "qwen3-coder-30b-local",
+            &tool_kinds,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ResponsesTranslationError::InvalidResponse(_)
+        ));
+    }
+
+    #[test]
+    fn chat_response_rejects_non_assistant_roles() {
+        for role in [json!("user"), json!(7)] {
+            let error = chat_to_responses(
+                &json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"role": role, "content": "hello"}
+                    }]
+                }),
+                "resp_local_bad_role",
                 "qwen3-coder-30b-local",
                 &BTreeMap::new(),
             )

@@ -122,11 +122,15 @@ pub(crate) fn openai_responses_translation_error(
     error: ResponsesTranslationError,
 ) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
     const MAX_ERROR_CHARS: usize = 512;
+    const TRUNCATION_MARKER: &str = "...";
 
     let mut message = error.to_string();
     if message.chars().count() > MAX_ERROR_CHARS {
-        message = message.chars().take(MAX_ERROR_CHARS).collect();
-        message.push_str("...");
+        message = message
+            .chars()
+            .take(MAX_ERROR_CHARS - TRUNCATION_MARKER.chars().count())
+            .collect();
+        message.push_str(TRUNCATION_MARKER);
     }
     openai_error(StatusCode::BAD_REQUEST, "invalid_request_error", message)
 }
@@ -155,5 +159,22 @@ pub(crate) fn anthropic_copilot_error(
             "server_error",
             other.to_string(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openai_responses_translation_error;
+    use crate::local::ResponsesTranslationError;
+
+    #[test]
+    fn responses_translation_error_bounds_multibyte_message_by_characters() {
+        let (_, body) = openai_responses_translation_error(
+            ResponsesTranslationError::UnsupportedTool("é".repeat(600)),
+        );
+        let message = &body.0.error.message;
+
+        assert!(message.chars().count() <= 512, "{message}");
+        assert!(message.ends_with("..."), "{message}");
     }
 }
