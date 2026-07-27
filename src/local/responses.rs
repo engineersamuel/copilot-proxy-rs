@@ -107,26 +107,48 @@ fn normalize_input(input: Option<Value>) -> Result<Vec<Value>, ResponsesTranslat
 fn translate_input_items(input_items: &[Value]) -> Result<Vec<Value>, ResponsesTranslationError> {
     let mut messages = Vec::new();
     let mut pending_tool_calls = Vec::new();
+    let mut pending_call_ids = BTreeSet::new();
+    let mut outstanding_call_ids = BTreeSet::new();
     let mut call_ids = BTreeSet::new();
     let mut output_call_ids = BTreeSet::new();
     for item in input_items {
         let (object, item_type) = input_item(item)?;
         match item_type {
             "function_call" => {
-                register_call_id(object, &mut call_ids)?;
+                ensure_complete_tool_call_group(&outstanding_call_ids, "before new calls")?;
+                let call_id = register_call_id(object, &mut call_ids)?;
+                pending_call_ids.insert(call_id.to_string());
                 pending_tool_calls.push(translate_function_call(object)?);
             }
             "custom_tool_call" => {
-                register_call_id(object, &mut call_ids)?;
+                ensure_complete_tool_call_group(&outstanding_call_ids, "before new calls")?;
+                let call_id = register_call_id(object, &mut call_ids)?;
+                pending_call_ids.insert(call_id.to_string());
                 pending_tool_calls.push(translate_custom_tool_call(object)?);
             }
             "message" => {
-                flush_tool_calls(&mut messages, &mut pending_tool_calls);
+                flush_tool_calls(
+                    &mut messages,
+                    &mut pending_tool_calls,
+                    &mut pending_call_ids,
+                    &mut outstanding_call_ids,
+                );
+                ensure_complete_tool_call_group(&outstanding_call_ids, "before message")?;
                 messages.push(translate_message(object)?);
             }
             "function_call_output" | "custom_tool_call_output" => {
-                validate_output_call_id(object, &call_ids, &mut output_call_ids)?;
-                flush_tool_calls(&mut messages, &mut pending_tool_calls);
+                flush_tool_calls(
+                    &mut messages,
+                    &mut pending_tool_calls,
+                    &mut pending_call_ids,
+                    &mut outstanding_call_ids,
+                );
+                validate_output_call_id(
+                    object,
+                    &call_ids,
+                    &mut output_call_ids,
+                    &mut outstanding_call_ids,
+                )?;
                 messages.push(translate_tool_call_output(object)?);
             }
             unsupported => {
@@ -136,27 +158,34 @@ fn translate_input_items(input_items: &[Value]) -> Result<Vec<Value>, ResponsesT
             }
         }
     }
-    flush_tool_calls(&mut messages, &mut pending_tool_calls);
+    flush_tool_calls(
+        &mut messages,
+        &mut pending_tool_calls,
+        &mut pending_call_ids,
+        &mut outstanding_call_ids,
+    );
+    ensure_complete_tool_call_group(&outstanding_call_ids, "at end of input")?;
     Ok(messages)
 }
 
-fn register_call_id(
-    call: &Map<String, Value>,
+fn register_call_id<'a>(
+    call: &'a Map<String, Value>,
     call_ids: &mut BTreeSet<String>,
-) -> Result<(), ResponsesTranslationError> {
+) -> Result<&'a str, ResponsesTranslationError> {
     let call_id = required_field_string(call, "call_id")?;
     if !call_ids.insert(call_id.to_string()) {
         return Err(ResponsesTranslationError::InvalidRequest(format!(
             "duplicate tool call id: {call_id}"
         )));
     }
-    Ok(())
+    Ok(call_id)
 }
 
 fn validate_output_call_id(
     output: &Map<String, Value>,
     call_ids: &BTreeSet<String>,
     output_call_ids: &mut BTreeSet<String>,
+    outstanding_call_ids: &mut BTreeSet<String>,
 ) -> Result<(), ResponsesTranslationError> {
     let call_id = required_field_string(output, "call_id")?;
     if !call_ids.contains(call_id) {
@@ -164,12 +193,54 @@ fn validate_output_call_id(
             "unmatched tool output call id: {call_id}"
         )));
     }
-    if !output_call_ids.insert(call_id.to_string()) {
+    if output_call_ids.contains(call_id) {
         return Err(ResponsesTranslationError::InvalidRequest(format!(
             "duplicate tool output call id: {call_id}"
         )));
     }
+    if !outstanding_call_ids.remove(call_id) {
+        return Err(ResponsesTranslationError::InvalidRequest(format!(
+            "unmatched tool output call id: {call_id}"
+        )));
+    }
+    output_call_ids.insert(call_id.to_string());
     Ok(())
+}
+
+fn ensure_complete_tool_call_group(
+    outstanding_call_ids: &BTreeSet<String>,
+    boundary: &str,
+) -> Result<(), ResponsesTranslationError> {
+    if outstanding_call_ids.is_empty() {
+        return Ok(());
+    }
+    Err(ResponsesTranslationError::InvalidRequest(format!(
+        "tool call group missing outputs {boundary}: {}",
+        summarize_call_ids(outstanding_call_ids)
+    )))
+}
+
+fn summarize_call_ids(call_ids: &BTreeSet<String>) -> String {
+    const MAX_IDS: usize = 4;
+    const MAX_ID_CHARS: usize = 64;
+
+    let mut summary = call_ids
+        .iter()
+        .take(MAX_IDS)
+        .map(|call_id| {
+            let mut chars = call_id.chars();
+            let prefix = chars.by_ref().take(MAX_ID_CHARS).collect::<String>();
+            if chars.next().is_some() {
+                format!("{prefix}...")
+            } else {
+                prefix
+            }
+        })
+        .collect::<Vec<_>>();
+    if call_ids.len() > MAX_IDS {
+        summary.push(format!("+{} more", call_ids.len() - MAX_IDS));
+    }
+    summary.join(", ")
 }
 
 fn input_item(item: &Value) -> Result<(&Map<String, Value>, &str), ResponsesTranslationError> {
@@ -188,12 +259,18 @@ fn input_item(item: &Value) -> Result<(&Map<String, Value>, &str), ResponsesTran
     Ok((object, item_type))
 }
 
-fn flush_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+fn flush_tool_calls(
+    messages: &mut Vec<Value>,
+    pending_tool_calls: &mut Vec<Value>,
+    pending_call_ids: &mut BTreeSet<String>,
+    outstanding_call_ids: &mut BTreeSet<String>,
+) {
     if !pending_tool_calls.is_empty() {
         messages.push(json!({
             "role": "assistant",
             "tool_calls": std::mem::take(pending_tool_calls)
         }));
+        outstanding_call_ids.append(pending_call_ids);
     }
 }
 
@@ -1092,6 +1169,129 @@ mod tests {
             ResponsesTranslationError::InvalidRequest(
                 "invalid tool_choice string: sometimes".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_message_interrupting_tool_call_group() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "interrupt"}]
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "tool call group missing outputs before message: call_1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_rejects_unanswered_tool_calls_at_end_of_input() {
+        let result = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [{
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "first",
+                    "arguments": "{}"
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            ResponsesTranslationError::InvalidRequest(
+                "tool call group missing outputs at end of input: call_1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn responses_request_accepts_multi_call_outputs_in_any_order() {
+        let translated = responses_to_chat(
+            json!({
+                "model": "local",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "first",
+                        "arguments": "{}"
+                    },
+                    {
+                        "type": "custom_tool_call",
+                        "call_id": "call_2",
+                        "name": "second",
+                        "input": "run"
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_2",
+                        "output": "two"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "one"
+                    }
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            "local.gguf",
+        )
+        .unwrap();
+
+        assert_eq!(
+            translated.chat_body["messages"],
+            json!([
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "first", "arguments": "{}"}
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {
+                                "name": "second",
+                                "arguments": "{\"input\":\"run\"}"
+                            }
+                        }
+                    ]
+                },
+                {"role": "tool", "tool_call_id": "call_2", "content": "two"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "one"}
+            ])
         );
     }
 }
