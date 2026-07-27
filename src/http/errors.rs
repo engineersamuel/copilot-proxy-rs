@@ -4,6 +4,7 @@ use http::{HeaderMap, StatusCode};
 
 use crate::errors::{anthropic_error, openai_error};
 use crate::local::LocalModelError;
+use crate::local::ResponsesTranslationError;
 use crate::request_body::RequestBodyError;
 
 pub(crate) fn request_body_rejection_details(
@@ -115,6 +116,19 @@ pub(crate) fn openai_local_error(
             "local model returned invalid JSON",
         ),
     }
+}
+
+pub(crate) fn openai_responses_translation_error(
+    error: ResponsesTranslationError,
+) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {
+    const MAX_ERROR_CHARS: usize = 512;
+
+    let mut message = error.to_string();
+    if message.chars().count() > MAX_ERROR_CHARS {
+        message = message.chars().take(MAX_ERROR_CHARS).collect();
+        message.push_str("...");
+    }
+    openai_error(StatusCode::BAD_REQUEST, "invalid_request_error", message)
 }
 
 pub(crate) fn anthropic_copilot_error(

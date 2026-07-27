@@ -9,8 +9,10 @@ use serde_json::{Map, Value};
 
 use crate::errors::openai_error;
 use crate::http::errors::{
-    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+    openai_copilot_error, openai_local_error, openai_responses_translation_error,
+    request_body_error_details, request_body_rejection_details,
 };
+use crate::models::LocalModelTarget;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::responses::request::PreviousResponseCacheStatus;
 use crate::state::AppState;
@@ -57,13 +59,16 @@ pub(crate) async fn responses(
             return openai_error(status, "invalid_request_error", message).into_response();
         }
     };
-    state.copilot.refresh_models_if_stale().await;
-    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if let Some(local_target) = state.models.configured_local_target(&requested_model) {
+        return handle_local_responses(state, headers, body, local_target).await;
+    }
+    state.copilot.refresh_models_if_stale().await;
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let copilot_model = state
         .models
         .get_copilot_openai_model(&requested_model)
@@ -180,6 +185,78 @@ pub(crate) async fn responses(
                 cache.last_response_had_tool_calls.unwrap_or(false),
             "responses cache event"
         );
+    }
+    Json(response).into_response()
+}
+
+async fn handle_local_responses(
+    state: AppState,
+    headers: HeaderMap,
+    body: Map<String, Value>,
+    target: LocalModelTarget,
+) -> Response {
+    let expanded =
+        crate::responses::request::expand_previous_response(&state.responses, body).await;
+    let mut effective_body = expanded.body;
+    let identity = crate::responses::request::prepare_responses_turn_identity(
+        &mut effective_body,
+        &headers,
+        expanded.previous_identity.as_ref(),
+    );
+    let stream = effective_body
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let translated = match crate::local::responses_to_chat(effective_body, &target.upstream_model) {
+        Ok(translated) => translated,
+        Err(error) => return openai_responses_translation_error(error).into_response(),
+    };
+    if stream {
+        return openai_error(
+            http::StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "local Responses streaming is not yet supported",
+        )
+        .into_response();
+    }
+
+    let chat = match state.local.post_chat(&target, translated.chat_body).await {
+        Ok(chat) => chat,
+        Err(error) => return openai_local_error(error).into_response(),
+    };
+    let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+    let response = match crate::local::responses::chat_to_responses(
+        &chat,
+        &response_id,
+        &target.public_id,
+        &translated.tool_kinds,
+    ) {
+        Ok(response) => response,
+        Err(_) => {
+            return openai_error(
+                http::StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            )
+            .into_response();
+        }
+    };
+    if let Some(output) = response.get("output").and_then(Value::as_array).cloned() {
+        let has_tool_calls = output.iter().any(|item| {
+            item.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "function_call" | "custom_tool_call"))
+        });
+        state
+            .responses
+            .cache_response_state(
+                response_id,
+                translated.input_items,
+                output,
+                identity,
+                has_tool_calls,
+            )
+            .await;
     }
     Json(response).into_response()
 }

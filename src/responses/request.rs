@@ -76,43 +76,9 @@ pub async fn prepare_responses_request(
     effective_body.insert("model".to_string(), Value::String(copilot_model));
     adapt_responses_reasoning_effort(&mut effective_body, supported_efforts);
     adapt_responses_tools_for_copilot(&mut effective_body);
-    let incoming_interaction_id = header_value(headers, "x-interaction-id")
-        .or_else(|| header_value(headers, "x-client-request-id"));
-    let prompt_cache_identity = incoming_interaction_id.as_deref().or_else(|| {
-        previous_identity
-            .as_ref()
-            .map(|identity| identity.interaction_id.as_str())
-    });
-    if !effective_body.contains_key("prompt_cache_key") {
-        if let Some(cache_identity) = prompt_cache_identity {
-            let model = effective_body
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            effective_body.insert(
-                "prompt_cache_key".to_string(),
-                Value::String(format!("{cache_identity}:{model}")),
-            );
-        }
-    }
-    let interaction_id = incoming_interaction_id
-        .or_else(|| {
-            previous_identity
-                .as_ref()
-                .map(|identity| identity.interaction_id.clone())
-        })
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let identity =
+        prepare_responses_turn_identity(&mut effective_body, headers, previous_identity.as_ref());
     let initiator = compute_initiator(&effective_body, true).to_string();
-    let identity = ResponsesTurnIdentity {
-        interaction_id: interaction_id.clone(),
-        agent_task_id: header_value(headers, "x-agent-task-id")
-            .or_else(|| {
-                previous_identity
-                    .as_ref()
-                    .map(|identity| identity.agent_task_id.clone())
-            })
-            .unwrap_or_else(|| interaction_id.clone()),
-    };
     let request_metadata = CopilotRequestMetadata {
         request_id: Some(request_id),
         initiator: Some(initiator),
@@ -127,6 +93,39 @@ pub async fn prepare_responses_request(
         request_metadata,
         identity,
         cache_status,
+    }
+}
+
+pub fn prepare_responses_turn_identity(
+    effective_body: &mut Map<String, Value>,
+    headers: &HeaderMap,
+    previous_identity: Option<&ResponsesTurnIdentity>,
+) -> ResponsesTurnIdentity {
+    let incoming_interaction_id = header_value(headers, "x-interaction-id")
+        .or_else(|| header_value(headers, "x-client-request-id"));
+    let prompt_cache_identity = incoming_interaction_id
+        .as_deref()
+        .or_else(|| previous_identity.map(|identity| identity.interaction_id.as_str()));
+    if !effective_body.contains_key("prompt_cache_key") {
+        if let Some(cache_identity) = prompt_cache_identity {
+            let model = effective_body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            effective_body.insert(
+                "prompt_cache_key".to_string(),
+                Value::String(format!("{cache_identity}:{model}")),
+            );
+        }
+    }
+    let interaction_id = incoming_interaction_id
+        .or_else(|| previous_identity.map(|identity| identity.interaction_id.clone()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    ResponsesTurnIdentity {
+        interaction_id: interaction_id.clone(),
+        agent_task_id: header_value(headers, "x-agent-task-id")
+            .or_else(|| previous_identity.map(|identity| identity.agent_task_id.clone()))
+            .unwrap_or_else(|| interaction_id.clone()),
     }
 }
 

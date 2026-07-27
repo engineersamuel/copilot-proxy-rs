@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
@@ -85,6 +86,183 @@ pub fn responses_to_chat(
         input_items,
         tool_kinds,
     })
+}
+
+pub fn chat_to_responses(
+    chat: &Value,
+    response_id: &str,
+    public_model: &str,
+    tool_kinds: &BTreeMap<String, LocalToolKind>,
+) -> Result<Value, ResponsesTranslationError> {
+    let message = chat
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_response("choices[0].message must be an object"))?;
+    let mut output = Vec::new();
+    match message.get("content") {
+        Some(Value::String(content)) if !content.is_empty() => {
+            output.push(json!({
+                "id": format!("msg_{response_id}"),
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": content,
+                    "annotations": []
+                }]
+            }));
+        }
+        None | Some(Value::Null) | Some(Value::String(_)) => {}
+        Some(_) => return Err(invalid_response("message.content must be a string or null")),
+    }
+    if let Some(tool_calls) = message.get("tool_calls") {
+        let calls = tool_calls
+            .as_array()
+            .ok_or_else(|| invalid_response("message.tool_calls must be an array"))?;
+        for (index, call) in calls.iter().enumerate() {
+            output.push(translate_chat_tool_call(
+                call,
+                index,
+                response_id,
+                tool_kinds,
+            )?);
+        }
+    }
+    let usage = translate_chat_usage(chat.get("usage"))?;
+    Ok(json!({
+        "id": response_id,
+        "object": "response",
+        "created_at": current_epoch_seconds(),
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "model": public_model,
+        "output": output,
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {"effort": null, "summary": null},
+        "store": false,
+        "temperature": null,
+        "text": {"format": {"type": "text"}, "verbosity": "low"},
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": usage
+    }))
+}
+
+fn translate_chat_tool_call(
+    call: &Value,
+    index: usize,
+    response_id: &str,
+    tool_kinds: &BTreeMap<String, LocalToolKind>,
+) -> Result<Value, ResponsesTranslationError> {
+    let object = call
+        .as_object()
+        .ok_or_else(|| invalid_response("tool call must be an object"))?;
+    if object.get("type").and_then(Value::as_str) != Some("function") {
+        return Err(invalid_response("tool call type must be function"));
+    }
+    let call_id = response_field_string(object, "id", "tool call")?;
+    let function = object
+        .get("function")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_response("tool call function must be an object"))?;
+    let name = response_field_string(function, "name", "tool call function")?;
+    let arguments = response_field_string(function, "arguments", "tool call function")?;
+    match tool_kinds.get(name) {
+        Some(LocalToolKind::Function) => Ok(json!({
+            "id": format!("fc_{response_id}_{index}"),
+            "type": "function_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments
+        })),
+        Some(LocalToolKind::Custom) => {
+            let arguments: Value = serde_json::from_str(arguments)
+                .map_err(|_| invalid_response("custom tool arguments must be valid JSON"))?;
+            let input = arguments
+                .as_object()
+                .and_then(|arguments| arguments.get("input"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_response("custom tool arguments must contain string input")
+                })?;
+            Ok(json!({
+                "id": format!("ctc_{response_id}_{index}"),
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "input": input
+            }))
+        }
+        None => Err(invalid_response(format!(
+            "tool call references unknown tool {name}"
+        ))),
+    }
+}
+
+fn translate_chat_usage(usage: Option<&Value>) -> Result<Value, ResponsesTranslationError> {
+    let Some(usage) = usage else {
+        return Ok(Value::Null);
+    };
+    if usage.is_null() {
+        return Ok(Value::Null);
+    }
+    let usage = usage
+        .as_object()
+        .ok_or_else(|| invalid_response("usage must be an object or null"))?;
+    let input_tokens = response_token_count(usage, "prompt_tokens")?;
+    let output_tokens = response_token_count(usage, "completion_tokens")?;
+    let total_tokens = response_token_count(usage, "total_tokens")?;
+    Ok(json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens
+    }))
+}
+
+fn response_token_count(
+    usage: &Map<String, Value>,
+    field: &str,
+) -> Result<u64, ResponsesTranslationError> {
+    usage
+        .get(field)
+        .ok_or_else(|| invalid_response(format!("usage.{field} is missing")))?
+        .as_u64()
+        .ok_or_else(|| invalid_response(format!("usage.{field} must be an unsigned integer")))
+}
+
+fn response_field_string<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> Result<&'a str, ResponsesTranslationError> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_response(format!("{context}.{field} must be a non-empty string")))
+}
+
+fn invalid_response(message: impl Into<String>) -> ResponsesTranslationError {
+    ResponsesTranslationError::InvalidResponse(message.into())
+}
+
+fn current_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn normalize_input(input: Option<Value>) -> Result<Vec<Value>, ResponsesTranslationError> {
@@ -564,9 +742,150 @@ fn value_kind(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
-    use super::{ResponsesTranslationError, responses_to_chat};
+    use super::{LocalToolKind, ResponsesTranslationError, chat_to_responses, responses_to_chat};
+
+    #[test]
+    fn chat_response_translates_text_function_call_and_usage() {
+        let tool_kinds = BTreeMap::from([("get_weather".to_string(), LocalToolKind::Function)]);
+        let response = chat_to_responses(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"city\":\"NYC\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10
+                }
+            }),
+            "resp_local_test",
+            "qwen3-coder-30b-local",
+            &tool_kinds,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response,
+            json!({
+                "id": "resp_local_test",
+                "object": "response",
+                "created_at": response["created_at"],
+                "status": "completed",
+                "background": false,
+                "error": null,
+                "incomplete_details": null,
+                "instructions": null,
+                "max_output_tokens": null,
+                "model": "qwen3-coder-30b-local",
+                "output": [
+                    {
+                        "id": "msg_resp_local_test",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "hello",
+                            "annotations": []
+                        }]
+                    },
+                    {
+                        "id": "fc_resp_local_test_0",
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"NYC\"}"
+                    }
+                ],
+                "parallel_tool_calls": true,
+                "previous_response_id": null,
+                "reasoning": {"effort": null, "summary": null},
+                "store": false,
+                "temperature": null,
+                "text": {"format": {"type": "text"}, "verbosity": "low"},
+                "tool_choice": "auto",
+                "tools": [],
+                "top_p": null,
+                "truncation": "disabled",
+                "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+            })
+        );
+    }
+
+    #[test]
+    fn chat_response_translates_custom_tool_argument_input() {
+        let tool_kinds = BTreeMap::from([("shell".to_string(), LocalToolKind::Custom)]);
+        let response = chat_to_responses(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_custom",
+                            "type": "function",
+                            "function": {"name": "shell", "arguments": "{\"input\":\"text\"}"}
+                        }]
+                    }
+                }]
+            }),
+            "resp_local_custom",
+            "qwen3-coder-30b-local",
+            &tool_kinds,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response["output"],
+            json!([{
+                "id": "ctc_resp_local_custom_0",
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": "call_custom",
+                "name": "shell",
+                "input": "text"
+            }])
+        );
+    }
+
+    #[test]
+    fn chat_response_rejects_malformed_shapes() {
+        for malformed in [
+            json!({}),
+            json!({"choices": []}),
+            json!({"choices": [{"message": "bad"}]}),
+            json!({"choices": [{"message": {"tool_calls": [{"id": "call_1"}]}}]}),
+            json!({"choices": [{"message": {}}], "usage": {"prompt_tokens": "seven"}}),
+        ] {
+            let error = chat_to_responses(
+                &malformed,
+                "resp_local_bad",
+                "qwen3-coder-30b-local",
+                &BTreeMap::new(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                ResponsesTranslationError::InvalidResponse(_)
+            ));
+        }
+    }
 
     #[test]
     fn responses_request_translates_messages_function_calls_tools_and_options() {

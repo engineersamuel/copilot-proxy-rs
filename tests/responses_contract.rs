@@ -11,6 +11,238 @@ use tower::ServiceExt;
 use copilot_proxy_rs::http::router;
 
 #[tokio::test]
+async fn local_responses_routes_buffered_request_without_copilot_work() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"city\":\"NYC\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "weather",
+                        "tools": [{
+                            "type": "function",
+                            "name": "get_weather",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "qwen3-coder-30b-local");
+    assert!(body["id"].as_str().unwrap().starts_with("resp_local_"));
+    assert_eq!(body["output"][0]["content"][0]["text"], "hello");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_responses_rejects_hosted_tools_before_transport() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"search","tools":[{"type":"web_search_preview"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_responses_expands_cached_transcript_for_second_turn() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "POST",
+            "/v1/chat/completions",
+            vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": "first reply"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }),
+                    vec![],
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": "second reply"}}],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+                    }),
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+
+    let first = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-interaction-id", "interaction-local")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"first input"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = response_json(first).await;
+    let first_id = first_body["id"].as_str().unwrap();
+
+    let second = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "second input",
+                        "previous_response_id": first_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+
+    let upstream = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        upstream["messages"],
+        serde_json::json!([
+            {"role": "user", "content": "first input"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "second input"}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn local_responses_maps_malformed_upstream_response_without_copilot_fallback() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({"choices": []}),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"hello"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+}
+
+#[tokio::test]
+async fn local_responses_rejects_stream_without_copilot_work() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"hello","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
 async fn responses_accepts_body_between_axum_default_and_configured_limit() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
