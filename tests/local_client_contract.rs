@@ -79,7 +79,7 @@ async fn large_http_error_returns_before_reading_the_full_body() {
     let mock = support::MockServer::start().await;
     let prefix = "local backend overloaded: ";
     let first_chunk = format!("{prefix}{}", "x".repeat(64 * 1024));
-    let slow_tail = [b'x'];
+    let slow_tail = *b"x";
     let mut chunks = Vec::with_capacity(1_001);
     chunks.push(first_chunk.as_bytes());
     chunks.extend(std::iter::repeat_n(slow_tail.as_slice(), 1_000));
