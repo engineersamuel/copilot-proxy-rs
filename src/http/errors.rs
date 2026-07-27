@@ -90,7 +90,6 @@ pub(crate) fn openai_copilot_error(
     }
 }
 
-#[expect(dead_code, reason = "wired into local chat routing in the next task")]
 pub(crate) fn openai_local_error(
     error: LocalModelError,
 ) -> (StatusCode, Json<crate::errors::OpenAiErrorResponse>) {

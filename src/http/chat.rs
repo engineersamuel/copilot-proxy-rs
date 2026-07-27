@@ -9,9 +9,11 @@ use serde_json::Value;
 use crate::copilot::request::adapt_openai_reasoning_effort;
 use crate::errors::openai_error;
 use crate::http::errors::{
-    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+    openai_copilot_error, openai_local_error, request_body_error_details,
+    request_body_rejection_details,
 };
 use crate::http::validation::validate_openai_chat_request;
+use crate::models::LocalModelTarget;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 use crate::telemetry::{ApiFamily, api_family_name, summarize_effective_request};
@@ -58,13 +60,16 @@ async fn chat_completions_inner(
         openai_error(status, "invalid_request_error", message)
     })?;
     validate_openai_chat_request(&body)?;
-    state.copilot.refresh_models_if_stale().await;
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if let Some(local_target) = state.models.configured_local_target(&requested_model) {
+        return handle_local_chat(state, body, requested_model, local_target, stream).await;
+    }
+    state.copilot.refresh_models_if_stale().await;
     let copilot_model = state
         .models
         .get_copilot_openai_model(&requested_model)
@@ -172,4 +177,47 @@ async fn chat_completions_inner(
         .map_err(openai_copilot_error)?;
     crate::translate::openai::normalize_openai_response(&mut response, false);
     Ok(Json(response).into_response())
+}
+
+async fn handle_local_chat(
+    state: AppState,
+    body: serde_json::Map<String, Value>,
+    requested_model: String,
+    target: LocalModelTarget,
+    stream: bool,
+) -> Result<Response, (StatusCode, Json<crate::errors::OpenAiErrorResponse>)> {
+    if stream {
+        let upstream = state
+            .local
+            .stream_chat(&target, body)
+            .await
+            .map_err(openai_local_error)?;
+        let byte_stream = crate::http::sse::map_sse_lines(upstream.bytes_stream(), move |line| {
+            local_chat_sse_line(line, &requested_model)
+        });
+        return Ok(Response::builder()
+            .header(http::header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(byte_stream))
+            .unwrap());
+    }
+
+    let mut response = state
+        .local
+        .post_chat(&target, body)
+        .await
+        .map_err(openai_local_error)?;
+    response["model"] = Value::String(requested_model);
+    Ok(Json(response).into_response())
+}
+
+fn local_chat_sse_line(line: &str, public_model: &str) -> Option<String> {
+    let payload = line.strip_prefix("data: ")?;
+    if payload == "[DONE]" {
+        return Some("data: [DONE]".to_string());
+    }
+    let mut value: Value = serde_json::from_str(payload).ok()?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("model".to_string(), Value::String(public_model.to_string()));
+    }
+    Some(format!("data: {value}"))
 }

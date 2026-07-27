@@ -11,6 +11,173 @@ use tower::ServiceExt;
 use copilot_proxy_rs::http::router;
 
 #[tokio::test]
+async fn chat_completions_routes_configured_local_model_without_copilot_refresh() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-local",
+                "object": "chat.completion",
+                "model": r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf",
+                "choices": [{"message": {"role": "assistant", "content": "local ok"}}]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","messages":[{"role":"user","content":"Hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "qwen3-coder-30b-local");
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["model"],
+        r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    );
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn chat_completions_stream_rewrites_local_model_to_public_id() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"content":"local"}}]}"#,
+                r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"content":" stream"}}]}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","stream":true,"messages":[{"role":"user","content":"Hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains("qwen3-coder-30b-local"), "{text}");
+    assert!(
+        !text.contains("Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"),
+        "{text}"
+    );
+    assert!(text.contains("data: [DONE]"), "{text}");
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_chat_connection_failure_returns_502_without_copilot_fallback() {
+    let fixture = support::AppFixture::with_local_base_url("http://127.0.0.1:1/v1").await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","messages":[{"role":"user","content":"Hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_chat_preserves_429_with_bounded_upstream_detail_without_copilot_fallback() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let prefix = "local backend overloaded: ";
+    let upstream_detail = format!("{prefix}{}", "x".repeat(8_192));
+    fixture
+        .mock
+        .respond_sse_split_chunks(
+            "POST",
+            "/v1/chat/completions",
+            429,
+            vec![upstream_detail.as_bytes()],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","messages":[{"role":"user","content":"Hello"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    let detail = body["error"]["message"].as_str().unwrap();
+    assert!(detail.starts_with(prefix));
+    assert!(detail.chars().count() <= 4_096);
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
 async fn chat_completions_returns_live_copilot_response() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
