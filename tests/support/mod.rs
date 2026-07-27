@@ -102,6 +102,21 @@ impl MockServer {
     }
 
     #[allow(dead_code)]
+    pub async fn respond_text(
+        &self,
+        method: &str,
+        path: &str,
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    ) {
+        self.state.routes.lock().await.insert(
+            (method.to_string(), path.to_string()),
+            MockRouteResponse::Text(status, content_type, body),
+        );
+    }
+
+    #[allow(dead_code)]
     pub async fn respond_sse_split_chunks(
         &self,
         method: &str,

@@ -62,17 +62,19 @@ async fn chat_completions_routes_configured_local_model_without_copilot_refresh(
 #[tokio::test]
 async fn chat_completions_stream_rewrites_local_model_to_public_id() {
     let fixture = support::AppFixture::with_mock_local().await;
+    let chunk_one = concat!(
+        r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"content":"local"}}]}"#,
+        "\r\n\r\n",
+        r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"wea"#,
+    );
+    let chunk_two = concat!(r#"ther"}}]}}]}"#, "\r\n\r\n", "data: [DONE]\r",);
     fixture
         .mock
-        .respond_sse(
+        .respond_sse_split_chunks(
             "POST",
             "/v1/chat/completions",
             200,
-            vec![
-                r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"content":"local"}}]}"#,
-                r#"data: {"id":"chatcmpl-local","object":"chat.completion.chunk","model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[{"delta":{"content":" stream"}}]}"#,
-                "data: [DONE]",
-            ],
+            vec![chunk_one.as_bytes(), chunk_two.as_bytes(), b"\n\r\n"],
         )
         .await;
 
@@ -102,14 +104,186 @@ async fn chat_completions_stream_rewrites_local_model_to_public_id() {
             .to_vec(),
     )
     .unwrap();
-    assert!(text.contains("qwen3-coder-30b-local"), "{text}");
-    assert!(
-        !text.contains("Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"),
-        "{text}"
+    let events: Vec<_> = text
+        .split("\n\n")
+        .filter(|event| !event.is_empty())
+        .collect();
+    assert_eq!(
+        events.len(),
+        3,
+        "every SSE event must retain its delimiter: {text:?}"
     );
-    assert!(text.contains("data: [DONE]"), "{text}");
+    for event in &events[..2] {
+        let payload = event.strip_prefix("data: ").unwrap();
+        let chunk: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(chunk["model"], "qwen3-coder-30b-local", "{event}");
+        assert!(
+            !event.contains("Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"),
+            "{event}"
+        );
+    }
+    assert_eq!(events[2], "data: [DONE]");
+    assert_eq!(text.matches("\n\n").count(), 3, "{text:?}");
     assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
     assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_chat_rejects_scalar_success_response() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/chat/completions", 200, serde_json::json!("ok"))
+        .await;
+
+    let response = request_local_chat(fixture.state, false).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(
+        body["error"]["message"],
+        "local model returned invalid response"
+    );
+}
+
+#[tokio::test]
+async fn local_chat_rejects_array_success_response() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/chat/completions", 200, serde_json::json!([]))
+        .await;
+
+    let response = request_local_chat(fixture.state, false).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(
+        body["error"]["message"],
+        "local model returned invalid response"
+    );
+}
+
+#[tokio::test]
+async fn local_chat_rejects_non_sse_stream_response() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({"model": "upstream-model"}),
+        )
+        .await;
+
+    let response = request_local_chat(fixture.state, true).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(
+        body["error"]["message"],
+        "local model returned invalid response"
+    );
+}
+
+#[tokio::test]
+async fn local_chat_accepts_sse_content_type_parameters() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_text(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            "text/event-stream; charset=utf-8",
+            concat!(
+                r#"data: {"model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf","choices":[]}"#,
+                "\n\n",
+                "data: [DONE]\n\n",
+            )
+            .to_string(),
+        )
+        .await;
+
+    let response = request_local_chat(fixture.state, true).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        text.contains(r#""model":"qwen3-coder-30b-local""#),
+        "{text}"
+    );
+    assert!(text.contains("data: [DONE]\n\n"), "{text:?}");
+}
+
+#[tokio::test]
+async fn local_chat_stream_surfaces_malformed_data_json_as_body_error() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![r#"data: {"model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"#],
+        )
+        .await;
+
+    let response = request_local_chat(fixture.state, true).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.into_body().collect().await.is_err());
+}
+
+#[tokio::test]
+async fn local_chat_stream_surfaces_scalar_data_as_body_error() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![r#"data: "models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf""#],
+        )
+        .await;
+
+    let response = request_local_chat(fixture.state, true).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.into_body().collect().await.is_err());
+}
+
+#[tokio::test]
+async fn local_chat_stream_surfaces_array_data_as_body_error() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![r#"data: [{"model":"models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"}]"#],
+        )
+        .await;
+
+    let response = request_local_chat(fixture.state, true).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.into_body().collect().await.is_err());
 }
 
 #[tokio::test]
@@ -601,6 +775,28 @@ fn anthropic_tool_use_and_tool_result_blocks_are_preserved_in_openai_translation
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn request_local_chat(
+    state: copilot_proxy_rs::state::AppState,
+    stream: bool,
+) -> axum::response::Response {
+    let body = serde_json::json!({
+        "model": "qwen3-coder-30b-local",
+        "stream": stream,
+        "messages": [{"role": "user", "content": "Hello"}],
+    });
+    router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]

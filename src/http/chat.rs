@@ -192,9 +192,17 @@ async fn handle_local_chat(
             .stream_chat(&target, body)
             .await
             .map_err(openai_local_error)?;
-        let byte_stream = crate::http::sse::map_sse_lines(upstream.bytes_stream(), move |line| {
-            local_chat_sse_line(line, &requested_model)
-        });
+        if !has_event_stream_content_type(&upstream) {
+            return Err(openai_error(
+                StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            ));
+        }
+        let byte_stream =
+            crate::http::sse::map_sse_lines_checked(upstream.bytes_stream(), move |line| {
+                local_chat_sse_line(line, &requested_model)
+            });
         return Ok(Response::builder()
             .header(http::header::CONTENT_TYPE, "text/event-stream")
             .body(Body::from_stream(byte_stream))
@@ -206,18 +214,45 @@ async fn handle_local_chat(
         .post_chat(&target, body)
         .await
         .map_err(openai_local_error)?;
-    response["model"] = Value::String(requested_model);
+    let Some(object) = response.as_object_mut() else {
+        return Err(openai_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model returned invalid response",
+        ));
+    };
+    object.insert("model".to_string(), Value::String(requested_model));
     Ok(Json(response).into_response())
 }
 
-fn local_chat_sse_line(line: &str, public_model: &str) -> Option<String> {
-    let payload = line.strip_prefix("data: ")?;
+fn has_event_stream_content_type(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+fn local_chat_sse_line(line: &str, public_model: &str) -> Result<Option<String>, std::io::Error> {
+    let Some(payload) = line.strip_prefix("data: ") else {
+        return Ok(None);
+    };
     if payload == "[DONE]" {
-        return Some("data: [DONE]".to_string());
+        return Ok(Some("data: [DONE]".to_string()));
     }
-    let mut value: Value = serde_json::from_str(payload).ok()?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("model".to_string(), Value::String(public_model.to_string()));
-    }
-    Some(format!("data: {value}"))
+    let mut value: Value = serde_json::from_str(payload).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "local model returned malformed SSE data",
+        )
+    })?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "local model returned non-object SSE data",
+        )
+    })?;
+    object.insert("model".to_string(), Value::String(public_model.to_string()));
+    Ok(Some(format!("data: {value}")))
 }

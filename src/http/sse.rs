@@ -9,6 +9,17 @@ where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     F: Fn(&str) -> Option<String> + Send + Sync + 'static,
 {
+    map_sse_lines_checked(stream, move |line| Ok::<_, std::io::Error>(mapper(line)))
+}
+
+pub(crate) fn map_sse_lines_checked<S, F>(
+    stream: S,
+    mapper: F,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    F: Fn(&str) -> Result<Option<String>, std::io::Error> + Send + Sync + 'static,
+{
     let mut src = Box::pin(stream);
     async_stream::stream! {
         let mut buf = String::new();
@@ -23,15 +34,26 @@ where
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim_end_matches('\r').to_string();
                 buf.drain(..=nl);
-                if let Some(normalized) = mapper(&line) {
-                    yield Ok(Bytes::from(format!("{normalized}\n")));
+                if line.is_empty() {
+                    yield Ok(Bytes::from_static(b"\n"));
+                    continue;
+                }
+                match mapper(&line) {
+                    Ok(Some(normalized)) => yield Ok(Bytes::from(format!("{normalized}\n"))),
+                    Ok(None) => {}
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
                 }
             }
         }
         if !buf.is_empty() {
             let line = buf.trim_end_matches('\r').to_string();
-            if let Some(normalized) = mapper(&line) {
-                yield Ok(Bytes::from(format!("{normalized}\n")));
+            match mapper(&line) {
+                Ok(Some(normalized)) => yield Ok(Bytes::from(format!("{normalized}\n"))),
+                Ok(None) => {}
+                Err(error) => yield Err(error),
             }
         }
     }
