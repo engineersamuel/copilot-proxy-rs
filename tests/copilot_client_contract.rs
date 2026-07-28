@@ -15,8 +15,28 @@ use copilot_proxy_rs::copilot::client::CopilotBackend;
 use copilot_proxy_rs::copilot::client::CopilotEndpoints;
 use copilot_proxy_rs::copilot::errors::CopilotError;
 use copilot_proxy_rs::models::ModelRegistry;
+use http::StatusCode;
 use http_body_util::BodyExt as _;
 use support::log_capture::{field, with_event_capture};
+
+fn responses_body_with_agent_encrypted_content() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "stream": false,
+        "input": [{
+            "type": "agent_message",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [
+                {"type": "input_text", "text": "worker result"},
+                {"type": "encrypted_content", "encrypted_content": "opaque"}
+            ]
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+}
 
 #[tokio::test]
 async fn post_chat_retries_429_then_returns_json() {
@@ -591,6 +611,309 @@ async fn post_chat_sanitizes_raw_upstream_error_body() {
         }
         other => panic!("expected HTTP error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn post_responses_preserves_agent_message_encrypted_content_when_upstream_accepts_it() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "POST",
+        "/responses",
+        200,
+        serde_json::json!({
+            "id": "resp_preserved",
+            "output": [{
+                "type": "reasoning",
+                "encrypted_content": "upstream-ciphertext"
+            }]
+        }),
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let response = fixture
+        .backend
+        .post_responses(responses_body_with_agent_encrypted_content(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response["output"][0]["encrypted_content"],
+        "upstream-ciphertext"
+    );
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"][1],
+        serde_json::json!({
+            "type": "encrypted_content",
+            "encrypted_content": "opaque"
+        })
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+}
+
+#[tokio::test]
+async fn post_responses_retries_without_agent_message_ciphertext_after_decryption_error() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/responses",
+        vec![
+            (
+                400,
+                serde_json::json!({
+                    "error": {
+                        "message": "Encrypted function output content could not be decrypted or decoded.",
+                        "code": "invalid_request_body"
+                    }
+                }),
+                vec![],
+            ),
+            (
+                200,
+                serde_json::json!({"id": "resp_recovered", "output": []}),
+                vec![],
+            ),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let events = with_event_capture(|| async {
+        fixture
+            .backend
+            .post_responses(responses_body_with_agent_encrypted_content(), None)
+            .await
+            .unwrap();
+    })
+    .await;
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"],
+        serde_json::json!([{"type": "input_text", "text": "worker result"}])
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 2);
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses retrying without agent message encrypted content",
+            "stream"
+        )
+        .as_deref(),
+        Some("false")
+    );
+}
+
+#[tokio::test]
+async fn post_responses_does_not_drop_encrypted_only_agent_message_for_fallback() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "POST",
+        "/responses",
+        400,
+        serde_json::json!({
+            "error": {
+                "message": "Encrypted function output content could not be decrypted or decoded.",
+                "code": "invalid_request_body"
+            }
+        }),
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let mut body = responses_body_with_agent_encrypted_content();
+    body.get_mut("input")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|items| items.first_mut())
+        .and_then(|item| item.get_mut("content"))
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap()
+        .remove(0);
+
+    let result = fixture.backend.post_responses(body, None).await;
+
+    assert!(result.is_err());
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"],
+        serde_json::json!([{
+            "type": "encrypted_content",
+            "encrypted_content": "opaque"
+        }])
+    );
+}
+
+#[tokio::test]
+async fn stream_responses_retries_without_agent_message_ciphertext_after_decryption_error() {
+    let mock = support::MockServer::start().await;
+    mock.respond_sequence_json(
+        "POST",
+        "/responses",
+        vec![
+            (
+                400,
+                serde_json::json!({
+                    "error": {
+                        "message": "Encrypted function output content could not be decrypted or decoded.",
+                        "code": "invalid_request_body"
+                    }
+                }),
+                vec![],
+            ),
+            (200, serde_json::json!({"stream": "accepted"}), vec![]),
+        ],
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let fixture = support::backend_fixture(mock).await;
+    let mut body = responses_body_with_agent_encrypted_content();
+    body.insert("stream".to_string(), serde_json::Value::Bool(true));
+    let events = with_event_capture(|| async {
+        let response = fixture.backend.stream_responses(body, None).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    })
+    .await;
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"],
+        serde_json::json!([{"type": "input_text", "text": "worker result"}])
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 2);
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses retrying without agent message encrypted content",
+            "stream"
+        )
+        .as_deref(),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn post_chat_logs_full_failure_diagnostics_only_when_enabled() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "POST",
+        "/chat/completions",
+        400,
+        serde_json::json!({
+            "error": {
+                "message": "upstream rejected private prompt"
+            }
+        }),
+    )
+    .await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+
+    let temp = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    std::fs::write(temp.path().join("github_token"), "github-token").unwrap();
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+    let config = Arc::new(AppConfig {
+        log_failed_request_bodies: true,
+        ..AppConfig::load_from_env(&env).unwrap()
+    });
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        mock.auth_endpoints(),
+        false,
+    ));
+    let backend = CopilotBackend::with_endpoints_for_tests(
+        config,
+        auth,
+        Arc::new(ModelRegistry::new()),
+        mock.copilot_endpoints(),
+    );
+
+    let events = with_event_capture(|| async {
+        let result = backend
+            .post_chat(
+                serde_json::json!({
+                    "model": "gpt-5.5",
+                    "messages": [{"role": "user", "content": "private prompt"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+    })
+    .await;
+
+    assert!(
+        field(
+            &events,
+            "copilot failed request diagnostics",
+            "request.body"
+        )
+        .is_some_and(|body| body.contains("private prompt"))
+    );
+    assert_eq!(
+        field(
+            &events,
+            "copilot failed request diagnostics",
+            "upstream.response.body"
+        )
+        .as_deref(),
+        Some(r#"{"error":{"message":"upstream rejected private prompt"}}"#)
+    );
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@
   "api_key": "",
   "allowed_origins": [],
   "max_decoded_body_bytes": 16777216,
+  "log_failed_request_bodies": false,
   "copilot_timeout": 300,
   "copilot_models_ttl": 300,
   "copilot_retry_max": 3,

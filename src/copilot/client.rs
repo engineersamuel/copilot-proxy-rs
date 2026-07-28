@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::copilot::errors::{CopilotError, CopilotHttpError, TransientBackendError};
 use crate::copilot::request::{
     CopilotRequestMetadata, base_copilot_request_headers, compute_initiator,
+    strip_agent_message_encrypted_content,
 };
 use crate::models::{EffortLevel, ModelRegistry};
 
@@ -232,7 +233,23 @@ impl CopilotBackend {
         body: Map<String, Value>,
         metadata: Option<CopilotRequestMetadata>,
     ) -> Result<Value, CopilotError> {
-        self.post_json(&self.endpoints.responses_url, body, metadata)
+        let result = self
+            .post_json(
+                &self.endpoints.responses_url,
+                body.clone(),
+                metadata.clone(),
+            )
+            .await;
+        if !is_encrypted_function_output_decryption_error(&result) {
+            return result;
+        }
+        let mut fallback = body;
+        let stripped = strip_agent_message_encrypted_content(&mut fallback);
+        if stripped == 0 {
+            return result;
+        }
+        log_encrypted_content_fallback(stripped, false);
+        self.post_json(&self.endpoints.responses_url, fallback, metadata)
             .await
     }
 
@@ -241,7 +258,23 @@ impl CopilotBackend {
         body: Map<String, Value>,
         metadata: Option<CopilotRequestMetadata>,
     ) -> Result<reqwest::Response, CopilotError> {
-        self.stream_request(&self.endpoints.responses_url, body, metadata)
+        let result = self
+            .stream_request(
+                &self.endpoints.responses_url,
+                body.clone(),
+                metadata.clone(),
+            )
+            .await;
+        if !is_encrypted_function_output_decryption_error(&result) {
+            return result;
+        }
+        let mut fallback = body;
+        let stripped = strip_agent_message_encrypted_content(&mut fallback);
+        if stripped == 0 {
+            return result;
+        }
+        log_encrypted_content_fallback(stripped, true);
+        self.stream_request(&self.endpoints.responses_url, fallback, metadata)
             .await
     }
 
@@ -445,6 +478,15 @@ impl CopilotBackend {
                 None
             };
             last_response_text = response.text().await.unwrap_or_default();
+            if delay.is_none() {
+                self.log_failed_request_diagnostics(
+                    family,
+                    status,
+                    false,
+                    &body,
+                    &last_response_text,
+                );
+            }
             let sanitized_detail = sanitize_upstream_error(status, &last_response_text);
             if let Some(delay) = delay {
                 tracing::warn!(
@@ -679,6 +721,9 @@ impl CopilotBackend {
                 None
             };
             let raw_detail = response.text().await.unwrap_or_default();
+            if delay.is_none() {
+                self.log_failed_request_diagnostics(family, status, true, &body, &raw_detail);
+            }
             let detail = sanitize_upstream_error(status, &raw_detail);
             if let Some(delay) = delay {
                 tracing::warn!(
@@ -711,6 +756,28 @@ impl CopilotBackend {
         Err(CopilotError::Transport(
             "stream retry loop exhausted".to_string(),
         ))
+    }
+
+    fn log_failed_request_diagnostics(
+        &self,
+        family: &str,
+        status: u16,
+        stream: bool,
+        body: &Map<String, Value>,
+        upstream_response_body: &str,
+    ) {
+        if !self.config.log_failed_request_bodies {
+            return;
+        }
+        let request_body = Value::Object(body.clone()).to_string();
+        tracing::warn!(
+            api.family = family,
+            http.status_code = status as u64,
+            stream,
+            request.body = request_body,
+            upstream.response.body = upstream_response_body,
+            "copilot failed request diagnostics"
+        );
     }
 
     fn headers(
@@ -812,14 +879,39 @@ fn error_type_for_status(status: u16) -> &'static str {
     }
 }
 
+const ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR: &str =
+    "encrypted function output content could not be decrypted or decoded";
+
+fn is_encrypted_function_output_decryption_error<T>(result: &Result<T, CopilotError>) -> bool {
+    matches!(
+        result,
+        Err(CopilotError::Http(error))
+            if error.status_code == 400
+                && error
+                    .detail
+                    .contains(ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR)
+    )
+}
+
+fn log_encrypted_content_fallback(stripped: usize, stream: bool) {
+    tracing::warn!(
+        api.family = "responses",
+        stream,
+        input.encrypted_content.stripped = stripped as u64,
+        "copilot responses retrying without agent message encrypted content"
+    );
+}
+
 fn sanitize_upstream_error(status: u16, raw: &str) -> String {
+    let normalized = raw.to_ascii_lowercase();
     let safe_class = [
         "model_not_supported",
         "requested model is not supported",
         "unsupported_api_for_model",
+        ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR,
     ]
     .into_iter()
-    .find(|needle| raw.contains(needle));
+    .find(|needle| normalized.contains(needle));
     match safe_class {
         Some(class) => format!("Copilot request failed with HTTP {status}: {class}"),
         None => format!("Copilot request failed with HTTP {status}"),

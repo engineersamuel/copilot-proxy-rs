@@ -224,6 +224,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_message_encrypted_content_is_preserved_for_first_copilot_attempt() {
+        let store = ResponsesStateStore::default();
+        let body = parse_body(
+            r#"{
+                "model":"gpt-5.6-sol",
+                "input":[{
+                    "type":"agent_message",
+                    "author":"/root/worker",
+                    "recipient":"/root",
+                    "content":[
+                        {"type":"input_text","text":"worker result"},
+                        {"type":"encrypted_content","encrypted_content":"opaque"}
+                    ]
+                }]
+            }"#,
+        );
+
+        let result = prepare_responses_request(
+            &store,
+            body,
+            "req-agent-message".to_string(),
+            &HeaderMap::new(),
+            "gpt-5.6-sol".to_string(),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.effective_body["input"][0]["content"],
+            json!([
+                {"type":"input_text","text":"worker result"},
+                {"type":"encrypted_content","encrypted_content":"opaque"}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_encrypted_content_is_preserved_for_copilot() {
+        let store = ResponsesStateStore::default();
+        let body = parse_body(
+            r#"{
+                "model":"gpt-5.6-sol",
+                "input":[{
+                    "type":"reasoning",
+                    "encrypted_content":"valid-reasoning-ciphertext",
+                    "summary":[]
+                }]
+            }"#,
+        );
+
+        let result = prepare_responses_request(
+            &store,
+            body,
+            "req-reasoning".to_string(),
+            &HeaderMap::new(),
+            "gpt-5.6-sol".to_string(),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.effective_body["input"][0]["encrypted_content"],
+            "valid-reasoning-ciphertext"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_previous_response_id_leaves_body_unchanged() {
         let store = ResponsesStateStore::default();
         let body = parse_body(
