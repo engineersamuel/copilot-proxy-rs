@@ -183,6 +183,35 @@ pub fn adapt_responses_tools_for_copilot(body: &mut Map<String, Value>) {
     strip_unsupported_responses_includes(body);
 }
 
+pub fn strip_agent_message_encrypted_content(body: &mut Map<String, Value>) -> usize {
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return 0;
+    };
+    let mut stripped = 0;
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if !content
+            .iter()
+            .any(|part| part.get("type").and_then(Value::as_str) != Some("encrypted_content"))
+        {
+            continue;
+        }
+        content.retain(|part| {
+            let keep = part.get("type").and_then(Value::as_str) != Some("encrypted_content");
+            if !keep {
+                stripped += 1;
+            }
+            keep
+        });
+    }
+    stripped
+}
+
 fn strip_unsupported_responses_tools(body: &mut Map<String, Value>) {
     let remove_tools_key = if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut)
     {

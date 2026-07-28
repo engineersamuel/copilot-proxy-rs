@@ -101,6 +101,8 @@ pub struct AppConfig {
     pub allowed_origins: Vec<String>,
     #[serde(deserialize_with = "deserialize_u64")]
     pub max_decoded_body_bytes: u64,
+    #[serde(deserialize_with = "deserialize_bool")]
+    pub log_failed_request_bodies: bool,
     #[serde(deserialize_with = "deserialize_string")]
     pub log_level: String,
     #[serde(deserialize_with = "deserialize_string")]
@@ -171,6 +173,7 @@ impl Default for AppConfig {
             api_key: String::new(),
             allowed_origins: Vec::new(),
             max_decoded_body_bytes: 16 * 1024 * 1024,
+            log_failed_request_bodies: false,
             log_level: "INFO".to_string(),
             cowork_host: "198.18.1.1".to_string(),
             cowork_port: 8443,
@@ -237,6 +240,8 @@ struct FileConfig {
     allowed_origins: Option<Vec<String>>,
     #[serde(deserialize_with = "deserialize_opt_u64")]
     max_decoded_body_bytes: Option<u64>,
+    #[serde(deserialize_with = "deserialize_opt_bool")]
+    log_failed_request_bodies: Option<bool>,
     #[serde(deserialize_with = "deserialize_opt_string")]
     log_level: Option<String>,
     #[serde(deserialize_with = "deserialize_opt_string")]
@@ -385,6 +390,9 @@ impl AppConfig {
             if v > 0 {
                 self.max_decoded_body_bytes = v;
             }
+        }
+        if let Some(v) = file.log_failed_request_bodies {
+            self.log_failed_request_bodies = v;
         }
         if let Some(v) = file.log_level {
             if !v.is_empty() {
@@ -569,6 +577,11 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
     if config.max_decoded_body_bytes == 0 {
         config.max_decoded_body_bytes = 16 * 1024 * 1024;
     }
+    apply_bool(
+        env,
+        "COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES",
+        &mut config.log_failed_request_bodies,
+    );
     apply_string(env, "COPILOT_PROXY_RS_LOG_LEVEL", &mut config.log_level);
     config.log_level = config.log_level.to_ascii_uppercase();
     apply_string(env, "COPILOT_PROXY_RS_COWORK_HOST", &mut config.cowork_host);
