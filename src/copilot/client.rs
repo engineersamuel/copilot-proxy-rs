@@ -9,8 +9,8 @@ use crate::auth::CopilotAuth;
 use crate::config::AppConfig;
 use crate::copilot::errors::{CopilotError, CopilotHttpError, TransientBackendError};
 use crate::copilot::request::{
-    CopilotRequestMetadata, base_copilot_request_headers, compute_initiator,
-    strip_agent_message_encrypted_content,
+    CopilotRequestMetadata, ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR,
+    base_copilot_request_headers, compute_initiator, strip_agent_message_encrypted_content,
 };
 use crate::models::{EffortLevel, ModelRegistry};
 
@@ -878,9 +878,6 @@ fn error_type_for_status(status: u16) -> &'static str {
         _ => "api_error",
     }
 }
-
-const ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR: &str =
-    "encrypted function output content could not be decrypted or decoded";
 
 fn is_encrypted_function_output_decryption_error<T>(result: &Result<T, CopilotError>) -> bool {
     matches!(

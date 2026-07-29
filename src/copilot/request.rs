@@ -5,6 +5,8 @@ use serde_json::{Map, Value};
 use crate::models::{EffortLevel, SupportedEfforts};
 
 pub const COPILOT_REQUEST_API_VERSION: &str = "2026-06-01";
+pub const ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR: &str =
+    "encrypted function output content could not be decrypted or decoded";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CopilotRequestMetadata {

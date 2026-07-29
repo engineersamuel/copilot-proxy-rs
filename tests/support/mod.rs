@@ -24,9 +24,11 @@ use copilot_proxy_rs::state::AppState;
 
 type HeaderPairs = Vec<(&'static str, &'static str)>;
 type SeqEntry = (u16, Value, HeaderPairs);
+type TextSeqEntry = (u16, &'static str, String);
 type RequestKey = (String, String);
 type CapturedHeaders = HashMap<String, String>;
 type SeqMap = Arc<Mutex<HashMap<RequestKey, VecDeque<SeqEntry>>>>;
+type TextSeqMap = Arc<Mutex<HashMap<RequestKey, VecDeque<TextSeqEntry>>>>;
 type HeaderCaptureMap = Arc<Mutex<HashMap<RequestKey, CapturedHeaders>>>;
 type BodyCaptureMap = Arc<Mutex<HashMap<RequestKey, Vec<u8>>>>;
 
@@ -54,6 +56,7 @@ enum MockRouteResponse {
 struct MockState {
     routes: Arc<Mutex<HashMap<(String, String), MockRouteResponse>>>,
     sequences: SeqMap,
+    text_sequences: TextSeqMap,
     hits: Arc<Mutex<HashMap<(String, String), usize>>>,
     last_headers: HeaderCaptureMap,
     last_request_body: BodyCaptureMap,
@@ -64,6 +67,7 @@ impl Default for MockState {
         Self {
             routes: Arc::new(Mutex::new(HashMap::new())),
             sequences: Arc::new(Mutex::new(HashMap::new())),
+            text_sequences: Arc::new(Mutex::new(HashMap::new())),
             hits: Arc::new(Mutex::new(HashMap::new())),
             last_headers: Arc::new(Mutex::new(HashMap::new())),
             last_request_body: Arc::new(Mutex::new(HashMap::new())),
@@ -172,6 +176,21 @@ impl MockServer {
     }
 
     #[allow(dead_code)]
+    pub async fn respond_sequence_text(
+        &self,
+        method: &str,
+        path: &str,
+        responses: Vec<TextSeqEntry>,
+    ) {
+        let queue: VecDeque<_> = responses.into_iter().collect();
+        self.state
+            .text_sequences
+            .lock()
+            .await
+            .insert((method.to_string(), path.to_string()), queue);
+    }
+
+    #[allow(dead_code)]
     pub async fn hits(&self, method: &str, path: &str) -> usize {
         *self
             .state
@@ -265,6 +284,16 @@ async fn handle_mock(
             .lock()
             .await
             .insert(key.clone(), body_bytes.to_vec());
+    }
+
+    if let Some(entry) = state.text_sequences.lock().await.get_mut(&key) {
+        if let Some((status, content_type, body)) = entry.pop_front() {
+            return axum::response::Response::builder()
+                .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
+                .header("content-type", content_type)
+                .body(axum::body::Body::from(body))
+                .unwrap();
+        }
     }
 
     if let Some(entry) = state.sequences.lock().await.get_mut(&key) {

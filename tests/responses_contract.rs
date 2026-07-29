@@ -1391,6 +1391,241 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
 }
 
 #[tokio::test]
+async fn responses_stream_retries_early_failure_without_agent_message_ciphertext() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_text(
+            "POST",
+            "/responses",
+            vec![
+                (
+                    200,
+                    "text/event-stream",
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_failed\",\"status\":\"in_progress\"}}\n\n",
+                        "event: response.failed\n",
+                        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"opaque\",\"status\":\"failed\"}}\n\n",
+                    )
+                    .to_string(),
+                ),
+                (
+                    200,
+                    "text/event-stream",
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"in_progress\"}}\n\n",
+                        "event: response.output_text.delta\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"recovered\"}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"output\":[]}}\n\n",
+                    )
+                    .to_string(),
+                ),
+            ],
+        )
+        .await;
+
+    let events = with_event_capture(|| async {
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "gpt-5.6-sol",
+                            "stream": true,
+                            "input": [{
+                                "type": "agent_message",
+                                "author": "/root/worker",
+                                "recipient": "/root",
+                                "content": [
+                                    {"type": "input_text", "text": "worker result"},
+                                    {"type": "encrypted_content", "encrypted_content": "stale"}
+                                ]
+                            }]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let text = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+
+        assert!(text.contains("recovered"));
+        assert!(text.contains("resp_recovered"));
+        assert!(!text.contains("resp_failed"));
+        assert!(!text.contains("response.failed"));
+    })
+    .await;
+
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 2);
+    let retry_body = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        retry_body["input"][0]["content"],
+        serde_json::json!([{"type": "input_text", "text": "worker result"}])
+    );
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses retrying without agent message encrypted content",
+            "retry.trigger"
+        )
+        .as_deref(),
+        Some("early_response_failed")
+    );
+}
+
+#[tokio::test]
+async fn responses_stream_does_not_retry_failure_after_output_starts() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_text(
+            "POST",
+            "/responses",
+            vec![(
+                200,
+                "text/event-stream",
+                concat!(
+                    "event: response.created\n",
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_partial\",\"status\":\"in_progress\"}}\n\n",
+                    "event: response.output_text.delta\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+                    "event: response.failed\n",
+                    "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_partial\",\"status\":\"failed\"}}\n\n",
+                )
+                .to_string(),
+            )],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.6-sol",
+                        "stream": true,
+                        "input": [{
+                            "type": "agent_message",
+                            "content": [
+                                {"type": "input_text", "text": "worker result"},
+                                {"type": "encrypted_content", "encrypted_content": "stale"}
+                            ]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert!(text.contains("partial"));
+    assert!(text.contains("response.failed"));
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"][1]["encrypted_content"],
+        "stale"
+    );
+}
+
+#[tokio::test]
+async fn responses_stream_does_not_retry_explicit_early_server_error() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_text(
+            "POST",
+            "/responses",
+            vec![(
+                200,
+                "text/event-stream",
+                concat!(
+                    "event: response.failed\n",
+                    "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_error\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}}\n\n",
+                )
+                .to_string(),
+            )],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.6-sol",
+                        "stream": true,
+                        "input": [{
+                            "type": "agent_message",
+                            "content": [
+                                {"type": "input_text", "text": "worker result"},
+                                {"type": "encrypted_content", "encrypted_content": "valid"}
+                            ]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert!(text.contains("upstream exploded"));
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+}
+
+#[tokio::test]
 async fn responses_stream_logs_upstream_failed_terminal_event() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

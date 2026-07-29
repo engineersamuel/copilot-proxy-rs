@@ -7,6 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use http::HeaderMap;
 use serde_json::{Map, Value};
 
+use crate::copilot::request::{
+    ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR, strip_agent_message_encrypted_content,
+};
 use crate::errors::openai_error;
 use crate::http::errors::{
     openai_copilot_error, openai_local_error, openai_responses_translation_error,
@@ -21,10 +24,114 @@ use crate::telemetry::{
     summarize_request_sizes,
 };
 
+type CopilotResponseByteStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+
 #[derive(Debug, Default)]
 struct ResponsesStreamDiagnostics {
     events_seen: u64,
     terminal_seen: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesStreamPrefixDecision {
+    Forward,
+    RetryWithoutAgentMessageEncryptedContent,
+}
+
+async fn buffer_copilot_responses_stream_prefix<S>(
+    stream: &mut std::pin::Pin<Box<S>>,
+    max_buffer_bytes: usize,
+) -> Result<(Vec<Bytes>, ResponsesStreamPrefixDecision), std::io::Error>
+where
+    S: futures_util::Stream<Item = Result<Bytes, reqwest::Error>>,
+{
+    let mut chunks = Vec::new();
+    let mut buffered_bytes = 0usize;
+    let mut line = Vec::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(std::io::Error::other)?;
+        buffered_bytes = buffered_bytes
+            .checked_add(chunk.len())
+            .filter(|size| *size <= max_buffer_bytes)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "SSE prefix exceeds configured limit",
+                )
+            })?;
+
+        for byte in &chunk {
+            if *byte != b'\n' {
+                line.push(*byte);
+                if line.len() > max_buffer_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "SSE line exceeds configured limit",
+                    ));
+                }
+                continue;
+            }
+
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            let decision =
+                classify_copilot_responses_stream_prefix_line(&String::from_utf8_lossy(&line));
+            line.clear();
+            if let Some(decision) = decision {
+                chunks.push(chunk);
+                return Ok((chunks, decision));
+            }
+        }
+        chunks.push(chunk);
+    }
+
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    let decision = classify_copilot_responses_stream_prefix_line(&String::from_utf8_lossy(&line))
+        .unwrap_or(ResponsesStreamPrefixDecision::Forward);
+    Ok((chunks, decision))
+}
+
+fn classify_copilot_responses_stream_prefix_line(
+    line: &str,
+) -> Option<ResponsesStreamPrefixDecision> {
+    let payload = line.strip_prefix("data:")?;
+    let event = serde_json::from_str::<Value>(payload.trim_start()).ok()?;
+    match event.get("type").and_then(Value::as_str)? {
+        "response.created" | "response.in_progress" | "response.queued" => None,
+        "response.failed" if is_retryable_early_responses_failure(&event) => {
+            Some(ResponsesStreamPrefixDecision::RetryWithoutAgentMessageEncryptedContent)
+        }
+        _ => Some(ResponsesStreamPrefixDecision::Forward),
+    }
+}
+
+fn is_retryable_early_responses_failure(event: &Value) -> bool {
+    let response = event.get("response").unwrap_or(&Value::Null);
+    let error = response
+        .get("error")
+        .or_else(|| event.get("error"))
+        .unwrap_or(&Value::Null);
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
+    let error_type = error.get("type").and_then(Value::as_str).unwrap_or("");
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("");
+    (code.is_empty() && error_type.is_empty() && message.is_empty())
+        || message
+            .to_ascii_lowercase()
+            .contains(ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR)
+}
+
+fn copilot_response_request_id(response: &reqwest::Response) -> String {
+    ["x-request-id", "x-github-request-id", "request-id"]
+        .into_iter()
+        .find_map(|name| response.headers().get(name))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn observe_copilot_responses_stream_line(
@@ -215,11 +322,14 @@ pub(crate) async fn responses(
     }
     if stream {
         let stream_started = std::time::Instant::now();
+        let mut fallback_body = prepared.effective_body.clone();
+        let stripped_encrypted_content = strip_agent_message_encrypted_content(&mut fallback_body);
         let diagnostic_request_id = prepared
             .request_metadata
             .request_id
             .clone()
             .unwrap_or_default();
+        let retry_metadata = prepared.request_metadata.clone();
         let upstream = match state
             .copilot
             .stream_responses(prepared.effective_body, Some(prepared.request_metadata))
@@ -228,12 +338,62 @@ pub(crate) async fn responses(
             Ok(upstream) => upstream,
             Err(err) => return openai_copilot_error(err).into_response(),
         };
-        let upstream_request_id = ["x-request-id", "x-github-request-id", "request-id"]
-            .into_iter()
-            .find_map(|name| upstream.headers().get(name))
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+        let initial_upstream_request_id = copilot_response_request_id(&upstream);
+        let mut upstream_stream = Box::pin(upstream.bytes_stream());
+        let (byte_stream, upstream_request_id) = if stripped_encrypted_content > 0 {
+            let (prefix, decision) = match buffer_copilot_responses_stream_prefix(
+                &mut upstream_stream,
+                state.config.max_decoded_body_bytes as usize,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return openai_error(
+                        http::StatusCode::BAD_GATEWAY,
+                        "server_error",
+                        format!("Copilot response stream failed: {error}"),
+                    )
+                    .into_response();
+                }
+            };
+            match decision {
+                ResponsesStreamPrefixDecision::Forward => {
+                    let prefix_stream = futures_util::stream::iter(prefix.into_iter().map(Ok));
+                    (
+                        Box::pin(prefix_stream.chain(upstream_stream)) as CopilotResponseByteStream,
+                        initial_upstream_request_id,
+                    )
+                }
+                ResponsesStreamPrefixDecision::RetryWithoutAgentMessageEncryptedContent => {
+                    tracing::warn!(
+                        api.family = "responses",
+                        stream = true,
+                        retry.trigger = "early_response_failed",
+                        input.encrypted_content.stripped = stripped_encrypted_content as u64,
+                        "copilot responses retrying without agent message encrypted content"
+                    );
+                    let retry = match state
+                        .copilot
+                        .stream_responses(fallback_body, Some(retry_metadata))
+                        .await
+                    {
+                        Ok(retry) => retry,
+                        Err(error) => return openai_copilot_error(error).into_response(),
+                    };
+                    let retry_upstream_request_id = copilot_response_request_id(&retry);
+                    (
+                        Box::pin(retry.bytes_stream()) as CopilotResponseByteStream,
+                        retry_upstream_request_id,
+                    )
+                }
+            }
+        } else {
+            (
+                upstream_stream as CopilotResponseByteStream,
+                initial_upstream_request_id,
+            )
+        };
         let diagnostics =
             std::sync::Arc::new(std::sync::Mutex::new(ResponsesStreamDiagnostics::default()));
         let observer_diagnostics = diagnostics.clone();
@@ -241,7 +401,7 @@ pub(crate) async fn responses(
         let observer_upstream_request_id = upstream_request_id.clone();
         let end_diagnostics = diagnostics.clone();
         let byte_stream = crate::http::sse::inspect_sse_lines(
-            upstream.bytes_stream(),
+            byte_stream,
             state.config.max_decoded_body_bytes as usize,
             move |line| {
                 let mut diagnostics = observer_diagnostics
