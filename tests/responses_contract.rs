@@ -1510,6 +1510,49 @@ data: {"type":"response.created","response":{"id":"resp_unterminated","status":"
 }
 
 #[tokio::test]
+async fn responses_stream_keeps_terminal_state_when_later_event_arrives() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_complete","status":"completed","output":[]}}"#,
+                r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"late"}"#,
+            ],
+        )
+        .await;
+
+    let events = with_event_capture(|| async {
+        let response = router(fixture.state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-5.5","stream":true,"input":"hello"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response.into_body().collect().await.unwrap();
+    })
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .all(|event| event.message != "copilot responses stream ended without terminal event")
+    );
+}
+
+#[tokio::test]
 async fn responses_http_clamps_reasoning_effort_and_preserves_unrelated_fields() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

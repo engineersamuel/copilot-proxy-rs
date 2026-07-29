@@ -44,7 +44,7 @@ fn observe_copilot_responses_stream_line(
         return;
     };
     diagnostics.events_seen += 1;
-    diagnostics.terminal_seen = matches!(
+    diagnostics.terminal_seen |= matches!(
         event_type,
         "response.completed" | "response.incomplete" | "response.failed"
     );
