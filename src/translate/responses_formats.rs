@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 pub fn openai_chat_to_responses_request(body: &Map<String, Value>) -> Map<String, Value> {
     let mut out = Map::new();
@@ -10,7 +14,7 @@ pub fn openai_chat_to_responses_request(body: &Map<String, Value>) -> Map<String
     );
     let input = body
         .get("messages")
-        .cloned()
+        .map(openai_chat_messages_to_responses_input)
         .unwrap_or_else(|| Value::Array(Vec::new()));
     out.insert("input".to_string(), input);
     if let Some(stream) = body.get("stream") {
@@ -19,11 +23,101 @@ pub fn openai_chat_to_responses_request(body: &Map<String, Value>) -> Map<String
     if let Some(effort) = body.get("reasoning_effort") {
         out.insert("reasoning".to_string(), json!({ "effort": effort }));
     }
+    if let Some(max_tokens) = body.get("max_completion_tokens") {
+        out.insert("max_output_tokens".to_string(), max_tokens.clone());
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        out.insert(
+            "tools".to_string(),
+            Value::Array(
+                tools
+                    .iter()
+                    .filter_map(openai_chat_tool_to_responses_tool)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(tool_choice) = body
+        .get("tool_choice")
+        .and_then(openai_chat_tool_choice_to_responses)
+    {
+        out.insert("tool_choice".to_string(), tool_choice);
+    }
+    if let Some(parallel_tool_calls) = body.get("parallel_tool_calls") {
+        out.insert(
+            "parallel_tool_calls".to_string(),
+            parallel_tool_calls.clone(),
+        );
+    }
     copy_prompt_cache_controls(body, &mut out);
     out
 }
 
-pub fn responses_to_openai_chat_response(response: &Value) -> Value {
+fn openai_chat_messages_to_responses_input(value: &Value) -> Value {
+    let Some(messages) = value.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    let mut input = Vec::new();
+    for message in messages {
+        let Some(object) = message.as_object() else {
+            continue;
+        };
+        let role = object.get("role").and_then(Value::as_str).unwrap_or("user");
+        if role == "tool" {
+            input.push(json!({
+                "type": "function_call_output",
+                "call_id": object
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                "output": openai_chat_message_content_text(object.get("content"))
+            }));
+            continue;
+        }
+        if let Some(content) = object.get("content")
+            && !content.is_null()
+            && content.as_str() != Some("")
+        {
+            let mut translated_message = Map::new();
+            translated_message.insert("role".to_string(), Value::String(role.to_string()));
+            translated_message.insert("content".to_string(), content.clone());
+            input.push(Value::Object(translated_message));
+        }
+        for tool_call in object
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let function = tool_call.get("function").unwrap_or(&Value::Null);
+            input.push(json!({
+                "type": "function_call",
+                "call_id": tool_call.get("id").and_then(Value::as_str).unwrap_or(""),
+                "name": function.get("name").and_then(Value::as_str).unwrap_or(""),
+                "arguments": function
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            }));
+        }
+    }
+    Value::Array(input)
+}
+
+fn openai_chat_message_content_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(value) if !value.is_null() => value.to_string(),
+        _ => String::new(),
+    }
+}
+
+pub fn responses_to_openai_chat_response(response: &Value, public_model: &str) -> Value {
     let text = response
         .get("output")
         .and_then(Value::as_array)
@@ -38,12 +132,117 @@ pub fn responses_to_openai_chat_response(response: &Value) -> Value {
         .filter_map(|content| content.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("\n");
+    let tool_calls = response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .map(|item| {
+            json!({
+                "id": item.get("call_id").and_then(Value::as_str).unwrap_or(""),
+                "type": "function",
+                "function": {
+                    "name": item.get("name").and_then(Value::as_str).unwrap_or(""),
+                    "arguments": item.get("arguments").and_then(Value::as_str).unwrap_or("")
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let finish_reason = if tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    };
+    let mut message = Map::new();
+    message.insert("role".to_string(), json!("assistant"));
+    message.insert(
+        "content".to_string(),
+        if text.is_empty() && !tool_calls.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text)
+        },
+    );
+    if !tool_calls.is_empty() {
+        message.insert("tool_calls".to_string(), Value::Array(tool_calls));
+    }
     json!({
         "id": response.get("id").cloned().unwrap_or_else(|| json!("chatcmpl-responses")),
         "object": "chat.completion",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-        "usage": response.get("usage").cloned().unwrap_or_else(|| json!({}))
+        "created": response
+            .get("created_at")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(unix_timestamp),
+        "model": public_model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": openai_chat_usage(response.get("usage"))
     })
+}
+
+fn openai_chat_tool_to_responses_tool(value: &Value) -> Option<Value> {
+    let function = value.get("function")?.as_object()?;
+    let name = function.get("name")?.as_str()?;
+    let mut tool = Map::new();
+    tool.insert("type".to_string(), json!("function"));
+    tool.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(description) = function.get("description") {
+        tool.insert("description".to_string(), description.clone());
+    }
+    tool.insert(
+        "parameters".to_string(),
+        function
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| json!({"type": "object"})),
+    );
+    if let Some(strict) = function.get("strict") {
+        tool.insert("strict".to_string(), strict.clone());
+    }
+    Some(Value::Object(tool))
+}
+
+fn openai_chat_tool_choice_to_responses(value: &Value) -> Option<Value> {
+    match value {
+        Value::String(choice) => Some(Value::String(choice.clone())),
+        Value::Object(choice) if choice.get("type").and_then(Value::as_str) == Some("function") => {
+            Some(json!({
+                "type": "function",
+                "name": choice
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn openai_chat_usage(usage: Option<&Value>) -> Value {
+    let input_tokens = usage
+        .and_then(|value| value.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|value| value.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|value| value.get("total_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(input_tokens + output_tokens);
+    json!({
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": total_tokens
+    })
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 pub fn anthropic_messages_to_responses_request(
@@ -527,27 +726,194 @@ pub fn responses_sse_to_anthropic_sse_line(line: &str) -> Option<String> {
     }
 }
 
-pub fn responses_sse_to_openai_chat_sse_line(line: &str) -> Option<String> {
-    if !line.starts_with("data: ") {
-        return Some(line.to_string());
-    }
-    let payload = line.strip_prefix("data: ")?;
-    if payload == "[DONE]" {
-        return Some(line.to_string());
-    }
-    let value: Value = serde_json::from_str(payload).ok()?;
-    match value.get("type").and_then(Value::as_str) {
-        Some("response.output_text.delta") => {
-            let content = value.get("delta").and_then(Value::as_str).unwrap_or("");
-            Some(format!(
-                "data: {}",
-                json!({
-                    "object": "chat.completion.chunk",
-                    "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": null}]
-                })
-            ))
+#[derive(Debug, Clone)]
+struct ChatToolCall {
+    id: String,
+}
+
+#[derive(Debug)]
+pub struct ResponsesToChatStream {
+    id: String,
+    created: u64,
+    model: String,
+    role_emitted: bool,
+    completed: bool,
+    saw_tool_call: bool,
+    tool_calls: HashMap<u64, ChatToolCall>,
+}
+
+impl ResponsesToChatStream {
+    pub fn new(model: String) -> Self {
+        Self {
+            id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
+            created: unix_timestamp(),
+            model,
+            role_emitted: false,
+            completed: false,
+            saw_tool_call: false,
+            tool_calls: HashMap::new(),
         }
-        Some("response.completed") => Some("data: [DONE]".to_string()),
-        _ => None,
+    }
+
+    pub fn map_line(&mut self, line: &str) -> Result<Vec<String>, std::io::Error> {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            return Ok(Vec::new());
+        };
+        if payload == "[DONE]" {
+            return Ok(self.finish(None));
+        }
+        let value: Value = serde_json::from_str(payload).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid Responses SSE JSON: {error}"),
+            )
+        })?;
+        match value.get("type").and_then(Value::as_str) {
+            Some("response.created") => Ok(self.role_chunk().into_iter().collect()),
+            Some("response.output_text.delta") => {
+                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
+                let content = value.get("delta").and_then(Value::as_str).unwrap_or("");
+                events.push(self.chunk(json!({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": content},
+                        "finish_reason": null
+                    }]
+                })));
+                Ok(events)
+            }
+            Some("response.output_item.added")
+                if value
+                    .get("item")
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("function_call") =>
+            {
+                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
+                let index = value
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let item = value.get("item").unwrap_or(&Value::Null);
+                let call_id = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+                self.saw_tool_call = true;
+                self.tool_calls.insert(
+                    index,
+                    ChatToolCall {
+                        id: call_id.clone(),
+                    },
+                );
+                events.push(self.chunk(json!({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": index,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": ""}
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                })));
+                Ok(events)
+            }
+            Some("response.function_call_arguments.delta") => {
+                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
+                let index = value
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let event_call_id = value.get("call_id").and_then(Value::as_str).unwrap_or("");
+                let call_id = self
+                    .tool_calls
+                    .get(&index)
+                    .map(|tool_call| tool_call.id.as_str())
+                    .filter(|call_id| !call_id.is_empty())
+                    .unwrap_or(event_call_id);
+                let arguments = value.get("delta").and_then(Value::as_str).unwrap_or("");
+                self.saw_tool_call = true;
+                events.push(self.chunk(json!({
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": index,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"arguments": arguments}
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                })));
+                Ok(events)
+            }
+            Some("response.completed") => Ok(self.finish(value.get("response"))),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn role_chunk(&mut self) -> Option<String> {
+        if self.role_emitted {
+            return None;
+        }
+        self.role_emitted = true;
+        Some(self.chunk(json!({
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": ""},
+                "finish_reason": null
+            }]
+        })))
+    }
+
+    fn finish(&mut self, response: Option<&Value>) -> Vec<String> {
+        if self.completed {
+            return Vec::new();
+        }
+        self.completed = true;
+        let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
+        let has_response_tool_call = response
+            .and_then(|value| value.get("output"))
+            .and_then(Value::as_array)
+            .is_some_and(|output| {
+                output
+                    .iter()
+                    .any(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+            });
+        let finish_reason = if self.saw_tool_call || has_response_tool_call {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+        let usage = response
+            .map(|value| openai_chat_usage(value.get("usage")))
+            .unwrap_or_else(|| openai_chat_usage(None));
+        events.push(self.chunk(json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": finish_reason
+            }],
+            "usage": usage
+        })));
+        events.push("data: [DONE]".to_string());
+        events
+    }
+
+    fn chunk(&self, fields: Value) -> String {
+        let mut object = fields.as_object().cloned().unwrap_or_default();
+        object.insert("id".to_string(), Value::String(self.id.clone()));
+        object.insert("object".to_string(), json!("chat.completion.chunk"));
+        object.insert("created".to_string(), json!(self.created));
+        object.insert("model".to_string(), Value::String(self.model.clone()));
+        format!("data: {}", Value::Object(object))
     }
 }

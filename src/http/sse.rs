@@ -129,6 +129,20 @@ where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     F: FnMut(&str) -> Vec<String> + Send + 'static,
 {
+    map_sse_lines_many_checked(stream, max_line_bytes, move |line| {
+        Ok::<_, std::io::Error>(mapper(line))
+    })
+}
+
+pub(crate) fn map_sse_lines_many_checked<S, F>(
+    stream: S,
+    max_line_bytes: usize,
+    mut mapper: F,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    F: FnMut(&str) -> Result<Vec<String>, std::io::Error> + Send + 'static,
+{
     let mut src = Box::pin(stream);
     async_stream::stream! {
         let mut buf = Vec::new();
@@ -159,8 +173,16 @@ where
                     .to_string();
                 buf.clear();
                 remaining = &remaining[newline + 1..];
-                for event in mapper(&line) {
-                    yield Ok(Bytes::from(format!("{event}\n\n")));
+                match mapper(&line) {
+                    Ok(events) => {
+                        for event in events {
+                            yield Ok(Bytes::from(format!("{event}\n\n")));
+                        }
+                    }
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
                 }
             }
             if buf
@@ -187,8 +209,13 @@ where
             let line = String::from_utf8_lossy(&buf)
                 .trim_end_matches('\r')
                 .to_string();
-            for event in mapper(&line) {
-                yield Ok(Bytes::from(format!("{event}\n\n")));
+            match mapper(&line) {
+                Ok(events) => {
+                    for event in events {
+                        yield Ok(Bytes::from(format!("{event}\n\n")));
+                    }
+                }
+                Err(error) => yield Err(error),
             }
         }
     }

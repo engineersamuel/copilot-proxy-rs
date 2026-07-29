@@ -486,7 +486,11 @@ async fn chat_completions_routes_responses_only_model_to_responses_endpoint() {
     assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
     let body = response_json(response).await;
     assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["model"], "gpt-5.5");
+    assert!(body["created"].as_u64().is_some());
     assert_eq!(body["choices"][0]["message"]["content"], "bridged ok");
+    assert_eq!(body["usage"]["prompt_tokens"], 3);
+    assert_eq!(body["usage"]["completion_tokens"], 2);
     assert_eq!(body["usage"]["total_tokens"], 5);
     let outbound = fixture
         .mock
@@ -669,9 +673,16 @@ async fn chat_completions_stream_routes_responses_only_model_to_responses_stream
             "/responses",
             200,
             vec![
-                r#"data: {"type":"response.output_text.delta","delta":"bridge"}"#,
-                r#"data: {"type":"response.output_text.delta","delta":" stream"}"#,
-                r#"data: {"type":"response.completed","response":{"id":"resp_stream","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#,
+                r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_stream","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}"#,
+                r#"event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]}}"#,
+                r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"bridge"}"#,
+                r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":" stream"}"#,
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_stream","object":"response","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#,
             ],
         )
         .await;
@@ -704,9 +715,32 @@ async fn chat_completions_stream_routes_responses_only_model_to_responses_stream
             .to_vec(),
     )
     .unwrap();
-    assert!(text.contains(r#""content":"bridge""#), "{text}");
-    assert!(text.contains(r#""content":" stream""#), "{text}");
-    assert!(text.contains("data: [DONE]"), "{text}");
+    assert!(
+        !text.lines().any(|line| line.starts_with("event:")),
+        "{text}"
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1, "{text}");
+    let chunks = chat_sse_chunks(&text);
+    assert_eq!(chunks.len(), 4, "{text}");
+    let chunk_id = chunks[0]["id"].as_str().unwrap();
+    let created = chunks[0]["created"].as_u64().unwrap();
+    assert!(!chunk_id.is_empty());
+    assert!(created > 0);
+    assert!(chunks.iter().all(|chunk| chunk["id"] == chunk_id));
+    assert!(chunks.iter().all(|chunk| chunk["created"] == created));
+    assert!(chunks.iter().all(|chunk| chunk["model"] == "gpt-5.5"));
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk["object"] == "chat.completion.chunk")
+    );
+    assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+    assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "bridge");
+    assert_eq!(chunks[2]["choices"][0]["delta"]["content"], " stream");
+    assert_eq!(chunks[3]["choices"][0]["finish_reason"], "stop");
+    assert_eq!(chunks[3]["usage"]["prompt_tokens"], 1);
+    assert_eq!(chunks[3]["usage"]["completion_tokens"], 2);
+    assert_eq!(chunks[3]["usage"]["total_tokens"], 3);
     let outbound = fixture
         .mock
         .last_request_body_json("POST", "/responses")
@@ -714,6 +748,201 @@ async fn chat_completions_stream_routes_responses_only_model_to_responses_stream
         .unwrap();
     assert_eq!(outbound["model"], "gpt-5.5");
     assert_eq!(outbound["reasoning"]["effort"], "high");
+}
+
+#[tokio::test]
+async fn chat_completions_stream_translates_responses_function_calls() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_tool","model":"gpt-5.5"}}"#,
+                r#"event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":""}}"#,
+                r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":0,"call_id":"call_1","delta":"{\"city\":"}"#,
+                r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":0,"call_id":"call_1","delta":"\"Seattle\"}"}"#,
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_tool","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Seattle\"}"}],"usage":{"input_tokens":8,"output_tokens":4,"total_tokens":12}}}"#,
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "stream":true,
+                        "max_tokens":64,
+                        "messages":[{"role":"user","content":"weather"}],
+                        "tools":[{
+                            "type":"function",
+                            "function":{
+                                "name":"get_weather",
+                                "description":"Get weather",
+                                "parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+                            }
+                        }],
+                        "tool_choice":"auto",
+                        "parallel_tool_calls":false
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        !text.lines().any(|line| line.starts_with("event:")),
+        "{text}"
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1, "{text}");
+    let chunks = chat_sse_chunks(&text);
+    assert_eq!(chunks.len(), 5, "{text}");
+    assert_eq!(
+        chunks[1]["choices"][0]["delta"]["tool_calls"][0]["id"],
+        "call_1"
+    );
+    assert_eq!(
+        chunks[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
+        "get_weather"
+    );
+    assert_eq!(
+        chunks[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+        "{\"city\":"
+    );
+    assert_eq!(
+        chunks[3]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+        "\"Seattle\"}"
+    );
+    assert_eq!(chunks[4]["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(chunks[4]["usage"]["total_tokens"], 12);
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["tools"][0]["type"], "function");
+    assert_eq!(outbound["tools"][0]["name"], "get_weather");
+    assert_eq!(
+        outbound["tools"][0]["parameters"]["properties"]["city"]["type"],
+        "string"
+    );
+    assert_eq!(outbound["tool_choice"], "auto");
+    assert_eq!(outbound["parallel_tool_calls"], false);
+    assert_eq!(outbound["max_output_tokens"], 64);
+}
+
+#[tokio::test]
+async fn chat_completions_translates_responses_function_calls_without_streaming() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "gpt-5.5",
+            "owned_by": "openai",
+            "supported_endpoints": ["/responses"]
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_tool",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type":"function_call",
+                    "call_id":"call_1",
+                    "name":"get_weather",
+                    "arguments":"{\"city\":\"Seattle\"}"
+                }],
+                "usage":{"input_tokens":8,"output_tokens":4,"total_tokens":12}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.5",
+                        "messages":[
+                            {"role":"assistant","content":null,"tool_calls":[{
+                                "id":"call_previous",
+                                "type":"function",
+                                "function":{"name":"get_weather","arguments":"{\"city\":\"Portland\"}"}
+                            }]},
+                            {"role":"tool","tool_call_id":"call_previous","content":"rain"},
+                            {"role":"user","content":"Check Seattle"}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "gpt-5.5");
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(body["choices"][0]["message"]["content"], Value::Null);
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        "{\"city\":\"Seattle\"}"
+    );
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(outbound["input"][0]["type"], "function_call");
+    assert_eq!(outbound["input"][0]["call_id"], "call_previous");
+    assert_eq!(outbound["input"][1]["type"], "function_call_output");
+    assert_eq!(outbound["input"][1]["call_id"], "call_previous");
+    assert_eq!(outbound["input"][1]["output"], "rain");
+    assert_eq!(outbound["input"][2]["role"], "user");
 }
 
 #[test]
@@ -775,6 +1004,14 @@ fn anthropic_tool_use_and_tool_result_blocks_are_preserved_in_openai_translation
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn chat_sse_chunks(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|payload| *payload != "[DONE]")
+        .map(|payload| serde_json::from_str(payload).unwrap())
+        .collect()
 }
 
 async fn request_local_chat(
