@@ -169,7 +169,12 @@ With `RUST_LOG=info`, accepted Responses requests log safe size metadata such
 as `request.body.bytes`, `request.body.effective_bytes`, `input.bytes`,
 `input.tools.bytes`, `input.reasoning.bytes`, and the largest input item's
 index, type, role, and byte size. Prompt and tool-output contents are not
-logged.
+logged. If an upstream HTTP 200 stream terminates with `response.failed`, the
+proxy logs `response.id`, `response.status`, `upstream.error.code`,
+`upstream.error.type`, request correlation IDs, event count, elapsed time, and
+the error-message byte count without logging the message content. A single
+warning is also emitted if a successful HTTP stream reaches EOF or a transport
+error without any terminal Responses event.
 
 Codex encrypted reasoning and collaboration content is forwarded unchanged on
 the first Copilot request. If Copilot returns the specific

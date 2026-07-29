@@ -1391,6 +1391,125 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
 }
 
 #[tokio::test]
+async fn responses_stream_logs_upstream_failed_terminal_event() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_failed_1","status":"failed","error":{"code":"server_error","message":"upstream exploded"}}}"#,
+            ],
+        )
+        .await;
+
+    let events = with_event_capture(|| async {
+        let response = router(fixture.state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("x-request-id", "codex-failed-turn")
+                    .body(Body::from(
+                        r#"{"model":"gpt-5.5","stream":true,"input":"hello"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let text = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("response.failed"));
+    })
+    .await;
+
+    assert_eq!(
+        field(&events, "copilot responses stream failed", "response.id").as_deref(),
+        Some("resp_failed_1")
+    );
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses stream failed",
+            "upstream.error.code"
+        )
+        .as_deref(),
+        Some("server_error")
+    );
+    assert_eq!(
+        field(&events, "copilot responses stream failed", "request.id").as_deref(),
+        Some("codex-failed-turn")
+    );
+}
+
+#[tokio::test]
+async fn responses_stream_logs_eof_without_terminal_event_once() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_unterminated","status":"in_progress"}}"#,
+            ],
+        )
+        .await;
+
+    let events = with_event_capture(|| async {
+        let response = router(fixture.state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("x-request-id", "codex-unterminated-turn")
+                    .body(Body::from(
+                        r#"{"model":"gpt-5.5","stream":true,"input":"hello"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response.into_body().collect().await.unwrap();
+    })
+    .await;
+
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses stream ended without terminal event",
+            "stream.end"
+        )
+        .as_deref(),
+        Some("eof")
+    );
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses stream ended without terminal event",
+            "stream.events"
+        )
+        .as_deref(),
+        Some("1")
+    );
+}
+
+#[tokio::test]
 async fn responses_http_clamps_reasoning_effort_and_preserves_unrelated_fields() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
