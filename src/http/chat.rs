@@ -133,9 +133,21 @@ async fn chat_completions_inner(
                 .stream_responses(responses_body, None)
                 .await
                 .map_err(openai_copilot_error)?;
-            let byte_stream = crate::http::sse::map_sse_lines(
+            let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+                crate::translate::responses_formats::ResponsesToChatStream::new(
+                    requested_model.clone(),
+                ),
+            ));
+            let mapper_adapter = adapter.clone();
+            let byte_stream = crate::http::sse::map_sse_lines_many_checked(
                 upstream.bytes_stream(),
-                crate::translate::responses_formats::responses_sse_to_openai_chat_sse_line,
+                state.config.max_decoded_body_bytes as usize,
+                move |line| {
+                    mapper_adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .map_line(line)
+                },
             );
             return Ok(Response::builder()
                 .header(http::header::CONTENT_TYPE, "text/event-stream")
@@ -147,8 +159,10 @@ async fn chat_completions_inner(
             .post_responses(responses_body, None)
             .await
             .map_err(openai_copilot_error)?;
-        let chat_response =
-            crate::translate::responses_formats::responses_to_openai_chat_response(&responses);
+        let chat_response = crate::translate::responses_formats::responses_to_openai_chat_response(
+            &responses,
+            &requested_model,
+        );
         return Ok(Json(chat_response).into_response());
     }
     if stream {
