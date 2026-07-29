@@ -21,6 +21,89 @@ use crate::telemetry::{
     summarize_request_sizes,
 };
 
+#[derive(Debug, Default)]
+struct ResponsesStreamDiagnostics {
+    events_seen: u64,
+    terminal_seen: bool,
+}
+
+fn observe_copilot_responses_stream_line(
+    line: &str,
+    diagnostics: &mut ResponsesStreamDiagnostics,
+    request_id: &str,
+    upstream_request_id: &str,
+    started: std::time::Instant,
+) {
+    let Some(payload) = line.strip_prefix("data:") else {
+        return;
+    };
+    let Ok(event) = serde_json::from_str::<Value>(payload.trim_start()) else {
+        return;
+    };
+    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    diagnostics.events_seen += 1;
+    diagnostics.terminal_seen |= matches!(
+        event_type,
+        "response.completed" | "response.incomplete" | "response.failed"
+    );
+    if event_type != "response.failed" {
+        return;
+    }
+    let response = event.get("response").unwrap_or(&Value::Null);
+    let error = response
+        .get("error")
+        .or_else(|| event.get("error"))
+        .unwrap_or(&Value::Null);
+    let response_id = response.get("id").and_then(Value::as_str).unwrap_or("");
+    let response_status = response
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("failed");
+    let error_code = error.get("code").and_then(Value::as_str).unwrap_or("");
+    let error_type = error.get("type").and_then(Value::as_str).unwrap_or("");
+    let error_message = error.get("message").and_then(Value::as_str).unwrap_or("");
+    tracing::warn!(
+        api.family = "responses",
+        request.id = request_id,
+        upstream.request_id = upstream_request_id,
+        response.id = response_id,
+        response.status = response_status,
+        stream.events = diagnostics.events_seen,
+        elapsed.ms = started.elapsed().as_millis() as u64,
+        upstream.error.code = error_code,
+        upstream.error.type = error_type,
+        upstream.error.message_bytes = error_message.len() as u64,
+        "copilot responses stream failed"
+    );
+}
+
+fn log_unterminated_copilot_responses_stream(
+    diagnostics: &ResponsesStreamDiagnostics,
+    stream_end: crate::http::sse::SseStreamEnd,
+    request_id: &str,
+    upstream_request_id: &str,
+    started: std::time::Instant,
+) {
+    if diagnostics.terminal_seen {
+        return;
+    }
+    let end = match stream_end {
+        crate::http::sse::SseStreamEnd::Eof => "eof",
+        crate::http::sse::SseStreamEnd::TransportError => "transport_error",
+    };
+    tracing::warn!(
+        api.family = "responses",
+        request.id = request_id,
+        upstream.request_id = upstream_request_id,
+        stream.end = end,
+        stream.events = diagnostics.events_seen,
+        elapsed.ms = started.elapsed().as_millis() as u64,
+        "copilot responses stream ended without terminal event"
+    );
+}
+
 pub(crate) async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -131,6 +214,12 @@ pub(crate) async fn responses(
         PreviousResponseCacheStatus::NotRequested => {}
     }
     if stream {
+        let stream_started = std::time::Instant::now();
+        let diagnostic_request_id = prepared
+            .request_metadata
+            .request_id
+            .clone()
+            .unwrap_or_default();
         let upstream = match state
             .copilot
             .stream_responses(prepared.effective_body, Some(prepared.request_metadata))
@@ -139,9 +228,46 @@ pub(crate) async fn responses(
             Ok(upstream) => upstream,
             Err(err) => return openai_copilot_error(err).into_response(),
         };
-        let byte_stream = upstream
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(std::io::Error::other));
+        let upstream_request_id = ["x-request-id", "x-github-request-id", "request-id"]
+            .into_iter()
+            .find_map(|name| upstream.headers().get(name))
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let diagnostics =
+            std::sync::Arc::new(std::sync::Mutex::new(ResponsesStreamDiagnostics::default()));
+        let observer_diagnostics = diagnostics.clone();
+        let observer_request_id = diagnostic_request_id.clone();
+        let observer_upstream_request_id = upstream_request_id.clone();
+        let end_diagnostics = diagnostics.clone();
+        let byte_stream = crate::http::sse::inspect_sse_lines(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                let mut diagnostics = observer_diagnostics
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                observe_copilot_responses_stream_line(
+                    line,
+                    &mut diagnostics,
+                    &observer_request_id,
+                    &observer_upstream_request_id,
+                    stream_started,
+                );
+            },
+            move |stream_end| {
+                let diagnostics = end_diagnostics
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                log_unterminated_copilot_responses_stream(
+                    &diagnostics,
+                    stream_end,
+                    &diagnostic_request_id,
+                    &upstream_request_id,
+                    stream_started,
+                );
+            },
+        );
         return Response::builder()
             .header(http::header::CONTENT_TYPE, "text/event-stream")
             .body(Body::from_stream(byte_stream))

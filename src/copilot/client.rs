@@ -705,7 +705,7 @@ impl CopilotBackend {
                     http.status_code = status as u64,
                     elapsed.ms = started.elapsed().as_millis() as u64,
                     stream = true,
-                    "copilot request completed"
+                    "copilot response headers received"
                 );
                 return Ok(response);
             }
