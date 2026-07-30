@@ -170,6 +170,34 @@ fn anthropic_thinking_adapts_effort_and_mode_for_copilot() {
 }
 
 #[test]
+fn claude_opus_five_enabled_thinking_becomes_adaptive() {
+    let mut body = serde_json::json!({
+        "thinking": {"type": "enabled", "budget_tokens": 2048}
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None);
+
+    assert_eq!(body["thinking"], serde_json::json!({"type": "adaptive"}));
+}
+
+#[test]
+fn claude_opus_five_adaptive_thinking_remains_adaptive() {
+    let mut body = serde_json::json!({
+        "thinking": {"type": "adaptive"}
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None);
+
+    assert_eq!(body["thinking"], serde_json::json!({"type": "adaptive"}));
+}
+
+#[test]
 fn responses_reasoning_effort_is_clamped_or_removed_without_losing_other_fields() {
     let efforts = supported(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]);
     let mut supported_body = serde_json::json!({
