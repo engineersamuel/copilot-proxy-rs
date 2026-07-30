@@ -345,7 +345,11 @@ fn adapt_output_config_effort(
 fn is_adaptive_only_model(model: &str) -> bool {
     matches!(
         model,
-        "claude-opus-4.7" | "claude-opus-4-7" | "claude-opus-4.8" | "claude-opus-4-8"
+        "claude-opus-4.7"
+            | "claude-opus-4-7"
+            | "claude-opus-4.8"
+            | "claude-opus-4-8"
+            | "claude-opus-5"
     )
 }
 
