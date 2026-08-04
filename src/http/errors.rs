@@ -162,6 +162,50 @@ pub(crate) fn anthropic_copilot_error(
     }
 }
 
+pub(crate) fn anthropic_local_error(
+    error: LocalModelError,
+) -> (StatusCode, Json<crate::errors::AnthropicErrorResponse>) {
+    match error {
+        LocalModelError::Timeout => anthropic_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "server_error",
+            "local model request timed out",
+        ),
+        LocalModelError::Transport => anthropic_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model connection failed",
+        ),
+        LocalModelError::Http { status, detail } => anthropic_error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            "server_error",
+            detail,
+        ),
+        LocalModelError::InvalidJson => anthropic_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model returned invalid JSON",
+        ),
+    }
+}
+
+pub(crate) fn anthropic_responses_translation_error(
+    error: ResponsesTranslationError,
+) -> (StatusCode, Json<crate::errors::AnthropicErrorResponse>) {
+    const MAX_ERROR_CHARS: usize = 512;
+    const TRUNCATION_MARKER: &str = "...";
+
+    let mut message = error.to_string();
+    if message.chars().count() > MAX_ERROR_CHARS {
+        message = message
+            .chars()
+            .take(MAX_ERROR_CHARS - TRUNCATION_MARKER.chars().count())
+            .collect();
+        message.push_str(TRUNCATION_MARKER);
+    }
+    anthropic_error(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::openai_responses_translation_error;
