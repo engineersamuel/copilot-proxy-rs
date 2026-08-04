@@ -1081,6 +1081,294 @@ async fn messages_stream_preserves_anthropic_cache_control_for_claude_requests()
     );
 }
 
+#[tokio::test]
+async fn messages_routes_configured_local_model_without_copilot() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-local",
+                "object": "chat.completion",
+                "model": r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "local messages ok"}
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["type"], "message");
+    assert_eq!(body["role"], "assistant");
+    assert_eq!(body["model"], "qwen3-coder-30b-local");
+    assert_eq!(body["content"][0]["type"], "text");
+    assert_eq!(body["content"][0]["text"], "local messages ok");
+    assert_eq!(body["stop_reason"], "end_turn");
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["model"],
+        r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    );
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn messages_stream_routes_configured_local_model() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let first_chunk = concat!(
+        r#"data: {"choices":[{"delta":{"role":"assistant","content":"Hel"}}]}"#,
+        "\r\n\r\n",
+        r#"data: {"choices":[{"delta":{"content":"l"#,
+    );
+    let second_chunk = concat!(
+        r#"o"}}]}"#,
+        "\r\n\r\n",
+        r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#,
+        "\r\n\r\n",
+        "data: [DONE]\r\n\r\n",
+    );
+    fixture
+        .mock
+        .respond_sse_split_chunks(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![first_chunk.as_bytes(), second_chunk.as_bytes()],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .header("accept", "text/event-stream")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert!(text.contains("event: message_start"), "{text}");
+    assert!(text.contains("event: content_block_delta"), "{text}");
+    assert!(text.contains("event: message_delta"), "{text}");
+    assert!(text.contains("event: message_stop"), "{text}");
+    assert!(
+        text.contains(r#""model":"qwen3-coder-30b-local""#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""text":"Hel""#) || text.contains(r#""text":"Hello""#),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"),
+        "{text}"
+    );
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn messages_local_transport_failure_does_not_fallback_to_copilot() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            503,
+            serde_json::json!({"error": {"message": "local overloaded"}}),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_json(response).await;
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn messages_local_tools_round_trip() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_weather_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"city\":\"NYC\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "max_tokens": 64,
+                        "tools": [{
+                            "name": "get_weather",
+                            "description": "Weather lookup",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}}
+                            }
+                        }],
+                        "messages": [
+                            {"role": "user", "content": "weather?"},
+                            {
+                                "role": "assistant",
+                                "content": [{
+                                    "type": "tool_use",
+                                    "id": "call_prev",
+                                    "name": "get_weather",
+                                    "input": {"city": "SF"}
+                                }]
+                            },
+                            {
+                                "role": "user",
+                                "content": [{
+                                    "type": "tool_result",
+                                    "tool_use_id": "call_prev",
+                                    "content": "foggy"
+                                }]
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "qwen3-coder-30b-local");
+    assert_eq!(body["stop_reason"], "tool_use");
+    let tool = body["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == "tool_use")
+        .expect("tool_use block");
+    assert_eq!(tool["name"], "get_weather");
+    assert_eq!(tool["id"], "call_weather_1");
+    assert_eq!(tool["input"]["city"], "NYC");
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["model"],
+        r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+    );
+    assert!(
+        outbound["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "{outbound}"
+    );
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()

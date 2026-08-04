@@ -5,17 +5,19 @@ use axum::extract::rejection::BytesRejection;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use http::{HeaderMap, StatusCode};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::copilot::request::{
     CopilotRequestMetadata, adapt_thinking_for_copilot, filter_anthropic_beta_header,
 };
 use crate::errors::anthropic_error;
 use crate::http::errors::{
-    anthropic_copilot_error, anthropic_request_body_error_type, request_body_error_details,
+    anthropic_copilot_error, anthropic_local_error, anthropic_request_body_error_type,
+    anthropic_responses_translation_error, request_body_error_details,
     request_body_rejection_details,
 };
 use crate::http::validation::validate_anthropic_messages_request;
+use crate::models::LocalModelTarget;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 use crate::telemetry::{ApiFamily, api_family_name, summarize_effective_request};
@@ -63,13 +65,16 @@ async fn messages_inner(
         anthropic_error(status, anthropic_request_body_error_type(status), message)
     })?;
     validate_anthropic_messages_request(&body)?;
-    state.copilot.refresh_models_if_stale().await;
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if let Some(local_target) = state.models.configured_local_target(&requested_model) {
+        return handle_local_messages(state, body, local_target, stream).await;
+    }
+    state.copilot.refresh_models_if_stale().await;
     let metadata = {
         let mut meta = CopilotRequestMetadata::default();
         if let Some(beta_value) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
@@ -243,4 +248,159 @@ async fn messages_inner(
         )
     };
     Ok(Json(response).into_response())
+}
+
+async fn handle_local_messages(
+    state: AppState,
+    body: Map<String, Value>,
+    target: LocalModelTarget,
+    stream: bool,
+) -> Result<Response, (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
+    let summary = summarize_effective_request(ApiFamily::Messages, Some(&target.public_id), &body);
+    tracing::info!(
+        api.family = api_family_name(summary.api_family),
+        model.requested = summary.requested_model.as_deref().unwrap_or(""),
+        model.effective = target.public_id.as_str(),
+        stream = summary.stream,
+        tokens.input.estimated = summary.input_tokens_estimate as u64,
+        messages.count = summary.message_count as u64,
+        tools.definitions = summary.tool_definition_count as u64,
+        tools.results = summary.tool_result_count as u64,
+        max_tokens = summary.max_tokens.unwrap_or(0),
+        effort = summary.effort.as_deref().unwrap_or(""),
+        "messages local request prepared"
+    );
+
+    let responses_body =
+        crate::translate::responses_formats::anthropic_messages_to_responses_request(
+            &body,
+            &target.public_id,
+        );
+    let translated = crate::local::responses_to_chat(responses_body, &target.upstream_model)
+        .map_err(anthropic_responses_translation_error)?;
+
+    if stream {
+        let upstream = state
+            .local
+            .stream_chat(&target, translated.chat_body)
+            .await
+            .map_err(anthropic_local_error)?;
+        if !has_event_stream_content_type(&upstream) {
+            return Err(anthropic_error(
+                StatusCode::BAD_GATEWAY,
+                "server_error",
+                "local model returned invalid response",
+            ));
+        }
+
+        let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+        let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::local::ChatToResponsesStream::new(
+                response_id,
+                target.public_id.clone(),
+                translated.tool_kinds,
+            ),
+        ));
+        let mapper_adapter = adapter.clone();
+        let mapped = crate::http::sse::map_sse_lines_many(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                let responses_events = mapper_adapter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map_line(line);
+                responses_events
+                    .into_iter()
+                    .flat_map(|event| responses_event_to_anthropic_frames(&event))
+                    .collect()
+            },
+        );
+        let byte_stream = async_stream::stream! {
+            futures_util::pin_mut!(mapped);
+            let mut emitted_any = false;
+            while let Some(event) = mapped.next().await {
+                match event {
+                    Ok(event) => {
+                        emitted_any = true;
+                        yield Ok::<Bytes, std::io::Error>(event);
+                    }
+                    Err(_) => {
+                        let failed_events = adapter
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .fail();
+                        for failed_event in failed_events {
+                            for frame in responses_event_to_anthropic_frames(&failed_event) {
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                                    "{frame}\n\n"
+                                )));
+                            }
+                        }
+                        if !emitted_any {
+                            yield Err(std::io::Error::other(
+                                "local model stream failed before first event",
+                            ));
+                        }
+                        return;
+                    }
+                }
+            }
+        };
+        return Ok(Response::builder()
+            .header(http::header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(byte_stream))
+            .unwrap());
+    }
+
+    let chat = state
+        .local
+        .post_chat(&target, translated.chat_body)
+        .await
+        .map_err(anthropic_local_error)?;
+    let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
+    let responses = crate::local::chat_to_responses(
+        &chat,
+        &response_id,
+        &target.public_id,
+        &translated.tool_kinds,
+    )
+    .map_err(|_| {
+        anthropic_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "local model returned invalid response",
+        )
+    })?;
+    let anthropic = crate::translate::responses_formats::responses_to_anthropic_message_response(
+        &responses,
+        &target.public_id,
+    );
+    Ok(Json(anthropic).into_response())
+}
+
+fn has_event_stream_content_type(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+fn responses_event_to_anthropic_frames(event: &str) -> Vec<String> {
+    let mut frames = Vec::new();
+    for line in event.lines() {
+        let Some(mapped) =
+            crate::translate::responses_formats::responses_sse_to_anthropic_sse_line(line)
+        else {
+            continue;
+        };
+        for frame in mapped.split("\n\n") {
+            if !frame.is_empty() {
+                frames.push(frame.to_string());
+            }
+        }
+    }
+    frames
 }

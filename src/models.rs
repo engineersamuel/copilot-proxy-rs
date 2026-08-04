@@ -38,7 +38,8 @@ pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
 
 const GPT56_MODEL_CREATED: u64 = 1_783_555_200;
 const GPT56_SUPPORTED_ENDPOINTS: &[&str] = &["/responses", "ws:/responses"];
-const LOCAL_MODEL_SUPPORTED_ENDPOINTS: &[&str] = &["/chat/completions", "/responses"];
+const LOCAL_MODEL_SUPPORTED_ENDPOINTS: &[&str] =
+    &["/chat/completions", "/responses", "/v1/messages"];
 const GPT56_REASONING_EFFORTS: &[EffortLevel] = &[
     EffortLevel::Low,
     EffortLevel::Medium,

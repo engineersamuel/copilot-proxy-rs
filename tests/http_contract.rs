@@ -150,7 +150,7 @@ async fn configured_local_model_is_listed_and_resolved() {
     assert_eq!(rich.source, ModelMetadataSource::Local);
     assert_eq!(
         rich.supported_endpoints,
-        vec!["/chat/completions", "/responses"]
+        vec!["/chat/completions", "/responses", "/v1/messages"]
     );
 
     let target = registry.resolve_target("qwen3-coder-30b-local").await;
@@ -303,15 +303,15 @@ async fn configured_local_model_capabilities_match_catalog() {
     assert_eq!(
         capabilities,
         vec![
-            ("qwen3-coder-30b-local", true, true, false, false),
+            ("qwen3-coder-30b-local", true, true, false, true),
             (
                 "github-copilot/qwen3-coder-30b-local",
                 true,
                 true,
                 false,
-                false,
+                true,
             ),
-            ("gpt-5.6-sol", true, true, false, false),
+            ("gpt-5.6-sol", true, true, false, true),
         ]
     );
 }
