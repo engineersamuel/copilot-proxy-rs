@@ -407,23 +407,32 @@ impl ChatToResponsesStream {
 
         let call = self.tool_calls.get_mut(&index).ok_or(())?;
         if call_type.is_some() {
-            if call.type_seen {
-                return Err(());
-            }
             call.type_seen = true;
         }
         if let Some(call_id) = call_id {
-            if call.call_id.is_some() {
+            if call
+                .call_id
+                .as_deref()
+                .is_some_and(|stored| stored != call_id)
+            {
                 return Err(());
             }
-            call.call_id = Some(call_id.to_string());
         }
         if let Some(name) = name {
-            if call.name.is_some() {
+            if call.name.as_deref().is_some_and(|stored| stored != name) {
                 return Err(());
             }
-            call.name = Some(name.to_string());
-            call.kind = kind;
+        }
+        if call.call_id.is_none() {
+            if let Some(call_id) = call_id {
+                call.call_id = Some(call_id.to_string());
+            }
+        }
+        if call.name.is_none() {
+            if let Some(name) = name {
+                call.name = Some(name.to_string());
+                call.kind = kind;
+            }
         }
         if let Some(arguments_delta) = arguments_delta {
             call.arguments.push_str(arguments_delta);
@@ -1727,6 +1736,80 @@ mod tests {
     }
 
     #[test]
+    fn chat_sse_accepts_repeated_identical_tool_metadata() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_lm_studio".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("write_file".to_string(), LocalToolKind::Function)]),
+        );
+        let chunks = [
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_write_file",
+                "type": "function",
+                "function": {"name": "write_file", "arguments": "{\"path\":\""}
+            }]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_write_file",
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "arguments": "hello.txt\",\"content\":\"hello\"}"
+                }
+            }]}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+        let mut events = chunks
+            .into_iter()
+            .flat_map(|chunk| adapter.map_line(&format!("data: {chunk}")))
+            .collect::<Vec<_>>();
+        events.extend(adapter.map_line("data: [DONE]"));
+        let events = events
+            .into_iter()
+            .map(|event| {
+                let data = event
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap();
+                serde_json::from_str::<Value>(data).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.added")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.function_call_arguments.delta")
+                .map(|event| event["delta"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [r#"{"path":""#, r#"hello.txt","content":"hello"}"#]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "response.output_item.done")
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["type"] == "response.failed")
+        );
+        assert_eq!(events.last().unwrap()["type"], "response.completed");
+        assert_eq!(events.last().unwrap()["response"]["status"], "completed");
+        assert_eq!(adapter.output_items()[0]["call_id"], "call_write_file");
+        assert_eq!(adapter.output_items()[0]["name"], "write_file");
+    }
+
+    #[test]
     fn chat_sse_duplicate_tool_call_ids_fail_at_finish() {
         let mut adapter = ChatToResponsesStream::new(
             "resp_local_duplicate_calls".to_string(),
@@ -1770,6 +1853,62 @@ mod tests {
             "data: {}",
             json!({"choices": [{"delta": {"tool_calls": [{
                 "index": 0, "id": "call_2", "function": {"arguments": "{}"}
+            }]}}]})
+        ));
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+    }
+
+    #[test]
+    fn chat_sse_conflicting_tool_name_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_conflicting_name".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([
+                ("calculate".to_string(), LocalToolKind::Function),
+                ("write_file".to_string(), LocalToolKind::Function),
+            ]),
+        );
+        adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "function": {"name": "calculate"}
+            }]}}]})
+        ));
+
+        let terminal = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "function": {"name": "write_file", "arguments": "{}"}
+            }]}}]})
+        ));
+
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0].starts_with("event: response.failed\n"));
+    }
+
+    #[test]
+    fn chat_sse_unsupported_repeated_tool_type_fails() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_unsupported_repeated_type".to_string(),
+            "qwen3-coder-30b-local".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "calculate"}
+            }]}}]})
+        ));
+
+        let terminal = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "type": "custom", "function": {"arguments": "{}"}
             }]}}]})
         ));
 
