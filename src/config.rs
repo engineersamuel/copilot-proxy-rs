@@ -68,6 +68,8 @@ pub struct AppConfig {
     #[serde(deserialize_with = "deserialize_u64")]
     pub copilot_timeout: u64,
     #[serde(deserialize_with = "deserialize_u64")]
+    pub copilot_connect_timeout: u64,
+    #[serde(deserialize_with = "deserialize_u64")]
     pub copilot_models_ttl: u64,
     #[serde(deserialize_with = "deserialize_u32")]
     pub copilot_retry_max: u32,
@@ -156,6 +158,7 @@ impl Default for AppConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
             copilot_timeout: 300,
+            copilot_connect_timeout: 60,
             copilot_models_ttl: 300,
             copilot_retry_max: 3,
             copilot_retry_base_delay: 1.0,
@@ -206,6 +209,8 @@ struct FileConfig {
     port: Option<u16>,
     #[serde(deserialize_with = "deserialize_opt_u64")]
     copilot_timeout: Option<u64>,
+    #[serde(deserialize_with = "deserialize_opt_u64")]
+    copilot_connect_timeout: Option<u64>,
     #[serde(deserialize_with = "deserialize_opt_u64")]
     copilot_models_ttl: Option<u64>,
     #[serde(deserialize_with = "deserialize_opt_u32")]
@@ -331,6 +336,9 @@ impl AppConfig {
         }
         if let Some(v) = file.copilot_timeout {
             self.copilot_timeout = v;
+        }
+        if let Some(v) = file.copilot_connect_timeout {
+            self.copilot_connect_timeout = v;
         }
         if let Some(v) = file.copilot_models_ttl {
             self.copilot_models_ttl = v;
@@ -510,6 +518,11 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
     apply_string(env, "COPILOT_PROXY_RS_HOST", &mut config.host);
     apply_parse(env, "COPILOT_PROXY_RS_PORT", &mut config.port);
     apply_parse(env, "COPILOT_TIMEOUT", &mut config.copilot_timeout);
+    apply_parse(
+        env,
+        "COPILOT_CONNECT_TIMEOUT",
+        &mut config.copilot_connect_timeout,
+    );
     apply_parse(env, "COPILOT_MODELS_TTL", &mut config.copilot_models_ttl);
     apply_parse(env, "COPILOT_RETRY_MAX", &mut config.copilot_retry_max);
     apply_parse(

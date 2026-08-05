@@ -145,6 +145,8 @@ Important variables:
 | `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated exact WebSocket Origin allowlist for `/v1/responses`. Requests without an Origin header are allowed; requests with an Origin header are rejected when this is empty or has no exact match. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
 | `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` | Logs full failed Copilot request and upstream response bodies at `WARN`. Defaults to `false` because prompts and tool output may contain secrets. |
+| `COPILOT_TIMEOUT` | Total upstream request timeout in seconds (also used for stream read idle timeout and Linux `TCP_USER_TIMEOUT`). Defaults to `300`. |
+| `COPILOT_CONNECT_TIMEOUT` | Upstream connect/TLS handshake timeout in seconds. Defaults to `60`. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
 | `COPILOT_PROXY_RS_WEB_SEARCH_MODEL` | Responses-capable model used to translate Anthropic hosted web-search requests. Defaults to `gpt-5.6-sol`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |

@@ -100,11 +100,7 @@ impl CopilotBackend {
         models: Arc<ModelRegistry>,
         endpoints: CopilotEndpoints,
     ) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.copilot_timeout))
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .expect("reqwest client should build");
+        let client = build_copilot_http_client(&config);
         let rate_limiter = (config.copilot_max_rate > 0)
             .then(|| Arc::new(TokenBucket::new(config.copilot_max_rate)));
         Self {
@@ -667,7 +663,15 @@ impl CopilotBackend {
         );
         for attempt in 0..=self.config.copilot_retry_max {
             if let Some(rate_limiter) = &self.rate_limiter {
-                rate_limiter.acquire().await;
+                let waited = rate_limiter.acquire().await;
+                if waited > 0.0 {
+                    tracing::info!(
+                        wait.seconds = waited,
+                        api.family = family,
+                        stream = true,
+                        "copilot request rate limited"
+                    );
+                }
             }
             let token = self.auth.copilot_token().await?;
             let mut request = self.client.post(url);
@@ -688,14 +692,27 @@ impl CopilotBackend {
                         tracing::warn!(
                             api.family = family,
                             http.status_code = transient.status_code as u64,
+                            error.type = transient.error_type.as_str(),
                             attempt = attempt as u64,
                             retry.delay_ms = delay.as_millis() as u64,
+                            elapsed.ms = started.elapsed().as_millis() as u64,
+                            stream = true,
                             "copilot request retrying"
                         );
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    other => return Err(other),
+                    other => {
+                        tracing::warn!(
+                            api.family = family,
+                            attempt = attempt as u64,
+                            elapsed.ms = started.elapsed().as_millis() as u64,
+                            stream = true,
+                            error = %other,
+                            "copilot stream request failed before headers"
+                        );
+                        return Err(other);
+                    }
                 },
             };
             if response.status().is_success() {
@@ -915,12 +932,38 @@ fn sanitize_upstream_error(status: u16, raw: &str) -> String {
     }
 }
 
+fn build_copilot_http_client(config: &AppConfig) -> Client {
+    let request_timeout = Duration::from_secs(config.copilot_timeout.max(1));
+    // Connect should fail fast relative to the full request budget, but must stay
+    // above common slow-path TLS/handshake delays. The historical hard-coded 30s
+    // value matched reqwest's Linux TCP_USER_TIMEOUT default and produced opaque
+    // 504s under load before Copilot headers arrived.
+    let connect_timeout = Duration::from_secs(config.copilot_connect_timeout.max(1));
+
+    let builder = Client::builder()
+        .timeout(request_timeout)
+        .connect_timeout(connect_timeout)
+        // Stall detection between stream chunks. Unlike the total timeout, this
+        // resets after each successful read so long-lived SSE responses can run
+        // for the full copilot_timeout budget of idle time between events.
+        .read_timeout(request_timeout);
+
+    // reqwest defaults TCP_USER_TIMEOUT to 30s on Linux. That force-closes sockets
+    // when bytes go unacknowledged for 30s — far too aggressive for large Responses
+    // uploads and high-effort streams inside Docker/OrbStack. Align it with the
+    // configured request budget instead.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    let builder = builder.tcp_user_timeout(request_timeout);
+
+    builder.build().expect("reqwest client should build")
+}
+
 fn map_reqwest_error(error: reqwest::Error) -> CopilotError {
     if error.is_timeout() {
         TransientBackendError {
             status_code: 504,
             error_type: "timeout_error".to_string(),
-            message: error.to_string(),
+            message: format!("Copilot upstream timed out: {error}"),
             backend: "copilot".to_string(),
         }
         .into()
@@ -928,7 +971,7 @@ fn map_reqwest_error(error: reqwest::Error) -> CopilotError {
         TransientBackendError {
             status_code: 502,
             error_type: "connection_error".to_string(),
-            message: error.to_string(),
+            message: format!("Copilot upstream connection failed: {error}"),
             backend: "copilot".to_string(),
         }
         .into()
@@ -963,6 +1006,18 @@ mod tests {
             retry_delay_with_jitter(&headers, 5, 1.0),
             Duration::from_secs(120)
         );
+    }
+
+    #[test]
+    fn build_copilot_http_client_accepts_configured_timeouts() {
+        let config = AppConfig {
+            copilot_timeout: 300,
+            copilot_connect_timeout: 60,
+            ..AppConfig::default()
+        };
+
+        // Construction panics only if reqwest rejects the builder options.
+        let _client = build_copilot_http_client(&config);
     }
 
     #[test]
