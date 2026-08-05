@@ -19,6 +19,7 @@ fn defaults_match_copilot_proxy_rs() {
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 8080);
     assert_eq!(config.copilot_timeout, 300);
+    assert_eq!(config.copilot_connect_timeout, 60);
     assert_eq!(config.copilot_models_ttl, 300);
     assert_eq!(config.copilot_retry_max, 3);
     assert_eq!(config.copilot_retry_base_delay, 1.0);
@@ -197,6 +198,7 @@ fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
     assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9090);
     assert_eq!(config.copilot_timeout, 600);
+    assert_eq!(config.copilot_connect_timeout, 60);
     assert_eq!(config.web_search_model, "gpt-5.6-terra");
     assert_eq!(config.context_guard_threshold, 0.75);
     assert!(config.update_check);
@@ -239,6 +241,7 @@ fn environment_values_override_file_values() {
         ("COPILOT_PROXY_RS_BACKEND", "copilot,bedrock"),
         ("COPILOT_PROXY_RS_PORT", "9444"),
         ("COPILOT_TIMEOUT", "900"),
+        ("COPILOT_CONNECT_TIMEOUT", "120"),
         ("COPILOT_PROXY_RS_WEB_SEARCH_MODEL", "gpt-5.6-luna"),
     ]);
     let config = AppConfig::load_from_env(&env).unwrap();
@@ -247,6 +250,7 @@ fn environment_values_override_file_values() {
     assert_eq!(config.fallback_backend, "bedrock");
     assert_eq!(config.port, 9444);
     assert_eq!(config.copilot_timeout, 900);
+    assert_eq!(config.copilot_connect_timeout, 120);
     assert_eq!(config.web_search_model, "gpt-5.6-luna");
 }
 
@@ -265,6 +269,23 @@ fn invalid_file_values_fall_back_to_defaults() {
 
     assert_eq!(config.port, 8080);
     assert_eq!(config.copilot_timeout, 300);
+    assert_eq!(config.copilot_connect_timeout, 60);
+}
+
+#[test]
+fn loads_copilot_connect_timeout_from_file() {
+    let temp = repo_tempdir("config-connect-timeout-");
+    fs::write(
+        temp.path().join("config.json"),
+        r#"{"copilot_connect_timeout": 90}"#,
+    )
+    .unwrap();
+
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.copilot_connect_timeout, 90);
 }
 
 #[test]

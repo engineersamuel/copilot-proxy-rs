@@ -9,6 +9,7 @@
   "max_decoded_body_bytes": 16777216,
   "log_failed_request_bodies": false,
   "copilot_timeout": 300,
+  "copilot_connect_timeout": 60,
   "copilot_models_ttl": 300,
   "copilot_retry_max": 3,
   "copilot_retry_base_delay": 1.0,
