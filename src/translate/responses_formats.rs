@@ -50,6 +50,7 @@ pub fn openai_chat_to_responses_request(body: &Map<String, Value>) -> Map<String
         );
     }
     copy_prompt_cache_controls(body, &mut out);
+    crate::responses::request::normalize_legacy_message_content_parts(&mut out);
     out
 }
 
@@ -915,5 +916,45 @@ impl ResponsesToChatStream {
         object.insert("created".to_string(), json!(self.created));
         object.insert("model".to_string(), Value::String(self.model.clone()));
         format!("data: {}", Value::Object(object))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::openai_chat_to_responses_request;
+
+    #[test]
+    fn openai_chat_bridge_normalizes_multimodal_content_for_responses() {
+        let body = json!({
+            "model": "gpt-5.6-sol",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aGVsbG8="}
+                    },
+                    {"type": "text", "text": "Describe this image"}
+                ]
+            }]
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        let translated = openai_chat_to_responses_request(&body);
+
+        assert_eq!(
+            translated["input"][0]["content"],
+            json!([
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,aGVsbG8="
+                },
+                {"type": "input_text", "text": "Describe this image"}
+            ])
+        );
     }
 }
