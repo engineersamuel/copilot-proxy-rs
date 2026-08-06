@@ -176,7 +176,7 @@ impl Default for AppConfig {
             api_key: String::new(),
             allowed_origins: Vec::new(),
             max_decoded_body_bytes: 16 * 1024 * 1024,
-            log_failed_request_bodies: false,
+            log_failed_request_bodies: true,
             log_level: "INFO".to_string(),
             cowork_host: "198.18.1.1".to_string(),
             cowork_port: 8443,

@@ -144,7 +144,7 @@ Important variables:
 | `COPILOT_PROXY_RS_API_KEY` | Optional inbound API key. When set, Copilot-backed routes require `Authorization: Bearer <key>` or `x-api-key: <key>`. |
 | `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated exact WebSocket Origin allowlist for `/v1/responses`. Requests without an Origin header are allowed; requests with an Origin header are rejected when this is empty or has no exact match. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
-| `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` | Logs full failed Copilot request and upstream response bodies at `WARN`. Defaults to `false` because prompts and tool output may contain secrets. |
+| `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` | Logs full failed Copilot request and upstream response bodies at `WARN`. Defaults to `true`; set to `false` if local container logs must not retain prompts or tool output. |
 | `COPILOT_TIMEOUT` | Total upstream request timeout in seconds (also used for stream read idle timeout and Linux `TCP_USER_TIMEOUT`). Defaults to `300`. |
 | `COPILOT_CONNECT_TIMEOUT` | Upstream connect/TLS handshake timeout in seconds. Defaults to `60`. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
@@ -186,13 +186,12 @@ from `agent_message` items that retain readable content. Encrypted-only agent
 messages, top-level reasoning ciphertext, and successful upstream responses
 remain untouched.
 
-For local troubleshooting, set
-`COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=true` before starting or recreating
-the proxy. Final failed Copilot requests then emit a
-`copilot failed request diagnostics` warning containing the complete effective
-request body and raw upstream response body. Disable it after diagnosis because
-Docker logs may retain prompts, tool output, credentials, or other sensitive
-content.
+Failed Copilot requests log a `copilot failed request diagnostics` warning with
+the complete effective request body and raw upstream response body by default.
+This provides enough context to diagnose upstream warnings and errors from the
+local proxy. Set `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false` before
+starting or recreating the proxy if its Docker logs must not retain prompts,
+tool output, credentials, or other sensitive content.
 
 To compact earlier as an additional preventive measure, Codex supports a lower
 token threshold in `~/.codex/config.toml`:

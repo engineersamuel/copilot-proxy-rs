@@ -32,7 +32,7 @@ fn defaults_match_copilot_proxy_rs() {
     assert!(config.update_check);
     assert!(config.auto_restart);
     assert!(!config.auto_update);
-    assert!(!config.log_failed_request_bodies);
+    assert!(config.log_failed_request_bodies);
     assert_eq!(config.log_level, "INFO");
     assert_eq!(config.cowork_host, "198.18.1.1");
     assert_eq!(config.cowork_port, 8443);
@@ -453,7 +453,7 @@ fn env_overrides_inbound_auth_config() {
             "http://localhost:3000,https://example.test",
         ),
         ("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES", "4096"),
-        ("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES", "true"),
+        ("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES", "false"),
     ]);
 
     let config = AppConfig::load_from_env(&env).unwrap();
@@ -467,5 +467,5 @@ fn env_overrides_inbound_auth_config() {
         ]
     );
     assert_eq!(config.max_decoded_body_bytes, 4096);
-    assert!(config.log_failed_request_bodies);
+    assert!(!config.log_failed_request_bodies);
 }
