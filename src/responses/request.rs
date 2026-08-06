@@ -74,6 +74,7 @@ pub async fn prepare_responses_request(
     let previous_identity = expanded.previous_identity;
     let cache_status = expanded.cache_status;
     effective_body.insert("model".to_string(), Value::String(copilot_model));
+    normalize_legacy_message_content_parts(&mut effective_body);
     adapt_responses_reasoning_effort(&mut effective_body, supported_efforts);
     adapt_responses_tools_for_copilot(&mut effective_body);
     let identity =
@@ -137,6 +138,73 @@ pub fn normalize_input_items(value: Option<&Value>) -> Option<Vec<Value>> {
             "content": [{"type": "input_text", "text": text}]
         })]),
         _ => None,
+    }
+}
+
+pub fn normalize_legacy_message_content_parts(body: &mut Map<String, Value>) {
+    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for item in input {
+        let assistant = item.get("role").and_then(Value::as_str) == Some("assistant");
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+
+        for part in content {
+            let Some(part) = part.as_object_mut() else {
+                continue;
+            };
+            match part.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    let content_type = if assistant {
+                        "output_text"
+                    } else {
+                        "input_text"
+                    };
+                    part.insert("type".to_string(), Value::String(content_type.to_string()));
+                }
+                Some("image_url") => normalize_legacy_image_part(part),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn normalize_legacy_image_part(part: &mut Map<String, Value>) {
+    let Some(image_url) = part.remove("image_url") else {
+        return;
+    };
+    match image_url {
+        Value::String(url) => {
+            part.insert("image_url".to_string(), Value::String(url));
+            part.insert("type".to_string(), Value::String("input_image".to_string()));
+        }
+        Value::Object(mut image_url) => {
+            let Some(url) = image_url.remove("url") else {
+                part.insert("image_url".to_string(), Value::Object(image_url));
+                return;
+            };
+            let detail = image_url.remove("detail");
+            if !image_url.is_empty() {
+                image_url.insert("url".to_string(), url);
+                if let Some(detail) = detail {
+                    image_url.insert("detail".to_string(), detail);
+                }
+                part.insert("image_url".to_string(), Value::Object(image_url));
+                return;
+            }
+
+            part.insert("image_url".to_string(), url);
+            if let Some(detail) = detail {
+                part.entry("detail".to_string()).or_insert(detail);
+            }
+            part.insert("type".to_string(), Value::String("input_image".to_string()));
+        }
+        image_url => {
+            part.insert("image_url".to_string(), image_url);
+        }
     }
 }
 
@@ -330,6 +398,50 @@ mod tests {
         let items = normalize_input_items(Some(&arr)).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn prepare_responses_request_normalizes_chat_style_image_content() {
+        let body = parse_body(
+            r#"{
+                "model":"gpt-5.6-sol",
+                "input":[{
+                    "role":"user",
+                    "content":[
+                        {
+                            "type":"image_url",
+                            "image_url":{
+                                "url":"data:image/png;base64,aGVsbG8=",
+                                "detail":"high"
+                            }
+                        },
+                        {"type":"text","text":"Describe this image"}
+                    ]
+                }]
+            }"#,
+        );
+
+        let result = prepare_responses_request(
+            &ResponsesStateStore::default(),
+            body,
+            "req-image".to_string(),
+            &HeaderMap::new(),
+            "gpt-5.6-sol".to_string(),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.effective_body["input"][0]["content"],
+            json!([
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,aGVsbG8=",
+                    "detail": "high"
+                },
+                {"type": "input_text", "text": "Describe this image"}
+            ])
+        );
     }
 
     #[test]
