@@ -93,12 +93,16 @@ pub fn compute_initiator(body: &Map<String, Value>, strict_continuation: bool) -
     "user"
 }
 
+/// Normalize and forward client `anthropic-beta` values.
+///
+/// Trims CSV parts and drops empties, but does not allowlist prefixes so new
+/// Anthropic betas (e.g. extended cache TTL) reach Copilot without a proxy bump.
+/// Unsupported betas may be rejected or ignored upstream.
 pub fn filter_anthropic_beta_header(beta: &str) -> Option<String> {
-    let supported = ["interleaved-thinking", "advanced-tool-use"];
     let filtered: Vec<&str> = beta
         .split(',')
         .map(str::trim)
-        .filter(|part| !part.is_empty() && supported.iter().any(|prefix| part.starts_with(prefix)))
+        .filter(|part| !part.is_empty())
         .collect();
     if filtered.is_empty() {
         None

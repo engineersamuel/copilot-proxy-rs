@@ -907,7 +907,7 @@ async fn messages_stream_routes_gpt55_to_responses_stream() {
 }
 
 #[tokio::test]
-async fn messages_filters_and_forwards_anthropic_beta_header() {
+async fn messages_normalizes_and_forwards_anthropic_beta_header() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
         .mock
@@ -933,7 +933,10 @@ async fn messages_filters_and_forwards_anthropic_beta_header() {
                 .method("POST")
                 .uri("/v1/messages")
                 .header("content-type", "application/json")
-                .header("anthropic-beta", "interleaved-thinking-2025-05-14, junk-beta")
+                .header(
+                    "anthropic-beta",
+                    "interleaved-thinking-2025-05-14, junk-beta, extended-cache-ttl-2025-04-11",
+                )
                 .body(Body::from(
                     r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
                 ))
@@ -949,8 +952,8 @@ async fn messages_filters_and_forwards_anthropic_beta_header() {
         .await;
     assert_eq!(
         forwarded.as_deref(),
-        Some("interleaved-thinking-2025-05-14"),
-        "expected filtered beta header forwarded; got: {forwarded:?}"
+        Some("interleaved-thinking-2025-05-14, junk-beta, extended-cache-ttl-2025-04-11"),
+        "expected all beta tokens forwarded; got: {forwarded:?}"
     );
 }
 
