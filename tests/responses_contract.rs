@@ -2182,3 +2182,194 @@ async fn responses_logs_cache_and_usage_safe_metadata() {
     assert!(!rendered.contains("secret"));
     assert!(!rendered.contains("hidden"));
 }
+
+#[tokio::test]
+async fn responses_http_fills_codex_input_namespace_description_before_copilot() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_ns_1","status":"in_progress","model":"gpt-5.6-sol"}}"#,
+                r#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","namespace":"functions","name":"wait","arguments":"{\"id\":\"1\"}"}}"#,
+                r#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_2","namespace":"functions","name":"exec","input":"text(true);"}}"#,
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_ns_1","status":"completed","model":"gpt-5.6-sol","output":[{"type":"function_call","call_id":"call_1","namespace":"functions","name":"wait","arguments":"{\"id\":\"1\"}"},{"type":"custom_tool_call","call_id":"call_2","namespace":"functions","name":"exec","input":"text(true);"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+            ],
+        )
+        .await;
+
+    let request_body = serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "stream": true,
+        "client_metadata": {"client": "codex"},
+        "include": ["reasoning.encrypted_content"],
+        "reasoning": {"effort": "medium"},
+        "input": [{
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{
+                "type": "namespace",
+                "name": "functions",
+                "description": "",
+                "tools": [{
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run JavaScript code",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE"
+                    }
+                }, {
+                    "type": "function",
+                    "name": "wait",
+                    "description": "Wait for a running operation",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"]
+                    }
+                }]
+            }],
+            "content": [{"type": "input_text", "text": "Use available tools."}]
+        }, {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly OK"}]
+        }]
+    });
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains(r#""namespace":"functions""#));
+    assert!(text.contains(r#""type":"function_call""#));
+    assert!(text.contains(r#""type":"custom_tool_call""#));
+    assert!(text.contains(r#""name":"wait""#));
+    assert!(text.contains(r#""name":"exec""#));
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outbound["input"][0]["tools"][0]["description"],
+        "Tools in the functions namespace."
+    );
+    assert_eq!(outbound["input"][0]["tools"][0]["type"], "namespace");
+    assert_eq!(outbound["input"][0]["tools"][0]["name"], "functions");
+    assert_eq!(outbound["input"][0]["tools"][0]["tools"][0]["name"], "exec");
+    assert_eq!(outbound["input"][0]["tools"][0]["tools"][1]["name"], "wait");
+    assert_eq!(outbound["model"], "gpt-5.6-sol");
+    assert_eq!(outbound["stream"], true);
+    assert_eq!(outbound["client_metadata"]["client"], "codex");
+    assert_eq!(
+        outbound["include"],
+        serde_json::json!(["reasoning.encrypted_content"])
+    );
+    assert_eq!(outbound["reasoning"]["effort"], "medium");
+    assert_eq!(
+        outbound["input"][1]["content"][0]["text"],
+        "Reply exactly OK"
+    );
+    assert!(outbound.get("tools").is_none());
+}
+
+#[tokio::test]
+async fn responses_http_preserves_codex_146_flat_top_level_tools() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_flat_tools",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.5",
+                        "input": "hello",
+                        "tools": [{
+                            "type": "function",
+                            "name": "wait",
+                            "description": "Wait for a running operation",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"id": {"type": "string"}},
+                                "required": ["id"]
+                            }
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["tools"],
+        serde_json::json!([{
+            "type": "function",
+            "name": "wait",
+            "description": "Wait for a running operation",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"]
+            }
+        }])
+    );
+}

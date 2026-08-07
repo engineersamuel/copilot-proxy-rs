@@ -293,3 +293,186 @@ fn responses_image_generation_tool_choice_is_removed_without_tools() {
 
     assert!(body.get("tool_choice").is_none());
 }
+
+#[test]
+fn responses_input_namespace_empty_description_gets_copilot_fallback() {
+    let mut body = serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "input": [{
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{
+                "type": "namespace",
+                "name": "functions",
+                "description": "",
+                "tools": [{
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run JavaScript code",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: SOURCE"
+                    }
+                }, {
+                    "type": "function",
+                    "name": "wait",
+                    "description": "Wait for a running operation",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"]
+                    }
+                }]
+            }],
+            "content": [{"type": "input_text", "text": "Use available tools."}]
+        }, {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly OK"}]
+        }],
+        "stream": true
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    let nested_before = body["input"][0]["tools"][0]["tools"].clone();
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert_eq!(
+        body["input"][0]["tools"][0]["description"],
+        "Tools in the functions namespace."
+    );
+    assert_eq!(body["input"][0]["tools"][0]["type"], "namespace");
+    assert_eq!(body["input"][0]["tools"][0]["name"], "functions");
+    assert_eq!(body["input"][0]["tools"][0]["tools"], nested_before);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["model"], "gpt-5.6-sol");
+}
+
+#[test]
+fn responses_input_namespace_missing_or_blank_description_gets_fallback() {
+    let mut body = serde_json::json!({
+        "input": [{
+            "tools": [
+                {"type": "namespace", "name": "functions"},
+                {"type": "namespace", "name": "browser", "description": "   \t\n"},
+                {"type": "namespace", "name": "other", "description": 12}
+            ]
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert_eq!(
+        body["input"][0]["tools"][0]["description"],
+        "Tools in the functions namespace."
+    );
+    assert_eq!(
+        body["input"][0]["tools"][1]["description"],
+        "Tools in the browser namespace."
+    );
+    assert_eq!(
+        body["input"][0]["tools"][2]["description"],
+        "Tools in the other namespace."
+    );
+}
+
+#[test]
+fn responses_input_namespace_nonempty_description_is_preserved() {
+    let mut body = serde_json::json!({
+        "input": [{
+            "tools": [{
+                "type": "namespace",
+                "name": "browser",
+                "description": "Tools in the browser namespace."
+            }]
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    assert_eq!(
+        body["input"][0]["tools"][0]["description"]
+            .as_str()
+            .unwrap(),
+        "Tools in the browser namespace."
+    );
+}
+
+#[test]
+fn responses_input_namespace_malformed_entries_are_unchanged() {
+    let mut body = serde_json::json!({
+        "input": [{
+            "tools": [
+                {"type": "namespace", "name": "", "description": ""},
+                {"type": "namespace", "name": "   ", "description": ""},
+                {"type": "namespace", "name": 7, "description": ""},
+                {"type": "namespace", "description": ""},
+                {"type": "function", "name": "wait", "description": ""},
+                "not-an-object",
+                {"type": "namespace", "name": "ok", "description": ""}
+            ]
+        }, {
+            "tools": "not-an-array"
+        }, "not-an-object"],
+        "tools": [{
+            "type": "namespace",
+            "name": "functions",
+            "description": ""
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let before = body.clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+
+    // Malformed / non-namespace / top-level tools stay put; only the valid
+    // nested namespace at input[0].tools[6] is filled.
+    assert_eq!(body["input"][0]["tools"][0], before["input"][0]["tools"][0]);
+    assert_eq!(body["input"][0]["tools"][1], before["input"][0]["tools"][1]);
+    assert_eq!(body["input"][0]["tools"][2], before["input"][0]["tools"][2]);
+    assert_eq!(body["input"][0]["tools"][3], before["input"][0]["tools"][3]);
+    assert_eq!(body["input"][0]["tools"][4], before["input"][0]["tools"][4]);
+    assert_eq!(body["input"][0]["tools"][5], before["input"][0]["tools"][5]);
+    assert_eq!(
+        body["input"][0]["tools"][6]["description"],
+        "Tools in the ok namespace."
+    );
+    assert_eq!(body["input"][1]["tools"], "not-an-array");
+    assert_eq!(body["input"][2], "not-an-object");
+    assert_eq!(
+        body["tools"][0]["description"], "",
+        "top-level tools must not be mutated by input namespace normalization"
+    );
+}
+
+#[test]
+fn responses_input_namespace_normalization_is_idempotent() {
+    let mut body = serde_json::json!({
+        "input": [{
+            "tools": [{
+                "type": "namespace",
+                "name": "functions",
+                "description": ""
+            }]
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    adapt_responses_tools_for_copilot(&mut body);
+    let once = body.clone();
+    adapt_responses_tools_for_copilot(&mut body);
+    assert_eq!(body, once);
+}

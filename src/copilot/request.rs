@@ -183,6 +183,7 @@ pub fn adapt_responses_tools_for_copilot(body: &mut Map<String, Value>) {
     strip_unsupported_responses_tools(body);
     strip_unsupported_responses_tool_choice(body);
     strip_unsupported_responses_includes(body);
+    normalize_input_namespace_descriptions(body);
 }
 
 pub fn strip_agent_message_encrypted_content(body: &mut Map<String, Value>) -> usize {
@@ -252,6 +253,47 @@ fn strip_unsupported_responses_includes(body: &mut Map<String, Value>) {
         };
     if remove_include_key {
         body.remove("include");
+    }
+}
+
+/// Codex 0.147.0 embeds default tools under `input[*].tools` namespaces and
+/// deliberately sends an empty description for the default `functions`
+/// namespace. Copilot rejects blank namespace descriptions, so fill a
+/// deterministic fallback before the request leaves the proxy.
+fn normalize_input_namespace_descriptions(body: &mut Map<String, Value>) {
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return;
+    };
+    for item in items {
+        let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for tool in tools {
+            let Some(tool_obj) = tool.as_object_mut() else {
+                continue;
+            };
+            if tool_obj.get("type").and_then(Value::as_str) != Some("namespace") {
+                continue;
+            }
+            let Some(name) = tool_obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if name.is_empty() || name.trim().is_empty() {
+                continue;
+            }
+            let name = name.to_string();
+            let needs_fallback = match tool_obj.get("description") {
+                None => true,
+                Some(Value::String(text)) => text.trim().is_empty(),
+                Some(_) => true,
+            };
+            if needs_fallback {
+                tool_obj.insert(
+                    "description".to_string(),
+                    Value::String(format!("Tools in the {name} namespace.")),
+                );
+            }
+        }
     }
 }
 
