@@ -37,14 +37,26 @@ fn initiator_is_agent_for_tool_continuations_and_user_for_plain_user_turns() {
 }
 
 #[test]
-fn anthropic_beta_filter_keeps_only_copilot_supported_prefixes() {
+fn anthropic_beta_header_normalizes_and_forwards_all_tokens() {
     assert_eq!(
         filter_anthropic_beta_header(
-            "interleaved-thinking-2025-05-14, context-management-2025-06-27, unknown-beta, advanced-tool-use-2025-01-01"
+            "interleaved-thinking-2025-05-14, context-management-2025-06-27, unknown-beta, advanced-tool-use-2025-01-01, extended-cache-ttl-2025-04-11"
         ),
-        Some("interleaved-thinking-2025-05-14, advanced-tool-use-2025-01-01".to_string())
+        Some(
+            "interleaved-thinking-2025-05-14, context-management-2025-06-27, unknown-beta, advanced-tool-use-2025-01-01, extended-cache-ttl-2025-04-11"
+                .to_string()
+        )
     );
-    assert_eq!(filter_anthropic_beta_header("unknown-beta"), None);
+    assert_eq!(
+        filter_anthropic_beta_header("unknown-beta"),
+        Some("unknown-beta".to_string())
+    );
+    assert_eq!(
+        filter_anthropic_beta_header("  a , , b  "),
+        Some("a, b".to_string())
+    );
+    assert_eq!(filter_anthropic_beta_header(""), None);
+    assert_eq!(filter_anthropic_beta_header("  ,  , "), None);
 }
 
 fn supported(efforts: &[EffortLevel]) -> SupportedEfforts {
