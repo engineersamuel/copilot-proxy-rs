@@ -544,13 +544,30 @@ pub fn responses_to_anthropic_message_response(response: &Value, anthropic_model
         "role": "assistant",
         "model": anthropic_model,
         "content": content,
-        "stop_reason": if has_tool_use { "tool_use" } else { "end_turn" },
+        "stop_reason": anthropic_stop_reason(response, has_tool_use),
         "stop_sequence": null,
         "usage": {
             "input_tokens": usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
             "output_tokens": usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0)
         }
     })
+}
+
+/// Maps a Responses status to an Anthropic `stop_reason`.
+///
+/// Truncated output must surface as `max_tokens` so clients can distinguish a
+/// budget-exhausted turn from a completed one.
+fn anthropic_stop_reason(response: &Value, has_tool_use: bool) -> &'static str {
+    if has_tool_use {
+        return "tool_use";
+    }
+    let truncated = response.get("status").and_then(Value::as_str) == Some("incomplete")
+        && response
+            .get("incomplete_details")
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+            == Some("max_output_tokens");
+    if truncated { "max_tokens" } else { "end_turn" }
 }
 
 pub fn responses_sse_to_anthropic_sse_line(line: &str) -> Option<String> {
@@ -695,7 +712,7 @@ pub fn responses_sse_to_anthropic_sse_line(line: &str) -> Option<String> {
                 json!({"type": "content_block_stop", "index": index})
             ))
         }
-        Some("response.completed") => {
+        Some("response.completed") | Some("response.incomplete") => {
             let response = value.get("response").unwrap_or(&Value::Null);
             let has_tool_use = response
                 .get("output")
@@ -715,7 +732,7 @@ pub fn responses_sse_to_anthropic_sse_line(line: &str) -> Option<String> {
                 json!({
                     "type": "message_delta",
                     "delta": {
-                        "stop_reason": if has_tool_use { "tool_use" } else { "end_turn" },
+                        "stop_reason": anthropic_stop_reason(response, has_tool_use),
                         "stop_sequence": null
                     },
                     "usage": {"output_tokens": output_tokens}

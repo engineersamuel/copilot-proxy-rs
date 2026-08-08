@@ -264,6 +264,7 @@ pub(crate) async fn responses(
         .get_copilot_openai_model(&requested_model)
         .await;
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
+    let copilot_model_id = copilot_model.clone();
     let prepared = crate::responses::request::prepare_responses_request(
         &state.responses,
         body,
@@ -319,6 +320,25 @@ pub(crate) async fn responses(
             tracing::info!(cache.operation = "miss", "responses cache event");
         }
         PreviousResponseCacheStatus::NotRequested => {}
+    }
+    if !state
+        .models
+        .model_supports_responses_api(&copilot_model_id)
+        .await
+        && state
+            .models
+            .model_supports_chat_completions_api(&copilot_model_id)
+            .await
+    {
+        return handle_copilot_chat_responses(
+            state,
+            prepared.effective_body,
+            requested_model,
+            copilot_model_id,
+            Some(prepared.request_metadata),
+            stream,
+        )
+        .await;
     }
     if stream {
         let stream_started = std::time::Instant::now();
@@ -473,6 +493,110 @@ pub(crate) async fn responses(
         );
     }
     Json(response).into_response()
+}
+
+/// Serves an OpenAI Responses request through Copilot's chat completions API.
+///
+/// Models such as Gemini reject the upstream Responses API, so requests are
+/// translated Responses -> chat completions and responses are translated back.
+async fn handle_copilot_chat_responses(
+    state: AppState,
+    body: Map<String, Value>,
+    requested_model: String,
+    copilot_model: String,
+    metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
+    stream: bool,
+) -> Response {
+    let translated = match crate::local::responses_to_chat(body, &copilot_model) {
+        Ok(translated) => translated,
+        Err(error) => return openai_responses_translation_error(error).into_response(),
+    };
+    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+
+    if !stream {
+        let chat = match state
+            .copilot
+            .post_chat(translated.chat_body, metadata)
+            .await
+        {
+            Ok(chat) => chat,
+            Err(error) => return openai_copilot_error(error).into_response(),
+        };
+        return match crate::local::chat_to_responses(
+            &chat,
+            &response_id,
+            &requested_model,
+            &translated.tool_kinds,
+        ) {
+            Ok(response) => Json(response).into_response(),
+            Err(_) => openai_error(
+                http::StatusCode::BAD_GATEWAY,
+                "server_error",
+                "upstream model returned invalid response",
+            )
+            .into_response(),
+        };
+    }
+
+    let upstream = match state
+        .copilot
+        .stream_chat(translated.chat_body, metadata)
+        .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => return openai_copilot_error(error).into_response(),
+    };
+    let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::local::ChatToResponsesStream::new(
+            response_id,
+            requested_model,
+            translated.tool_kinds,
+        ),
+    ));
+    let mapper_adapter = adapter.clone();
+    let mapped = crate::http::sse::map_sse_lines_many(
+        upstream.bytes_stream(),
+        state.config.max_decoded_body_bytes as usize,
+        move |line| {
+            mapper_adapter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .map_line(line)
+        },
+    );
+    let byte_stream = async_stream::stream! {
+        futures_util::pin_mut!(mapped);
+        while let Some(event) = mapped.next().await {
+            match event {
+                Ok(event) => yield Ok::<Bytes, std::io::Error>(event),
+                Err(_) => {
+                    let failed_events = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .fail();
+                    for failed_event in failed_events {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                            "{failed_event}\n\n"
+                        )));
+                    }
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                    return;
+                }
+            }
+        }
+        let failed_events = adapter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .fail();
+        for failed_event in failed_events {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{failed_event}\n\n")));
+        }
+        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+    };
+    Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(byte_stream))
+        .unwrap()
 }
 
 async fn handle_local_responses(
