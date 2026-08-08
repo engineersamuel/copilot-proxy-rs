@@ -79,6 +79,171 @@ async fn local_responses_routes_buffered_request_without_copilot_work() {
 }
 
 #[tokio::test]
+async fn local_responses_flattens_namespaces_and_restores_tool_call_identity() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_alpha",
+                            "type": "function",
+                            "function": {
+                                "name": "namespace_0_0_noop",
+                                "arguments": "{}"
+                            }
+                        }, {
+                            "id": "call_beta",
+                            "type": "function",
+                            "function": {
+                                "name": "namespace_1_0_noop",
+                                "arguments": "{\"input\":\"text(true);\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "Use a tool.",
+                        "tools": [{
+                            "type": "namespace",
+                            "name": "alpha",
+                            "description": "Alpha tools.",
+                            "tools": [{
+                                "type": "function",
+                                "name": "noop",
+                                "description": "Do nothing.",
+                                "strict": false,
+                                "parameters": {"type": "object", "properties": {}}
+                            }]
+                        }, {
+                            "type": "namespace",
+                            "name": "beta",
+                            "description": "Beta tools.",
+                            "tools": [{
+                                "type": "custom",
+                                "name": "noop",
+                                "description": "Run text."
+                            }]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["output"][0]["type"], "function_call");
+    assert_eq!(body["output"][0]["namespace"], "alpha");
+    assert_eq!(body["output"][0]["name"], "noop");
+    assert_eq!(body["output"][1]["type"], "custom_tool_call");
+    assert_eq!(body["output"][1]["namespace"], "beta");
+    assert_eq!(body["output"][1]["name"], "noop");
+    assert_eq!(body["output"][1]["input"], "text(true);");
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["tools"][0]["function"]["name"],
+        "namespace_0_0_noop"
+    );
+    assert_eq!(
+        outbound["tools"][1]["function"]["name"],
+        "namespace_1_0_noop"
+    );
+}
+
+#[tokio::test]
+async fn local_responses_stream_accepts_namespace_tools_without_calls() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}"#,
+                r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "stream": true,
+                        "input": "Reply exactly OK",
+                        "tools": [{
+                            "type": "namespace",
+                            "name": "test",
+                            "description": "Test tools.",
+                            "tools": [{
+                                "type": "function",
+                                "name": "noop",
+                                "description": "Do nothing.",
+                                "strict": false,
+                                "parameters": {"type": "object", "properties": {}}
+                            }]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains(r#""delta":"OK""#));
+    assert!(text.contains(r#""status":"completed""#));
+}
+
+#[tokio::test]
 async fn local_responses_rejects_hosted_tools_before_transport() {
     let fixture = support::AppFixture::with_mock_local().await;
     let response = router(fixture.state.clone())

@@ -65,6 +65,7 @@ async fn messages_inner(
         anthropic_error(status, anthropic_request_body_error_type(status), message)
     })?;
     validate_anthropic_messages_request(&body)?;
+    normalize_message_level_system(&mut body)?;
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let requested_model = body
         .get("model")
@@ -252,6 +253,83 @@ async fn messages_inner(
     Ok(Json(response).into_response())
 }
 
+fn normalize_message_level_system(
+    body: &mut Map<String, Value>,
+) -> Result<(), (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
+    let has_message_level_system =
+        body.get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.get("role").and_then(Value::as_str) == Some("system"))
+            });
+    if !has_message_level_system {
+        return Ok(());
+    }
+
+    let mut system_blocks = Vec::new();
+    if let Some(system) = body.remove("system") {
+        append_system_blocks(&mut system_blocks, system)?;
+    }
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return Err(anthropic_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "messages must be an array",
+        ));
+    };
+    let original_messages = std::mem::take(messages);
+    for message in original_messages {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            let content = message.get("content").cloned().ok_or_else(|| {
+                anthropic_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "system message content is required",
+                )
+            })?;
+            append_system_blocks(&mut system_blocks, content)?;
+        } else {
+            messages.push(message);
+        }
+    }
+    body.insert("system".to_string(), Value::Array(system_blocks));
+    Ok(())
+}
+
+fn append_system_blocks(
+    blocks: &mut Vec<Value>,
+    content: Value,
+) -> Result<(), (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
+    match content {
+        Value::String(text) => {
+            blocks.push(serde_json::json!({"type": "text", "text": text}));
+            Ok(())
+        }
+        Value::Array(content_blocks) => {
+            if content_blocks.iter().any(|block| {
+                block.get("type").and_then(Value::as_str) != Some("text")
+                    || block.get("text").and_then(Value::as_str).is_none()
+            }) {
+                return Err(anthropic_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "system message content blocks must be text blocks",
+                ));
+            }
+            blocks.extend(content_blocks);
+            Ok(())
+        }
+        _ => Err(anthropic_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "system message content must be a string or array of text blocks",
+        )),
+    }
+}
+
 /// Serves an Anthropic Messages request through Copilot's chat completions API.
 ///
 /// Models such as Gemini expose only `/chat/completions` upstream, so requests
@@ -281,11 +359,12 @@ async fn handle_copilot_chat_messages(
             .await
             .map_err(anthropic_copilot_error)?;
         let response_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-        let responses = crate::local::chat_to_responses(
+        let responses = crate::local::responses::chat_to_responses_with_tool_names(
             &chat,
             &response_id,
             &requested_model,
             &translated.tool_kinds,
+            &translated.tool_names,
         )
         .map_err(|_| {
             anthropic_error(
@@ -316,10 +395,11 @@ async fn handle_copilot_chat_messages(
     }
     let response_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let adapter = std::sync::Arc::new(std::sync::Mutex::new(
-        crate::local::ChatToResponsesStream::new(
+        crate::local::ChatToResponsesStream::new_with_tool_names(
             response_id,
             requested_model,
             translated.tool_kinds,
+            translated.tool_names,
         ),
     ));
     let mapper_adapter = adapter.clone();
@@ -417,10 +497,11 @@ async fn handle_local_messages(
 
         let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
         let adapter = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::local::ChatToResponsesStream::new(
+            crate::local::ChatToResponsesStream::new_with_tool_names(
                 response_id,
                 target.public_id.clone(),
                 translated.tool_kinds,
+                translated.tool_names,
             ),
         ));
         let mapper_adapter = adapter.clone();
@@ -481,11 +562,12 @@ async fn handle_local_messages(
         .await
         .map_err(anthropic_local_error)?;
     let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
-    let responses = crate::local::chat_to_responses(
+    let responses = crate::local::responses::chat_to_responses_with_tool_names(
         &chat,
         &response_id,
         &target.public_id,
         &translated.tool_kinds,
+        &translated.tool_names,
     )
     .map_err(|_| {
         anthropic_error(

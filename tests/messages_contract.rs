@@ -1022,6 +1022,67 @@ async fn messages_preserves_anthropic_cache_control_for_claude_requests() {
 }
 
 #[tokio::test]
+async fn messages_moves_message_level_system_blocks_to_top_level() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/messages",
+            200,
+            serde_json::json!({
+                "id": "msg_system_normalized",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5-20251001",
+                "content": [{"type": "text", "text": "OK"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-haiku-4.5",
+                        "max_tokens":16,
+                        "system":"Top-level instruction.",
+                        "messages":[
+                            {"role":"user","content":"Reply exactly OK"},
+                            {"role":"system","content":[
+                                {"type":"text","text":"Agent instruction.","cache_control":{"type":"ephemeral"}},
+                                {"type":"text","text":"Tool inventory.","cache_control":{"type":"ephemeral"}}
+                            ]}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(outbound["messages"][0]["role"], "user");
+    assert_eq!(outbound["system"][0]["text"], "Top-level instruction.");
+    assert_eq!(outbound["system"][1]["text"], "Agent instruction.");
+    assert_eq!(outbound["system"][1]["cache_control"]["type"], "ephemeral");
+    assert_eq!(outbound["system"][2]["text"], "Tool inventory.");
+    assert_eq!(outbound["system"][2]["cache_control"]["type"], "ephemeral");
+}
+
+#[tokio::test]
 async fn messages_stream_preserves_anthropic_cache_control_for_claude_requests() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -1082,6 +1143,61 @@ async fn messages_stream_preserves_anthropic_cache_control_for_claude_requests()
         outbound["messages"][0]["content"][0]["cache_control"]["type"],
         "ephemeral"
     );
+}
+
+#[tokio::test]
+async fn messages_stream_moves_message_level_system_to_top_level() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/messages",
+            200,
+            vec![
+                concat!(
+                    "event: message_start\n",
+                    r#"data: {"type":"message_start","message":{"id":"msg_system_stream","type":"message","role":"assistant","content":[],"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":1,"output_tokens":0}}}"#
+                ),
+                concat!(
+                    "event: content_block_delta\n",
+                    r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}"#
+                ),
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}",
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"claude-haiku-4.5",
+                        "stream":true,
+                        "max_tokens":16,
+                        "messages":[
+                            {"role":"user","content":"Reply exactly OK"},
+                            {"role":"system","content":"You are a coding assistant."}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(outbound["system"][0]["text"], "You are a coding assistant.");
 }
 
 #[tokio::test]

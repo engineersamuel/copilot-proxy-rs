@@ -50,6 +50,13 @@ pub struct TranslatedResponsesRequest {
     pub chat_body: Map<String, Value>,
     pub input_items: Vec<Value>,
     pub tool_kinds: BTreeMap<String, LocalToolKind>,
+    pub(crate) tool_names: BTreeMap<String, ResponsesToolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponsesToolName {
+    name: String,
+    namespace: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +67,8 @@ struct StreamingToolCall {
     name: Option<String>,
     arguments: String,
     kind: Option<LocalToolKind>,
+    output_name: Option<String>,
+    namespace: Option<String>,
     type_seen: bool,
     added: bool,
     done: bool,
@@ -91,6 +100,7 @@ pub struct ChatToResponsesStream {
     previous_response_id: Option<String>,
     created_at: u64,
     tool_kinds: BTreeMap<String, LocalToolKind>,
+    tool_names: BTreeMap<String, ResponsesToolName>,
     text: String,
     text_output_index: Option<usize>,
     text_done: bool,
@@ -110,7 +120,22 @@ impl ChatToResponsesStream {
         public_model: String,
         tool_kinds: BTreeMap<String, LocalToolKind>,
     ) -> Self {
-        Self::new_with_previous_response_id(response_id, public_model, None, tool_kinds)
+        Self::new_with_tool_names(response_id, public_model, tool_kinds, BTreeMap::new())
+    }
+
+    pub(crate) fn new_with_tool_names(
+        response_id: String,
+        public_model: String,
+        tool_kinds: BTreeMap<String, LocalToolKind>,
+        tool_names: BTreeMap<String, ResponsesToolName>,
+    ) -> Self {
+        Self::new_with_previous_response_id_and_tool_names(
+            response_id,
+            public_model,
+            None,
+            tool_kinds,
+            tool_names,
+        )
     }
 
     pub fn new_with_previous_response_id(
@@ -119,12 +144,29 @@ impl ChatToResponsesStream {
         previous_response_id: Option<String>,
         tool_kinds: BTreeMap<String, LocalToolKind>,
     ) -> Self {
+        Self::new_with_previous_response_id_and_tool_names(
+            response_id,
+            public_model,
+            previous_response_id,
+            tool_kinds,
+            BTreeMap::new(),
+        )
+    }
+
+    pub(crate) fn new_with_previous_response_id_and_tool_names(
+        response_id: String,
+        public_model: String,
+        previous_response_id: Option<String>,
+        tool_kinds: BTreeMap<String, LocalToolKind>,
+        tool_names: BTreeMap<String, ResponsesToolName>,
+    ) -> Self {
         Self {
             response_id,
             public_model,
             previous_response_id,
             created_at: current_epoch_seconds(),
             tool_kinds,
+            tool_names,
             text: String::new(),
             text_output_index: None,
             text_done: false,
@@ -398,6 +440,8 @@ impl ChatToResponsesStream {
                     name: None,
                     arguments: String::new(),
                     kind: None,
+                    output_name: None,
+                    namespace: None,
                     type_seen: false,
                     added: false,
                     done: false,
@@ -432,6 +476,12 @@ impl ChatToResponsesStream {
             if let Some(name) = name {
                 call.name = Some(name.to_string());
                 call.kind = kind;
+                if let Some(tool_name) = self.tool_names.get(name) {
+                    call.output_name = Some(tool_name.name.clone());
+                    call.namespace = tool_name.namespace.clone();
+                } else {
+                    call.output_name = Some(name.to_string());
+                }
             }
         }
         if let Some(arguments_delta) = arguments_delta {
@@ -447,9 +497,10 @@ impl ChatToResponsesStream {
             .map(|((call_id, name), kind)| (call_id, name, kind));
         if !call.added && metadata.is_some() {
             call.added = true;
-            let (call_id, name, kind) = metadata.ok_or(())?;
+            let (call_id, _, kind) = metadata.ok_or(())?;
+            let name = call.output_name.as_deref().ok_or(())?;
             let item_id = kind.stream_item_id(&self.response_id, call.tool_index);
-            let item = match kind {
+            let mut item = match kind {
                 LocalToolKind::Function => json!({
                     "id": item_id,
                     "type": "function_call",
@@ -467,6 +518,7 @@ impl ChatToResponsesStream {
                     "input": ""
                 }),
             };
+            insert_tool_namespace(&mut item, call.namespace.as_deref());
             events.push(stream_event(
                 "response.output_item.added",
                 json!({"output_index": call.output_index, "item": item}),
@@ -671,9 +723,9 @@ impl ChatToResponsesStream {
 
 fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Option<Value> {
     let call_id = call.call_id.as_deref()?;
-    let name = call.name.as_deref()?;
+    let name = call.output_name.as_deref()?;
     let kind = call.kind?;
-    Some(match kind {
+    let mut item = match kind {
         LocalToolKind::Function => json!({
             "id": kind.stream_item_id(response_id, call.tool_index),
             "type": "function_call",
@@ -690,7 +742,9 @@ fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Option<Va
             "name": name,
             "input": custom_tool_input(&call.arguments).unwrap_or_default()
         }),
-    })
+    };
+    insert_tool_namespace(&mut item, call.namespace.as_deref());
+    Some(item)
 }
 
 fn custom_tool_input(arguments: &str) -> Option<String> {
@@ -721,13 +775,14 @@ pub fn responses_to_chat(
     messages.extend(translate_input_items(&input_items)?);
 
     let mut tool_kinds = BTreeMap::new();
+    let mut tool_names = BTreeMap::new();
     let tools = body
         .remove("tools")
-        .map(|tools| translate_tools(tools, &mut tool_kinds))
+        .map(|tools| translate_tools(tools, &mut tool_kinds, &mut tool_names))
         .transpose()?;
     let tool_choice = body
         .remove("tool_choice")
-        .map(|choice| translate_tool_choice(choice, &tool_kinds))
+        .map(|choice| translate_tool_choice(choice, &tool_kinds, &tool_names))
         .transpose()?;
 
     let mut chat_body = Map::new();
@@ -765,6 +820,7 @@ pub fn responses_to_chat(
         chat_body,
         input_items,
         tool_kinds,
+        tool_names,
     })
 }
 
@@ -773,6 +829,22 @@ pub fn chat_to_responses(
     response_id: &str,
     public_model: &str,
     tool_kinds: &BTreeMap<String, LocalToolKind>,
+) -> Result<Value, ResponsesTranslationError> {
+    chat_to_responses_with_tool_names(
+        chat,
+        response_id,
+        public_model,
+        tool_kinds,
+        &BTreeMap::new(),
+    )
+}
+
+pub(crate) fn chat_to_responses_with_tool_names(
+    chat: &Value,
+    response_id: &str,
+    public_model: &str,
+    tool_kinds: &BTreeMap<String, LocalToolKind>,
+    tool_names: &BTreeMap<String, ResponsesToolName>,
 ) -> Result<Value, ResponsesTranslationError> {
     let choice = chat
         .get("choices")
@@ -821,6 +893,7 @@ pub fn chat_to_responses(
                 index,
                 response_id,
                 tool_kinds,
+                tool_names,
             )?);
         }
     }
@@ -888,6 +961,7 @@ fn translate_chat_tool_call(
     index: usize,
     response_id: &str,
     tool_kinds: &BTreeMap<String, LocalToolKind>,
+    tool_names: &BTreeMap<String, ResponsesToolName>,
 ) -> Result<Value, ResponsesTranslationError> {
     let object = call
         .as_object()
@@ -902,15 +976,25 @@ fn translate_chat_tool_call(
         .ok_or_else(|| invalid_response("tool call function must be an object"))?;
     let name = response_field_string(function, "name", "tool call function")?;
     let arguments = response_field_string(function, "arguments", "tool call function")?;
+    let output_name = tool_names
+        .get(name)
+        .map_or(name, |tool_name| tool_name.name.as_str());
+    let namespace = tool_names
+        .get(name)
+        .and_then(|tool_name| tool_name.namespace.as_deref());
     match tool_kinds.get(name) {
-        Some(LocalToolKind::Function) => Ok(json!({
-            "id": format!("fc_{response_id}_{index}"),
-            "type": "function_call",
-            "status": "completed",
-            "call_id": call_id,
-            "name": name,
-            "arguments": arguments
-        })),
+        Some(LocalToolKind::Function) => {
+            let mut item = json!({
+                "id": format!("fc_{response_id}_{index}"),
+                "type": "function_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": output_name,
+                "arguments": arguments
+            });
+            insert_tool_namespace(&mut item, namespace);
+            Ok(item)
+        }
         Some(LocalToolKind::Custom) => {
             let arguments: Value = serde_json::from_str(arguments)
                 .map_err(|_| invalid_response("custom tool arguments must be valid JSON"))?;
@@ -921,14 +1005,16 @@ fn translate_chat_tool_call(
                 .ok_or_else(|| {
                     invalid_response("custom tool arguments must contain string input")
                 })?;
-            Ok(json!({
+            let mut item = json!({
                 "id": format!("ctc_{response_id}_{index}"),
                 "type": "custom_tool_call",
                 "status": "completed",
                 "call_id": call_id,
-                "name": name,
+                "name": output_name,
                 "input": input
-            }))
+            });
+            insert_tool_namespace(&mut item, namespace);
+            Ok(item)
         }
         None => Err(invalid_response(format!(
             "tool call references unknown tool {name}"
@@ -1288,39 +1374,56 @@ fn translate_tool_output_content(output: &Value) -> Result<String, ResponsesTran
 fn translate_tools(
     tools: Value,
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
+    tool_names: &mut BTreeMap<String, ResponsesToolName>,
 ) -> Result<Vec<Value>, ResponsesTranslationError> {
     let tools = tools.as_array().ok_or_else(|| {
         ResponsesTranslationError::InvalidRequest("tools must be an array".to_string())
     })?;
     tools
         .iter()
-        .map(|tool| translate_tool(tool, tool_kinds))
-        .collect()
+        .enumerate()
+        .try_fold(Vec::new(), |mut translated, (namespace_index, tool)| {
+            let tool = tool.as_object().ok_or_else(|| {
+                ResponsesTranslationError::InvalidRequest("tool must be an object".to_string())
+            })?;
+            if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+                translated.extend(translate_namespace_tool(
+                    tool,
+                    namespace_index,
+                    tool_kinds,
+                    tool_names,
+                )?);
+            } else {
+                translated.push(translate_tool(tool, None, tool_kinds, tool_names)?);
+            }
+            Ok(translated)
+        })
 }
 
 fn translate_tool(
-    tool: &Value,
+    tool: &Map<String, Value>,
+    namespaced_name: Option<(&str, &str)>,
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
+    tool_names: &mut BTreeMap<String, ResponsesToolName>,
 ) -> Result<Value, ResponsesTranslationError> {
-    let tool = tool.as_object().ok_or_else(|| {
-        ResponsesTranslationError::InvalidRequest("tool must be an object".to_string())
-    })?;
     let tool_type = required_field_string(tool, "type")?;
     match tool_type {
         "function" => {
-            let name = required_field_string(tool, "name")?;
+            let source_name = required_field_string(tool, "name")?;
+            let upstream_name =
+                namespaced_name.map_or(source_name, |(upstream_name, _)| upstream_name);
             let parameters = tool.get("parameters").ok_or_else(|| {
                 ResponsesTranslationError::InvalidRequest(format!(
-                    "function tool {name} missing parameters"
+                    "function tool {source_name} missing parameters"
                 ))
             })?;
             if !parameters.is_object() {
                 return Err(ResponsesTranslationError::InvalidRequest(format!(
-                    "function tool {name} parameters must be an object"
+                    "function tool {source_name} parameters must be an object"
                 )));
             }
             let mut function = Map::new();
-            function.insert("name".to_string(), Value::String(name.to_string()));
+            function.insert("name".to_string(), Value::String(upstream_name.to_string()));
             if let Some(description) = tool.get("description") {
                 let description = required_string(description, "tool description")?;
                 function.insert(
@@ -1332,26 +1435,42 @@ fn translate_tool(
             if let Some(strict) = tool.get("strict") {
                 let strict = strict.as_bool().ok_or_else(|| {
                     ResponsesTranslationError::InvalidRequest(format!(
-                        "function tool {name} strict must be a boolean"
+                        "function tool {source_name} strict must be a boolean"
                     ))
                 })?;
                 function.insert("strict".to_string(), Value::Bool(strict));
             }
-            register_tool_kind(tool_kinds, name, LocalToolKind::Function)?;
+            register_tool(
+                tool_kinds,
+                tool_names,
+                upstream_name,
+                source_name,
+                namespaced_name.map(|(_, namespace)| namespace),
+                LocalToolKind::Function,
+            )?;
             Ok(json!({"type": "function", "function": function}))
         }
         "custom" | "freeform" => {
-            let name = required_field_string(tool, "name")?;
+            let source_name = required_field_string(tool, "name")?;
+            let upstream_name =
+                namespaced_name.map_or(source_name, |(upstream_name, _)| upstream_name);
             let description = tool
                 .get("description")
                 .map(|value| required_string(value, "tool description"))
                 .transpose()?
                 .unwrap_or_default();
-            register_tool_kind(tool_kinds, name, LocalToolKind::Custom)?;
+            register_tool(
+                tool_kinds,
+                tool_names,
+                upstream_name,
+                source_name,
+                namespaced_name.map(|(_, namespace)| namespace),
+                LocalToolKind::Custom,
+            )?;
             Ok(json!({
                 "type": "function",
                 "function": {
-                    "name": name,
+                    "name": upstream_name,
                     "description": description,
                     "parameters": {
                         "type": "object",
@@ -1371,15 +1490,93 @@ fn translate_tool(
     }
 }
 
-fn register_tool_kind(
+fn translate_namespace_tool(
+    namespace: &Map<String, Value>,
+    namespace_index: usize,
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
-    name: &str,
+    tool_names: &mut BTreeMap<String, ResponsesToolName>,
+) -> Result<Vec<Value>, ResponsesTranslationError> {
+    let namespace_name = required_field_string(namespace, "name")?;
+    if let Some(description) = namespace.get("description") {
+        required_string(description, "namespace description")?;
+    }
+    let nested_tools = namespace
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ResponsesTranslationError::InvalidRequest(format!(
+                "namespace tool {namespace_name} tools must be an array"
+            ))
+        })?;
+    let mut nested_names = BTreeSet::new();
+    nested_tools
+        .iter()
+        .enumerate()
+        .map(|(tool_index, tool)| {
+            let tool = tool.as_object().ok_or_else(|| {
+                ResponsesTranslationError::InvalidRequest(format!(
+                    "namespace tool {namespace_name} contains a non-object tool"
+                ))
+            })?;
+            let source_name = required_field_string(tool, "name")?;
+            if !nested_names.insert(source_name.to_string()) {
+                return Err(ResponsesTranslationError::InvalidRequest(format!(
+                    "duplicate tool name in namespace {namespace_name}: {source_name}"
+                )));
+            }
+            let upstream_name =
+                namespaced_upstream_tool_name(namespace_index, tool_index, source_name);
+            translate_tool(
+                tool,
+                Some((&upstream_name, namespace_name)),
+                tool_kinds,
+                tool_names,
+            )
+        })
+        .collect()
+}
+
+fn namespaced_upstream_tool_name(
+    namespace_index: usize,
+    tool_index: usize,
+    source_name: &str,
+) -> String {
+    let prefix = format!("namespace_{namespace_index}_{tool_index}_");
+    let suffix = source_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(64usize.saturating_sub(prefix.len()))
+        .collect::<String>();
+    format!("{prefix}{suffix}")
+}
+
+fn register_tool(
+    tool_kinds: &mut BTreeMap<String, LocalToolKind>,
+    tool_names: &mut BTreeMap<String, ResponsesToolName>,
+    upstream_name: &str,
+    output_name: &str,
+    namespace: Option<&str>,
     kind: LocalToolKind,
 ) -> Result<(), ResponsesTranslationError> {
-    if tool_kinds.insert(name.to_string(), kind).is_some() {
+    if tool_kinds.insert(upstream_name.to_string(), kind).is_some() {
         return Err(ResponsesTranslationError::InvalidRequest(format!(
-            "duplicate tool name: {name}"
+            "duplicate tool name: {upstream_name}"
         )));
+    }
+    if let Some(namespace) = namespace {
+        tool_names.insert(
+            upstream_name.to_string(),
+            ResponsesToolName {
+                name: output_name.to_string(),
+                namespace: Some(namespace.to_string()),
+            },
+        );
     }
     Ok(())
 }
@@ -1387,6 +1584,7 @@ fn register_tool_kind(
 fn translate_tool_choice(
     choice: Value,
     tool_kinds: &BTreeMap<String, LocalToolKind>,
+    tool_names: &BTreeMap<String, ResponsesToolName>,
 ) -> Result<Value, ResponsesTranslationError> {
     match choice {
         Value::String(choice) if matches!(choice.as_str(), "auto" | "none" | "required") => {
@@ -1400,12 +1598,25 @@ fn translate_tool_choice(
             match choice_type {
                 "function" | "custom" | "freeform" => {
                     let name = required_field_string(&choice, "name")?;
+                    let namespace = choice
+                        .get("namespace")
+                        .map(|value| required_string(value, "tool_choice namespace"))
+                        .transpose()?;
+                    let upstream_name = namespace
+                        .and_then(|namespace| {
+                            tool_names.iter().find_map(|(upstream_name, tool_name)| {
+                                (tool_name.namespace.as_deref() == Some(namespace)
+                                    && tool_name.name == name)
+                                    .then_some(upstream_name.as_str())
+                            })
+                        })
+                        .unwrap_or(name);
                     let expected_kind = if choice_type == "function" {
                         LocalToolKind::Function
                     } else {
                         LocalToolKind::Custom
                     };
-                    match tool_kinds.get(name) {
+                    match tool_kinds.get(upstream_name) {
                         None => {
                             return Err(ResponsesTranslationError::InvalidRequest(format!(
                                 "tool_choice references unknown tool: {name}"
@@ -1418,17 +1629,27 @@ fn translate_tool_choice(
                         }
                         Some(_) => {}
                     }
-                    Ok(json!({"type": "function", "function": {"name": name}}))
+                    Ok(json!({"type": "function", "function": {"name": upstream_name}}))
                 }
                 unsupported => Err(ResponsesTranslationError::UnsupportedTool(
                     unsupported.to_string(),
                 )),
             }
         }
+
         value => Err(ResponsesTranslationError::InvalidRequest(format!(
             "tool_choice must be a string or object, got {}",
             value_kind(&value)
         ))),
+    }
+}
+
+fn insert_tool_namespace(item: &mut Value, namespace: Option<&str>) {
+    if let (Some(item), Some(namespace)) = (item.as_object_mut(), namespace) {
+        item.insert(
+            "namespace".to_string(),
+            Value::String(namespace.to_string()),
+        );
     }
 }
 
