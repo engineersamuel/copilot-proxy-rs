@@ -522,11 +522,12 @@ async fn handle_copilot_chat_responses(
             Ok(chat) => chat,
             Err(error) => return openai_copilot_error(error).into_response(),
         };
-        return match crate::local::chat_to_responses(
+        return match crate::local::responses::chat_to_responses_with_tool_names(
             &chat,
             &response_id,
             &requested_model,
             &translated.tool_kinds,
+            &translated.tool_names,
         ) {
             Ok(response) => Json(response).into_response(),
             Err(_) => openai_error(
@@ -547,10 +548,11 @@ async fn handle_copilot_chat_responses(
         Err(error) => return openai_copilot_error(error).into_response(),
     };
     let adapter = std::sync::Arc::new(std::sync::Mutex::new(
-        crate::local::ChatToResponsesStream::new(
+        crate::local::ChatToResponsesStream::new_with_tool_names(
             response_id,
             requested_model,
             translated.tool_kinds,
+            translated.tool_names,
         ),
     ));
     let mapper_adapter = adapter.clone();
@@ -666,13 +668,14 @@ async fn handle_local_responses(
 
         let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
         let adapter = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::local::responses::ChatToResponsesStream::new_with_previous_response_id(
+            crate::local::responses::ChatToResponsesStream::new_with_previous_response_id_and_tool_names(
                 response_id.clone(),
                 target.public_id.clone(),
                 (expanded.cache_status == PreviousResponseCacheStatus::Hit)
                     .then(|| requested_previous_response_id.clone())
                     .flatten(),
                 translated.tool_kinds,
+                translated.tool_names,
             ),
         ));
         let mapper_adapter = adapter.clone();
@@ -779,11 +782,12 @@ async fn handle_local_responses(
         Err(error) => return openai_local_error(error).into_response(),
     };
     let response_id = format!("resp_local_{}", uuid::Uuid::new_v4().simple());
-    let mut response = match crate::local::responses::chat_to_responses(
+    let mut response = match crate::local::responses::chat_to_responses_with_tool_names(
         &chat,
         &response_id,
         &target.public_id,
         &translated.tool_kinds,
+        &translated.tool_names,
     ) {
         Ok(response) => response,
         Err(_) => {
