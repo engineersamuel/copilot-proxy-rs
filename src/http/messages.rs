@@ -181,11 +181,15 @@ async fn messages_inner(
                 .body(Body::from_stream(byte_stream))
                 .unwrap());
         } else {
-            return Err(anthropic_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request_error",
-                "streaming not supported for this model via OpenAI translation",
-            ));
+            return handle_copilot_chat_messages(
+                state,
+                stream_body,
+                requested_model,
+                copilot_model,
+                metadata,
+                true,
+            )
+            .await;
         }
     }
     let response = if has_web_search {
@@ -235,19 +239,137 @@ async fn messages_inner(
             &requested_model,
         )
     } else {
-        let openai_body =
-            crate::translate::anthropic::anthropic_to_openai_request(&body, &copilot_model);
-        let openai_response = state
-            .copilot
-            .post_chat(openai_body, None)
-            .await
-            .map_err(anthropic_copilot_error)?;
-        crate::translate::anthropic::openai_to_anthropic_response(
-            &openai_response,
-            &requested_model,
+        return handle_copilot_chat_messages(
+            state,
+            body,
+            requested_model,
+            copilot_model,
+            metadata,
+            false,
         )
+        .await;
     };
     Ok(Json(response).into_response())
+}
+
+/// Serves an Anthropic Messages request through Copilot's chat completions API.
+///
+/// Models such as Gemini expose only `/chat/completions` upstream, so requests
+/// are translated Anthropic -> Responses -> chat completions, and responses are
+/// translated back chat completions -> Responses -> Anthropic.
+async fn handle_copilot_chat_messages(
+    state: AppState,
+    body: Map<String, Value>,
+    requested_model: String,
+    copilot_model: String,
+    metadata: Option<CopilotRequestMetadata>,
+    stream: bool,
+) -> Result<Response, (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
+    let mut responses_body =
+        crate::translate::responses_formats::anthropic_messages_to_responses_request(
+            &body,
+            &copilot_model,
+        );
+    responses_body.insert("stream".to_string(), Value::Bool(stream));
+    let translated = crate::local::responses_to_chat(responses_body, &copilot_model)
+        .map_err(anthropic_responses_translation_error)?;
+
+    if !stream {
+        let chat = state
+            .copilot
+            .post_chat(translated.chat_body, metadata)
+            .await
+            .map_err(anthropic_copilot_error)?;
+        let response_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+        let responses = crate::local::chat_to_responses(
+            &chat,
+            &response_id,
+            &requested_model,
+            &translated.tool_kinds,
+        )
+        .map_err(|_| {
+            anthropic_error(
+                StatusCode::BAD_GATEWAY,
+                "server_error",
+                "upstream model returned invalid response",
+            )
+        })?;
+        let anthropic =
+            crate::translate::responses_formats::responses_to_anthropic_message_response(
+                &responses,
+                &requested_model,
+            );
+        return Ok(Json(anthropic).into_response());
+    }
+
+    let upstream = state
+        .copilot
+        .stream_chat(translated.chat_body, metadata)
+        .await
+        .map_err(anthropic_copilot_error)?;
+    if !has_event_stream_content_type(&upstream) {
+        return Err(anthropic_error(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            "upstream model returned invalid response",
+        ));
+    }
+    let response_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    let adapter = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::local::ChatToResponsesStream::new(
+            response_id,
+            requested_model,
+            translated.tool_kinds,
+        ),
+    ));
+    let mapper_adapter = adapter.clone();
+    let mapped = crate::http::sse::map_sse_lines_many(
+        upstream.bytes_stream(),
+        state.config.max_decoded_body_bytes as usize,
+        move |line| {
+            let responses_events = mapper_adapter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .map_line(line);
+            responses_events
+                .into_iter()
+                .flat_map(|event| responses_event_to_anthropic_frames(&event))
+                .collect()
+        },
+    );
+    let byte_stream = async_stream::stream! {
+        futures_util::pin_mut!(mapped);
+        let mut emitted_any = false;
+        while let Some(event) = mapped.next().await {
+            match event {
+                Ok(event) => {
+                    emitted_any = true;
+                    yield Ok::<Bytes, std::io::Error>(event);
+                }
+                Err(_) => {
+                    let failed_events = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .fail();
+                    for failed_event in failed_events {
+                        for frame in responses_event_to_anthropic_frames(&failed_event) {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{frame}\n\n")));
+                        }
+                    }
+                    if !emitted_any {
+                        yield Err(std::io::Error::other(
+                            "upstream model stream failed before first event",
+                        ));
+                    }
+                    return;
+                }
+            }
+        }
+    };
+    Ok(Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(byte_stream))
+        .unwrap())
 }
 
 async fn handle_local_messages(
