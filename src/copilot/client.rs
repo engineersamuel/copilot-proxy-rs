@@ -364,12 +364,12 @@ impl CopilotBackend {
         &self,
         url: &str,
         body: Map<String, Value>,
-        metadata: Option<CopilotRequestMetadata>,
+        mut metadata: Option<CopilotRequestMetadata>,
     ) -> Result<Value, CopilotError> {
         let family = endpoint_family(url);
         let model = body.get("model").and_then(Value::as_str);
-        let mut last_response_text = String::new();
-        for attempt in 0..=self.config.copilot_retry_max {
+        let mut attempt = 0;
+        loop {
             if let Some(rate_limiter) = &self.rate_limiter {
                 let waited = rate_limiter.acquire().await;
                 if waited > 0.0 {
@@ -412,6 +412,7 @@ impl CopilotBackend {
                             "copilot request retrying"
                         );
                         tokio::time::sleep(delay).await;
+                        attempt += 1;
                         continue;
                     }
                     other => return Err(other),
@@ -433,6 +434,7 @@ impl CopilotBackend {
                     "copilot request retrying"
                 );
                 tokio::time::sleep(delay).await;
+                attempt += 1;
                 continue;
             }
             if response.status().is_success() {
@@ -473,7 +475,22 @@ impl CopilotBackend {
             } else {
                 None
             };
-            last_response_text = response.text().await.unwrap_or_default();
+            let last_response_text = response.text().await.unwrap_or_default();
+            let unsupported_betas_removed = strip_unsupported_anthropic_beta_headers(
+                &mut metadata,
+                status,
+                &last_response_text,
+            );
+            if unsupported_betas_removed > 0 {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    stream = false,
+                    beta.unsupported.removed = unsupported_betas_removed as u64,
+                    "copilot request retrying without unsupported anthropic beta headers"
+                );
+                continue;
+            }
             if delay.is_none() {
                 self.log_failed_request_diagnostics(
                     family,
@@ -493,6 +510,7 @@ impl CopilotBackend {
                     "copilot request retrying"
                 );
                 tokio::time::sleep(delay).await;
+                attempt += 1;
                 continue;
             }
             tracing::warn!(
@@ -511,11 +529,6 @@ impl CopilotBackend {
             }
             .into());
         }
-        Err(CopilotHttpError {
-            status_code: 500,
-            detail: last_response_text,
-        }
-        .into())
     }
 
     async fn get_json(
@@ -649,7 +662,7 @@ impl CopilotBackend {
         &self,
         url: &str,
         body: Map<String, Value>,
-        metadata: Option<CopilotRequestMetadata>,
+        mut metadata: Option<CopilotRequestMetadata>,
     ) -> Result<reqwest::Response, CopilotError> {
         let family = endpoint_family(url);
         let model = body.get("model").and_then(Value::as_str).unwrap_or("");
@@ -661,7 +674,8 @@ impl CopilotBackend {
             stream = true,
             "copilot request started"
         );
-        for attempt in 0..=self.config.copilot_retry_max {
+        let mut attempt = 0;
+        loop {
             if let Some(rate_limiter) = &self.rate_limiter {
                 let waited = rate_limiter.acquire().await;
                 if waited > 0.0 {
@@ -700,6 +714,7 @@ impl CopilotBackend {
                             "copilot request retrying"
                         );
                         tokio::time::sleep(delay).await;
+                        attempt += 1;
                         continue;
                     }
                     other => {
@@ -738,6 +753,18 @@ impl CopilotBackend {
                 None
             };
             let raw_detail = response.text().await.unwrap_or_default();
+            let unsupported_betas_removed =
+                strip_unsupported_anthropic_beta_headers(&mut metadata, status, &raw_detail);
+            if unsupported_betas_removed > 0 {
+                tracing::warn!(
+                    api.family = family,
+                    http.status_code = status as u64,
+                    stream = true,
+                    beta.unsupported.removed = unsupported_betas_removed as u64,
+                    "copilot request retrying without unsupported anthropic beta headers"
+                );
+                continue;
+            }
             if delay.is_none() {
                 self.log_failed_request_diagnostics(family, status, true, &body, &raw_detail);
             }
@@ -751,6 +778,7 @@ impl CopilotBackend {
                     "copilot request retrying"
                 );
                 tokio::time::sleep(delay).await;
+                attempt += 1;
                 continue;
             }
             tracing::warn!(
@@ -770,9 +798,6 @@ impl CopilotBackend {
                 .into())
             };
         }
-        Err(CopilotError::Transport(
-            "stream retry loop exhausted".to_string(),
-        ))
     }
 
     fn log_failed_request_diagnostics(
@@ -894,6 +919,65 @@ fn error_type_for_status(status: u16) -> &'static str {
         504 => "timeout_error",
         _ => "api_error",
     }
+}
+
+fn strip_unsupported_anthropic_beta_headers(
+    metadata: &mut Option<CopilotRequestMetadata>,
+    status: u16,
+    raw_response: &str,
+) -> usize {
+    if status != StatusCode::BAD_REQUEST.as_u16() {
+        return 0;
+    }
+    let Ok(response) = serde_json::from_str::<Value>(raw_response) else {
+        return 0;
+    };
+    if response.pointer("/error/code").and_then(Value::as_str) != Some("invalid_request_body") {
+        return 0;
+    }
+    let Some(unsupported) = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .and_then(|message| message.strip_prefix("unsupported beta header(s):"))
+    else {
+        return 0;
+    };
+    let unsupported: Vec<&str> = unsupported
+        .split(',')
+        .map(str::trim)
+        .filter(|beta| !beta.is_empty())
+        .collect();
+    if unsupported.is_empty() {
+        return 0;
+    }
+    let Some(metadata) = metadata.as_mut() else {
+        return 0;
+    };
+    let Some(header) = metadata.extra_headers.get("anthropic-beta") else {
+        return 0;
+    };
+    let betas: Vec<&str> = header
+        .split(',')
+        .map(str::trim)
+        .filter(|beta| !beta.is_empty())
+        .collect();
+    let retained: Vec<&str> = betas
+        .iter()
+        .copied()
+        .filter(|beta| !unsupported.contains(beta))
+        .collect();
+    let removed = betas.len() - retained.len();
+    if removed == 0 {
+        return 0;
+    }
+    if retained.is_empty() {
+        metadata.extra_headers.remove("anthropic-beta");
+    } else {
+        metadata
+            .extra_headers
+            .insert("anthropic-beta".to_string(), retained.join(", "));
+    }
+    removed
 }
 
 fn is_encrypted_function_output_decryption_error<T>(result: &Result<T, CopilotError>) -> bool {

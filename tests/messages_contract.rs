@@ -958,6 +958,125 @@ async fn messages_normalizes_and_forwards_anthropic_beta_header() {
 }
 
 #[tokio::test]
+async fn messages_retries_without_betas_rejected_by_copilot() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_text(
+            "POST",
+            "/v1/messages",
+            vec![
+                (
+                    400,
+                    "application/json",
+                    serde_json::json!({
+                        "error": {
+                            "message": "unsupported beta header(s): advisor-tool-2026-03-01",
+                            "code": "invalid_request_body"
+                        }
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    "text/event-stream",
+                    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string(),
+                ),
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header(
+                    "anthropic-beta",
+                    "interleaved-thinking-2025-05-14, advisor-tool-2026-03-01",
+                )
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-6","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 2);
+    let forwarded = fixture
+        .mock
+        .last_request_header("POST", "/v1/messages", "anthropic-beta")
+        .await;
+    assert_eq!(
+        forwarded.as_deref(),
+        Some("interleaved-thinking-2025-05-14")
+    );
+}
+
+#[tokio::test]
+async fn messages_retry_omits_beta_header_when_all_betas_are_rejected() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "POST",
+            "/v1/messages",
+            vec![
+                (
+                    400,
+                    serde_json::json!({
+                        "error": {
+                            "message": "unsupported beta header(s): advisor-tool-2026-03-01",
+                            "code": "invalid_request_body"
+                        }
+                    }),
+                    vec![],
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "msg_retry",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-6",
+                        "content": [{"type": "text", "text": "retry ok"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }),
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-beta", "advisor-tool-2026-03-01")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 2);
+    let forwarded = fixture
+        .mock
+        .last_request_header("POST", "/v1/messages", "anthropic-beta")
+        .await;
+    assert_eq!(forwarded, None);
+}
+
+#[tokio::test]
 async fn messages_preserves_anthropic_cache_control_for_claude_requests() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
