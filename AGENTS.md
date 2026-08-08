@@ -22,6 +22,10 @@ Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo
 Keep behavior changes covered by focused tests.
 Keep changes narrow and preserve public API compatibility unless explicitly required.
 
+## Deployment
+
+Whenever rebuilding and redeploying the proxy, always target the existing running instance on port `8080`.
+
 ## Conventions
 
 Use existing error, routing, and translation patterns before adding new abstractions.
