@@ -253,7 +253,7 @@ async fn local_responses_rejects_hosted_tools_before_transport() {
                 .uri("/v1/responses")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"model":"qwen3-coder-30b-local","input":"search","tools":[{"type":"web_search_preview"}]}"#,
+                    r#"{"model":"qwen3-coder-30b-local","input":"search","tools":[{"type":"computer_use_preview"}]}"#,
                 ))
                 .unwrap(),
         )
@@ -267,6 +267,105 @@ async fn local_responses_rejects_hosted_tools_before_transport() {
     assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
     assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
     assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn local_responses_offers_web_search_as_a_callable_function() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-websearch",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "qwen3-coder-30b",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"Reply exactly OK","tools":[{"type":"web_search","external_web_access":true,"search_context_size":"medium"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["output"][0]["content"][0]["text"], "OK");
+
+    let upstream = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .expect("upstream request");
+    // Search is offered as an ordinary function, so no search is performed
+    // unless the model actually calls it.
+    let tools = upstream["tools"].as_array().expect("tools");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["function"]["name"], "web_search");
+}
+
+#[tokio::test]
+async fn local_responses_does_not_search_when_the_model_does_not_ask() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-nosearch",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "qwen3-coder-30b",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","input":"Reply exactly OK","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["output"][0]["content"][0]["text"], "OK");
+
+    // A turn that declares web search but never calls it must not pay for a
+    // delegated search: the probe is the only upstream chat request.
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
 }
 
 #[tokio::test]
@@ -1397,6 +1496,198 @@ async fn responses_refreshes_models_before_reasoning_adaptation() {
         .unwrap();
     assert_eq!(outbound["model"], "gpt-live-responses");
     assert_eq!(outbound["reasoning"]["effort"], "high");
+}
+
+#[tokio::test]
+async fn copilot_chat_responses_skips_search_when_the_model_does_not_call_it() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "claude-chat-only",
+                    "owned_by": "anthropic",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"supports": {}}
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-direct",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "claude-chat-only",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","input":"Reply exactly OK","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["output"][0]["content"][0]["text"], "OK");
+
+    // The model never called the search function, so no delegated search ran and
+    // the already-finished turn was reused rather than repeated.
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+}
+
+#[tokio::test]
+async fn copilot_chat_responses_delegates_only_when_the_model_calls_search() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [
+                    {
+                        "id": "claude-chat-only",
+                        "owned_by": "anthropic",
+                        "supported_endpoints": ["/chat/completions"],
+                        "capabilities": {"supports": {}}
+                    },
+                    {
+                        "id": "gpt-5.6-sol",
+                        "owned_by": "openai",
+                        "supported_endpoints": ["/responses"],
+                        "capabilities": {"supports": {}}
+                    }
+                ]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "POST",
+            "/chat/completions",
+            vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "chatcmpl-wants-search",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "claude-chat-only",
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": null,
+                                "tool_calls": [{
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": "{\"query\":\"top hacker news story\"}"
+                                    }
+                                }]
+                            },
+                            "finish_reason": "tool_calls"
+                        }]
+                    }),
+                    vec![],
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "chatcmpl-final",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "claude-chat-only",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "The top story is Example."},
+                            "finish_reason": "stop"
+                        }]
+                    }),
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_search",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Example (https://example.com)"}]
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","input":"top story?","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["output"][0]["content"][0]["text"],
+        "The top story is Example."
+    );
+
+    // Exactly one delegated search, routed to the configured search model.
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let search = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .expect("search request");
+    assert_eq!(search["model"], "gpt-5.6-sol");
+    assert_eq!(search["input"], "top hacker news story");
+    assert_eq!(search["tools"][0]["type"], "web_search");
 }
 
 #[tokio::test]
