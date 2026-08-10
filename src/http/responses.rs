@@ -754,7 +754,7 @@ fn streaming_web_search_response(
         }
 
         let outcome = resolve_web_search_calls(&state, &mut chat_body, metadata.clone()).await;
-        let searched = match outcome {
+        match outcome {
             Ok(WebSearchOutcome::Completed(chat)) => {
                 // Resolved without searching: replay the finished turn rather
                 // than asking the upstream for the same answer twice.
@@ -781,7 +781,9 @@ fn streaming_web_search_response(
                 yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
                 return;
             }
-            Ok(WebSearchOutcome::Searched) => true,
+            // Searches ran; their results are now in the conversation, so the
+            // final answer is streamed from the upstream below.
+            Ok(WebSearchOutcome::Searched) => {}
             Err(_) => {
                 for event in adapter.fail() {
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
@@ -789,8 +791,7 @@ fn streaming_web_search_response(
                 yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
                 return;
             }
-        };
-        let _ = searched;
+        }
 
         let upstream = match state.copilot.stream_chat(chat_body, metadata).await {
             Ok(upstream) => upstream,
