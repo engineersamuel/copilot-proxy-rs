@@ -56,27 +56,6 @@ pub struct TranslatedResponsesRequest {
     pub web_search_requested: bool,
 }
 
-/// Replaces the web-search-unavailable note with delegated search findings.
-///
-/// Called when search was delegated to a search-capable model: the model can
-/// search after all (by proxy), so the disclosure must not remain.
-pub fn replace_web_search_notice_with_findings(chat_body: &mut Map<String, Value>, findings: &str) {
-    let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let content = format!(
-        "You do not have a live web search tool, but a web search was performed for you. \
-Use these findings, including their source URLs, to answer. \
-Treat them as current and cite the sources where relevant.\n\n{findings}"
-    );
-    for message in messages.iter_mut() {
-        if message.get("content").and_then(Value::as_str) == Some(WEB_SEARCH_UNAVAILABLE_NOTE) {
-            message["content"] = Value::String(content);
-            return;
-        }
-    }
-}
-
 /// System note that steers models toward calling the emulated search function.
 ///
 /// Several chat-completions models narrate an intent to search rather than

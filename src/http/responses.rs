@@ -695,6 +695,74 @@ async fn resolve_web_search_calls(
     Ok(WebSearchOutcome::Searched)
 }
 
+/// Serves an already-completed Responses turn as a Server-Sent Events stream.
+///
+/// Used when an emulated web search resolved the turn during the search probe:
+/// the answer already exists, so it is replayed as events rather than being
+/// requested from the upstream a second time.
+fn responses_sse_from_completed(response: Value) -> Response {
+    let mut events: Vec<String> = Vec::new();
+    let mut push = |event: &str, payload: Value| {
+        events.push(format!(
+            "event: {event}\ndata: {payload}\n\n",
+            payload = payload
+        ));
+    };
+
+    let mut created = response.clone();
+    if let Some(object) = created.as_object_mut() {
+        object.insert(
+            "status".to_string(),
+            Value::String("in_progress".to_string()),
+        );
+        object.insert("output".to_string(), Value::Array(Vec::new()));
+    }
+    push(
+        "response.created",
+        serde_json::json!({"type": "response.created", "response": created.clone()}),
+    );
+    push(
+        "response.in_progress",
+        serde_json::json!({"type": "response.in_progress", "response": created}),
+    );
+
+    if let Some(output) = response.get("output").and_then(Value::as_array) {
+        for (index, item) in output.iter().enumerate() {
+            push(
+                "response.output_item.added",
+                serde_json::json!({
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item
+                }),
+            );
+            push(
+                "response.output_item.done",
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item
+                }),
+            );
+        }
+    }
+    push(
+        "response.completed",
+        serde_json::json!({"type": "response.completed", "response": response}),
+    );
+    events.push("data: [DONE]\n\n".to_string());
+
+    let byte_stream = futures_util::stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok::<Bytes, std::io::Error>(Bytes::from(event))),
+    );
+    Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(byte_stream))
+        .unwrap()
+}
+
 /// Serves an OpenAI Responses request through Copilot's chat completions API.
 ///
 /// Models such as Gemini reject the upstream Responses API, so requests are
@@ -724,25 +792,30 @@ async fn handle_copilot_chat_responses(
     }
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
 
-    // A turn that resolved without searching is already finished upstream.
-    if let Some(chat) = completed_turn
-        && !stream
-    {
-        return match crate::local::responses::chat_to_responses_with_tool_names(
+    // A turn that resolved without searching is already finished upstream, so it
+    // is served from that result instead of being requested a second time.
+    if let Some(chat) = completed_turn {
+        let response = match crate::local::responses::chat_to_responses_with_tool_names(
             &chat,
             &response_id,
             &requested_model,
             &translated.tool_kinds,
             &translated.tool_names,
         ) {
-            Ok(response) => Json(response).into_response(),
-            Err(_) => openai_error(
-                http::StatusCode::BAD_GATEWAY,
-                "server_error",
-                "upstream model returned invalid response",
-            )
-            .into_response(),
+            Ok(response) => response,
+            Err(_) => {
+                return openai_error(
+                    http::StatusCode::BAD_GATEWAY,
+                    "server_error",
+                    "upstream model returned invalid response",
+                )
+                .into_response();
+            }
         };
+        if !stream {
+            return Json(response).into_response();
+        }
+        return responses_sse_from_completed(response);
     }
 
     if !stream {

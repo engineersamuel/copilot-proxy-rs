@@ -1562,6 +1562,82 @@ async fn copilot_chat_responses_skips_search_when_the_model_does_not_call_it() {
 }
 
 #[tokio::test]
+async fn copilot_chat_responses_streams_unsearched_turn_without_repeating_upstream() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "claude-chat-only",
+                    "owned_by": "anthropic",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"supports": {}}
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-stream",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "claude-chat-only",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","stream":true,"input":"Reply exactly OK","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains("response.created"), "{text:?}");
+    assert!(text.contains("response.completed"), "{text:?}");
+    assert!(text.contains("OK"), "{text:?}");
+    assert!(text.trim_end().ends_with("data: [DONE]"), "{text:?}");
+
+    // The search probe already produced this turn, so streaming must replay it
+    // rather than ask the upstream for the same answer twice.
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+}
+
+#[tokio::test]
 async fn copilot_chat_responses_delegates_only_when_the_model_calls_search() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
