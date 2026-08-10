@@ -1320,6 +1320,71 @@ async fn messages_stream_moves_message_level_system_to_top_level() {
 }
 
 #[tokio::test]
+async fn local_messages_declines_anthropic_web_search_without_an_empty_function() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-local-search",
+                "object": "chat.completion",
+                "model": r"models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "I cannot browse the web."}
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .body(Body::from(
+                    r#"{"model":"qwen3-coder-30b-local","max_tokens":64,"messages":[{"role":"user","content":"top story?"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The Anthropic search tool carries no input schema. Translating it as an
+    // ordinary function produced empty parameters that the upstream rejected.
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert!(
+        outbound.get("tools").is_none_or(|tools| tools.is_null()),
+        "search must not be offered to a local model: {outbound:?}"
+    );
+    // A local model has no search backend, so the limitation is stated rather
+    // than left for the model to discover by calling a tool nothing answers.
+    let system = outbound["messages"][0].clone();
+    assert_eq!(system["role"], "system");
+    assert!(
+        system["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("Web search is not available")),
+        "expected a search-unavailable note, got {system:?}"
+    );
+    // Local work must never reach Copilot.
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 0);
+}
+
+#[tokio::test]
 async fn messages_routes_configured_local_model_without_copilot() {
     let fixture = support::AppFixture::with_mock_local().await;
     fixture
