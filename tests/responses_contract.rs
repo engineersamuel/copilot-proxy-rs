@@ -3,6 +3,7 @@ mod support;
 use support::log_capture::{field, with_event_capture};
 
 use axum::body::Body;
+use futures_util::StreamExt;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -1635,6 +1636,204 @@ async fn copilot_chat_responses_streams_unsearched_turn_without_repeating_upstre
     // rather than ask the upstream for the same answer twice.
     assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
     assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+}
+
+#[tokio::test]
+async fn replayed_search_turn_streams_the_same_text_events_as_a_live_turn() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "claude-chat-only",
+                    "owned_by": "anthropic",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"supports": {}}
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-no-search",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "claude-chat-only",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop"
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","stream":true,"input":"Reply exactly OK","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    // Declaring web search must not degrade the event stream a client receives.
+    for event in [
+        "response.created",
+        "response.in_progress",
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.completed",
+    ] {
+        assert!(text.contains(event), "missing {event} in {text:?}");
+    }
+    assert!(text.contains(r#""delta":"OK""#), "{text:?}");
+}
+
+#[tokio::test]
+async fn copilot_chat_responses_opens_the_stream_before_the_search_runs() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [
+                    {
+                        "id": "claude-chat-only",
+                        "owned_by": "anthropic",
+                        "supported_endpoints": ["/chat/completions"],
+                        "capabilities": {"supports": {}}
+                    },
+                    {
+                        "id": "gpt-5.6-sol",
+                        "owned_by": "openai",
+                        "supported_endpoints": ["/responses"],
+                        "capabilities": {"supports": {}}
+                    }
+                ]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "POST",
+            "/chat/completions",
+            vec![(
+                200,
+                serde_json::json!({
+                    "id": "chatcmpl-wants-search",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "claude-chat-only",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": "{\"query\":\"top story\"}"
+                                }
+                            }]
+                        },
+                        "finish_reason": "tool_calls"
+                    }]
+                }),
+                vec![],
+            )],
+        )
+        .await;
+    // The delegated search is slow, so the opening events must already be on the
+    // wire before it resolves.
+    fixture
+        .mock
+        .respond_json_delayed(
+            "POST",
+            "/responses",
+            600,
+            200,
+            serde_json::json!({
+                "id": "resp_search",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Example (https://example.com)"}]
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","stream":true,"input":"top story?","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+
+    let mut body = response.into_body().into_data_stream();
+    let started = std::time::Instant::now();
+    let first = body
+        .next()
+        .await
+        .expect("first chunk")
+        .expect("first chunk bytes");
+    let first_chunk_at = started.elapsed();
+    let first = String::from_utf8(first.to_vec()).unwrap();
+
+    assert!(first.contains("response.created"), "{first:?}");
+    assert!(
+        first_chunk_at < std::time::Duration::from_millis(400),
+        "stream stalled for {first_chunk_at:?} before the first event"
+    );
 }
 
 #[tokio::test]

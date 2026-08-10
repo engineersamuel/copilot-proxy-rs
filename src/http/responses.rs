@@ -695,37 +695,143 @@ async fn resolve_web_search_calls(
     Ok(WebSearchOutcome::Searched)
 }
 
-/// Serves an already-completed Responses turn as a Server-Sent Events stream.
+/// Streams a turn that may run an emulated web search.
 ///
-/// Used when an emulated web search resolved the turn during the search probe:
-/// the answer already exists, so it is replayed as events rather than being
-/// requested from the upstream a second time.
-fn responses_sse_from_completed(response: Value) -> Response {
-    let mut events: Vec<String> = Vec::new();
-    let mut push = |event: &str, payload: Value| {
-        events.push(format!(
-            "event: {event}\ndata: {payload}\n\n",
-            payload = payload
-        ));
+/// The opening events are flushed before the search starts, so the client sees
+/// the response begin immediately and receives progress while the delegated
+/// search runs, rather than waiting on a silent connection.
+fn streaming_web_search_response(
+    state: AppState,
+    translated: crate::local::responses::TranslatedResponsesRequest,
+    requested_model: String,
+    response_id: String,
+    metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
+) -> Response {
+    let crate::local::responses::TranslatedResponsesRequest {
+        mut chat_body,
+        tool_kinds,
+        tool_names,
+        ..
+    } = translated;
+
+    let byte_stream = async_stream::stream! {
+        let mut adapter = crate::local::ChatToResponsesStream::new_with_tool_names(
+            response_id.clone(),
+            requested_model.clone(),
+            tool_kinds.clone(),
+            tool_names.clone(),
+        );
+        // Open the response before any slow work so the client is never silent.
+        for event in adapter.begin_events() {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+        }
+
+        let outcome = resolve_web_search_calls(&state, &mut chat_body, metadata.clone()).await;
+        let searched = match outcome {
+            Ok(WebSearchOutcome::Completed(chat)) => {
+                // Resolved without searching: replay the finished turn rather
+                // than asking the upstream for the same answer twice.
+                match crate::local::responses::chat_to_responses_with_tool_names(
+                    &chat,
+                    &response_id,
+                    &requested_model,
+                    &tool_kinds,
+                    &tool_names,
+                ) {
+                    Ok(response) => {
+                        for event in completed_response_events(&response) {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                        }
+                    }
+                    Err(_) => {
+                        for event in adapter.fail() {
+                            yield Ok::<Bytes, std::io::Error>(
+                                Bytes::from(format!("{event}\n\n")),
+                            );
+                        }
+                    }
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+            Ok(WebSearchOutcome::Searched) => true,
+            Err(_) => {
+                for event in adapter.fail() {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+        };
+        let _ = searched;
+
+        let upstream = match state.copilot.stream_chat(chat_body, metadata).await {
+            Ok(upstream) => upstream,
+            Err(_) => {
+                for event in adapter.fail() {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+        };
+
+        let adapter = std::sync::Arc::new(std::sync::Mutex::new(adapter));
+        let mapper_adapter = adapter.clone();
+        let mapped = crate::http::sse::map_sse_lines_many(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                mapper_adapter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map_line(line)
+            },
+        );
+        futures_util::pin_mut!(mapped);
+        while let Some(event) = mapped.next().await {
+            match event {
+                Ok(event) => yield Ok::<Bytes, std::io::Error>(event),
+                Err(_) => {
+                    let failed_events = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .fail();
+                    for failed_event in failed_events {
+                        yield Ok::<Bytes, std::io::Error>(
+                            Bytes::from(format!("{failed_event}\n\n")),
+                        );
+                    }
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                    return;
+                }
+            }
+        }
+        let failed_events = adapter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .fail();
+        for failed_event in failed_events {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{failed_event}\n\n")));
+        }
+        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
     };
 
-    let mut created = response.clone();
-    if let Some(object) = created.as_object_mut() {
-        object.insert(
-            "status".to_string(),
-            Value::String("in_progress".to_string()),
-        );
-        object.insert("output".to_string(), Value::Array(Vec::new()));
-    }
-    push(
-        "response.created",
-        serde_json::json!({"type": "response.created", "response": created.clone()}),
-    );
-    push(
-        "response.in_progress",
-        serde_json::json!({"type": "response.in_progress", "response": created}),
-    );
+    Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(byte_stream))
+        .unwrap()
+}
 
+/// Builds the Responses stream events for an already-finished turn.
+///
+/// The opening events are omitted: callers emit those before any slow work so
+/// the client sees the response start immediately.
+fn completed_response_events(response: &Value) -> Vec<String> {
+    let mut events = Vec::new();
+    let mut push = |event_type: &str, payload: Value| {
+        events.push(format!("event: {event_type}\ndata: {payload}\n\n"));
+    };
     if let Some(output) = response.get("output").and_then(Value::as_array) {
         for (index, item) in output.iter().enumerate() {
             push(
@@ -736,6 +842,65 @@ fn responses_sse_from_completed(response: Value) -> Response {
                     "item": item
                 }),
             );
+            // Text output is replayed through the same content-part and delta
+            // events a live stream emits, so a client that renders incremental
+            // text sees the same shape whether or not a search ran.
+            let content = item.get("content").and_then(Value::as_array);
+            for (content_index, part) in content.into_iter().flatten().enumerate() {
+                let Some(text) = part.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                let base = serde_json::json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index
+                });
+                let with = |event_type: &str, extra: Value| {
+                    let mut payload = base.clone();
+                    if let (Some(payload), Some(extra)) =
+                        (payload.as_object_mut(), extra.as_object())
+                    {
+                        for (key, value) in extra {
+                            payload.insert(key.clone(), value.clone());
+                        }
+                    }
+                    if let Some(payload) = payload.as_object_mut() {
+                        payload.insert("type".to_string(), Value::String(event_type.to_string()));
+                    }
+                    payload
+                };
+                push(
+                    "response.content_part.added",
+                    with(
+                        "response.content_part.added",
+                        serde_json::json!({
+                            "part": {"type": "output_text", "text": "", "annotations": []}
+                        }),
+                    ),
+                );
+                push(
+                    "response.output_text.delta",
+                    with(
+                        "response.output_text.delta",
+                        serde_json::json!({"delta": text}),
+                    ),
+                );
+                push(
+                    "response.output_text.done",
+                    with(
+                        "response.output_text.done",
+                        serde_json::json!({"text": text}),
+                    ),
+                );
+                push(
+                    "response.content_part.done",
+                    with(
+                        "response.content_part.done",
+                        serde_json::json!({"part": part}),
+                    ),
+                );
+            }
             push(
                 "response.output_item.done",
                 serde_json::json!({
@@ -748,19 +913,12 @@ fn responses_sse_from_completed(response: Value) -> Response {
     }
     push(
         "response.completed",
-        serde_json::json!({"type": "response.completed", "response": response}),
+        serde_json::json!({
+            "type": "response.completed",
+            "response": response
+        }),
     );
-    events.push("data: [DONE]\n\n".to_string());
-
-    let byte_stream = futures_util::stream::iter(
-        events
-            .into_iter()
-            .map(|event| Ok::<Bytes, std::io::Error>(Bytes::from(event))),
-    );
-    Response::builder()
-        .header(http::header::CONTENT_TYPE, "text/event-stream")
-        .body(Body::from_stream(byte_stream))
-        .unwrap()
+    events
 }
 
 /// Serves an OpenAI Responses request through Copilot's chat completions API.
@@ -779,43 +937,42 @@ async fn handle_copilot_chat_responses(
         Ok(translated) => translated,
         Err(error) => return openai_responses_translation_error(error).into_response(),
     };
-    // Web search is offered to the upstream as an ordinary function, so the model
-    // only triggers a search when it decides one is needed. Resolve those calls
-    // here before the turn is handed back to the client.
-    let mut completed_turn = None;
+    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+
+    // Web search is offered to the upstream as an ordinary function, so a search
+    // only runs when the model asks for one. A streamed turn resolves the search
+    // inside the response body so the client is not held silent while it runs.
+    if translated.web_search_requested && stream {
+        return streaming_web_search_response(
+            state,
+            translated,
+            requested_model,
+            response_id,
+            metadata,
+        );
+    }
     if translated.web_search_requested {
         match resolve_web_search_calls(&state, &mut translated.chat_body, metadata.clone()).await {
-            Ok(WebSearchOutcome::Completed(chat)) => completed_turn = Some(*chat),
+            Ok(WebSearchOutcome::Completed(chat)) => {
+                return match crate::local::responses::chat_to_responses_with_tool_names(
+                    &chat,
+                    &response_id,
+                    &requested_model,
+                    &translated.tool_kinds,
+                    &translated.tool_names,
+                ) {
+                    Ok(response) => Json(response).into_response(),
+                    Err(_) => openai_error(
+                        http::StatusCode::BAD_GATEWAY,
+                        "server_error",
+                        "upstream model returned invalid response",
+                    )
+                    .into_response(),
+                };
+            }
             Ok(WebSearchOutcome::Searched) => {}
             Err(error) => return error,
         }
-    }
-    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
-
-    // A turn that resolved without searching is already finished upstream, so it
-    // is served from that result instead of being requested a second time.
-    if let Some(chat) = completed_turn {
-        let response = match crate::local::responses::chat_to_responses_with_tool_names(
-            &chat,
-            &response_id,
-            &requested_model,
-            &translated.tool_kinds,
-            &translated.tool_names,
-        ) {
-            Ok(response) => response,
-            Err(_) => {
-                return openai_error(
-                    http::StatusCode::BAD_GATEWAY,
-                    "server_error",
-                    "upstream model returned invalid response",
-                )
-                .into_response();
-            }
-        };
-        if !stream {
-            return Json(response).into_response();
-        }
-        return responses_sse_from_completed(response);
     }
 
     if !stream {

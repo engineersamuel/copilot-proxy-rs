@@ -351,6 +351,15 @@ impl ChatToResponsesStream {
         self.failed_event()
     }
 
+    /// Emits the opening stream events before any upstream work has happened.
+    ///
+    /// Lets a caller flush `response.created` immediately when the turn begins
+    /// with slow work such as a delegated web search, instead of holding the
+    /// connection silent. Subsequent mapping will not repeat these events.
+    pub(crate) fn begin_events(&mut self) -> Vec<String> {
+        self.start_events()
+    }
+
     fn start_events(&mut self) -> Vec<String> {
         if self.started {
             return Vec::new();
