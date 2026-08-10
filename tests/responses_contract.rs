@@ -271,7 +271,7 @@ async fn local_responses_rejects_hosted_tools_before_transport() {
 }
 
 #[tokio::test]
-async fn local_responses_offers_web_search_as_a_callable_function() {
+async fn local_responses_declines_web_search_instead_of_leaking_a_call() {
     let fixture = support::AppFixture::with_mock_local().await;
     fixture
         .mock
@@ -316,11 +316,22 @@ async fn local_responses_offers_web_search_as_a_callable_function() {
         .last_request_body_json("POST", "/v1/chat/completions")
         .await
         .expect("upstream request");
-    // Search is offered as an ordinary function, so no search is performed
-    // unless the model actually calls it.
-    let tools = upstream["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["function"]["name"], "web_search");
+    // A local model has no route to a search backend, so the tool is dropped
+    // rather than offered and then left unresolved. Offering it would let the
+    // model emit a web_search call that nothing answers.
+    assert!(
+        upstream.get("tools").is_none_or(|tools| tools.is_null()),
+        "local upstream must not be offered web_search: {upstream:?}"
+    );
+    // The model is told search is unavailable so it does not promise to search.
+    let system = upstream["messages"][0].clone();
+    assert_eq!(system["role"], "system");
+    assert!(
+        system["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("Web search is not available")),
+        "expected a search-unavailable note, got {system:?}"
+    );
 }
 
 #[tokio::test]
@@ -1833,6 +1844,161 @@ async fn copilot_chat_responses_opens_the_stream_before_the_search_runs() {
     assert!(
         first_chunk_at < std::time::Duration::from_millis(400),
         "stream stalled for {first_chunk_at:?} before the first event"
+    );
+}
+
+#[tokio::test]
+async fn narrated_search_is_retried_with_the_search_tool_forced() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [
+                    {
+                        "id": "claude-chat-only",
+                        "owned_by": "anthropic",
+                        "supported_endpoints": ["/chat/completions"],
+                        "capabilities": {"supports": {}}
+                    },
+                    {
+                        "id": "gpt-5.6-sol",
+                        "owned_by": "openai",
+                        "supported_endpoints": ["/responses"],
+                        "capabilities": {"supports": {}}
+                    }
+                ]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_sequence_json(
+            "POST",
+            "/chat/completions",
+            vec![
+                // The model promises to search without calling the tool.
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "chatcmpl-narrated",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "claude-chat-only",
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "I'll search for the top story on Hacker News for you."
+                            },
+                            "finish_reason": "stop"
+                        }]
+                    }),
+                    vec![],
+                ),
+                // Forced retry: now it calls the tool.
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "chatcmpl-forced",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "claude-chat-only",
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": null,
+                                "tool_calls": [{
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": "{\"query\":\"top hacker news story\"}"
+                                    }
+                                }]
+                            },
+                            "finish_reason": "tool_calls"
+                        }]
+                    }),
+                    vec![],
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "id": "chatcmpl-final",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "claude-chat-only",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "The top story is Example."},
+                            "finish_reason": "stop"
+                        }]
+                    }),
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_search",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Example (https://example.com)"}]
+                }]
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-chat-only","stream":false,"input":"top story?","tools":[{"type":"web_search"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // A narrated intent must be converted into a real search rather than
+    // returned to the caller as an unfulfilled promise.
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let chat_requests = fixture
+        .mock
+        .request_bodies_json("POST", "/chat/completions")
+        .await;
+    assert_eq!(chat_requests.len(), 3);
+    assert!(
+        chat_requests[0].get("tool_choice").is_none(),
+        "first probe must not force a search"
+    );
+    assert_eq!(
+        chat_requests[1]
+            .get("tool_choice")
+            .and_then(|choice| choice.get("function"))
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str),
+        Some("web_search"),
+        "retry must force the search tool"
     );
 }
 

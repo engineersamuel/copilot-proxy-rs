@@ -624,10 +624,21 @@ async fn resolve_web_search_calls(
     chat_body: &mut Map<String, Value>,
     metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
 ) -> Result<WebSearchOutcome, Response> {
+    let mut forced_retry_used = false;
+    let mut force_search = false;
     for _ in 0..MAX_SEARCH_ROUNDS {
         let mut probe = chat_body.clone();
         probe.insert("stream".to_string(), Value::Bool(false));
         probe.remove("stream_options");
+        if std::mem::take(&mut force_search) {
+            probe.insert(
+                "tool_choice".to_string(),
+                serde_json::json!({
+                    "type": "function",
+                    "function": {"name": crate::local::responses::WEB_SEARCH_TOOL_NAME}
+                }),
+            );
+        }
 
         let chat = match state.copilot.post_chat(probe, metadata.clone()).await {
             Ok(chat) => chat,
@@ -657,6 +668,22 @@ async fn resolve_web_search_calls(
             })
             .unwrap_or_default();
         if search_calls.is_empty() {
+            let narrated = message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(crate::local::responses::narrates_intent_to_search);
+            if narrated && !forced_retry_used {
+                // The model promised a search without calling the tool, so the
+                // turn would end with an intent and no findings. Retry once with
+                // the search forced. Only these turns pay the extra call.
+                forced_retry_used = true;
+                force_search = true;
+                tracing::info!(
+                    search.outcome = "forced_retry",
+                    "responses web search narration retried"
+                );
+                continue;
+            }
             // The model did not want a search. Reuse this completed turn instead
             // of paying for a second identical upstream call.
             return Ok(WebSearchOutcome::Completed(Box::new(chat)));
@@ -1101,7 +1128,13 @@ async fn handle_local_responses(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let translated = match crate::local::responses_to_chat(effective_body, &target.upstream_model) {
+    // A locally hosted model has no route to a search backend, and delegating to
+    // Copilot would breach local-model isolation, so search is declined here.
+    let translated = match crate::local::responses::responses_to_chat_with_web_search(
+        effective_body,
+        &target.upstream_model,
+        crate::local::responses::WebSearchSupport::Unavailable,
+    ) {
         Ok(translated) => translated,
         Err(error) => return openai_responses_translation_error(error).into_response(),
     };

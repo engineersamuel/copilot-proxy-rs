@@ -56,6 +56,20 @@ pub struct TranslatedResponsesRequest {
     pub web_search_requested: bool,
 }
 
+/// Whether the proxy can execute an emulated web search for this request.
+///
+/// Search is emulated by delegating to a search-capable Copilot model. A
+/// locally hosted model has no such route, and silently reaching out to
+/// Copilot on its behalf would break local-model isolation, so the built-in
+/// search tool is declined instead of being offered and left unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSearchSupport {
+    /// The caller can resolve emulated search calls.
+    Emulated,
+    /// The caller cannot search; the tool is dropped.
+    Unavailable,
+}
+
 /// System note that steers models toward calling the emulated search function.
 ///
 /// Several chat-completions models narrate an intent to search rather than
@@ -63,6 +77,47 @@ pub struct TranslatedResponsesRequest {
 pub(crate) const WEB_SEARCH_TOOL_NOTE: &str = "You have a web_search tool that performs real web \
 searches. When a question depends on current information you do not already know, call web_search \
 instead of saying that you will search or that you cannot browse the web.";
+
+/// Whether an assistant reply only narrates an intent to search.
+///
+/// Some models answer a question that needs current information by saying they
+/// will search, without ever emitting the tool call that would perform it. The
+/// turn then dead-ends with a promise and no findings, so the caller retries
+/// with the search function forced.
+pub(crate) fn narrates_intent_to_search(content: &str) -> bool {
+    const SUBJECTS: [&str; 6] = [
+        "i'll",
+        "i will",
+        "let me",
+        "i'm going to",
+        "i am going to",
+        "i need to",
+    ];
+    const ACTIONS: [&str; 5] = ["search", "look up", "check the web", "browse", "find out"];
+
+    let content = content.to_lowercase();
+    for subject in SUBJECTS {
+        let mut rest = content.as_str();
+        while let Some(offset) = rest.find(subject) {
+            let tail = &rest[offset + subject.len()..];
+            // Only a nearby action counts, so unrelated promises such as
+            // "I'll summarize the file" are not treated as a missed search.
+            let window_end = tail
+                .char_indices()
+                .take_while(|(index, _)| *index < 48)
+                .last()
+                .map(|(index, character)| index + character.len_utf8())
+                .unwrap_or(0);
+            let window = &tail[..window_end];
+            let window = window.split(['.', '!', '?', '\n']).next().unwrap_or(window);
+            if ACTIONS.iter().any(|action| window.contains(action)) {
+                return true;
+            }
+            rest = tail;
+        }
+    }
+    false
+}
 
 /// Upstream function name used to emulate the built-in web search tool.
 pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
@@ -795,8 +850,17 @@ fn stream_event(event_type: &str, mut data: Value) -> String {
 }
 
 pub fn responses_to_chat(
+    body: Map<String, Value>,
+    upstream_model: &str,
+) -> Result<TranslatedResponsesRequest, ResponsesTranslationError> {
+    responses_to_chat_with_web_search(body, upstream_model, WebSearchSupport::Emulated)
+}
+
+/// Translates a Responses request, stating whether search can be emulated.
+pub fn responses_to_chat_with_web_search(
     mut body: Map<String, Value>,
     upstream_model: &str,
+    web_search: WebSearchSupport,
 ) -> Result<TranslatedResponsesRequest, ResponsesTranslationError> {
     let input_items = normalize_input(body.remove("input"))?;
     let mut messages = Vec::new();
@@ -810,6 +874,7 @@ pub fn responses_to_chat(
     let mut tool_kinds = BTreeMap::new();
     let mut tool_names = BTreeMap::new();
     let mut web_search_requested = false;
+    let mut web_search_declined = false;
     let tools = body
         .remove("tools")
         .map(|tools| {
@@ -818,6 +883,8 @@ pub fn responses_to_chat(
                 &mut tool_kinds,
                 &mut tool_names,
                 &mut web_search_requested,
+                &mut web_search_declined,
+                web_search,
             )
         })
         .transpose()?;
@@ -825,6 +892,13 @@ pub fn responses_to_chat(
         messages.insert(
             tool_note_index,
             json!({"role": "system", "content": WEB_SEARCH_TOOL_NOTE}),
+        );
+    } else if web_search_declined {
+        // The caller asked for search that cannot be performed. Saying so keeps
+        // the model from claiming it searched or promising to.
+        messages.insert(
+            tool_note_index,
+            json!({"role": "system", "content": WEB_SEARCH_UNAVAILABLE_NOTE}),
         );
     }
     let tool_choice = body
@@ -1428,6 +1502,8 @@ fn translate_tools(
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
     tool_names: &mut BTreeMap<String, ResponsesToolName>,
     web_search_requested: &mut bool,
+    web_search_declined: &mut bool,
+    web_search: WebSearchSupport,
 ) -> Result<Vec<Value>, ResponsesTranslationError> {
     let tools = tools.as_array().ok_or_else(|| {
         ResponsesTranslationError::InvalidRequest("tools must be an array".to_string())
@@ -1446,10 +1522,18 @@ fn translate_tools(
                     tool_kinds,
                     tool_names,
                     web_search_requested,
+                    web_search_declined,
+                    web_search,
                 )?);
-            } else if let Some(translated_tool) =
-                translate_tool(tool, None, tool_kinds, tool_names, web_search_requested)?
-            {
+            } else if let Some(translated_tool) = translate_tool(
+                tool,
+                None,
+                tool_kinds,
+                tool_names,
+                web_search_requested,
+                web_search_declined,
+                web_search,
+            )? {
                 translated.push(translated_tool);
             }
             Ok(translated)
@@ -1462,6 +1546,8 @@ fn translate_tool(
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
     tool_names: &mut BTreeMap<String, ResponsesToolName>,
     web_search_requested: &mut bool,
+    web_search_declined: &mut bool,
+    web_search: WebSearchSupport,
 ) -> Result<Option<Value>, ResponsesTranslationError> {
     let tool_type = required_field_string(tool, "type")?;
     match tool_type {
@@ -1544,6 +1630,19 @@ fn translate_tool(
             // a function so the model decides when a search is actually needed;
             // the proxy executes the call by delegating to a search-capable model.
             validate_web_search_tool(tool)?;
+            if web_search == WebSearchSupport::Unavailable {
+                // No route to a search backend, so the tool is dropped rather
+                // than offered and then left unresolved. The model is told the
+                // capability is missing instead of silently promising it.
+                tracing::info!(
+                    tool.type = tool_type,
+                    tool.capability = "unsupported_by_chat_completions",
+                    tool.decision = "omitted_no_search_backend",
+                    "responses tool capability degradation"
+                );
+                *web_search_declined = true;
+                return Ok(None);
+            }
             if *web_search_requested {
                 // Several search tool aliases collapse to one function.
                 return Ok(None);
@@ -1599,6 +1698,8 @@ fn translate_namespace_tool(
     tool_kinds: &mut BTreeMap<String, LocalToolKind>,
     tool_names: &mut BTreeMap<String, ResponsesToolName>,
     web_search_requested: &mut bool,
+    web_search_declined: &mut bool,
+    web_search: WebSearchSupport,
 ) -> Result<Vec<Value>, ResponsesTranslationError> {
     let namespace_name = required_field_string(namespace, "name")?;
     if let Some(description) = namespace.get("description") {
@@ -1636,6 +1737,8 @@ fn translate_namespace_tool(
                 tool_kinds,
                 tool_names,
                 web_search_requested,
+                web_search_declined,
+                web_search,
             )
         })
         .filter_map(Result::transpose)
@@ -3506,5 +3609,38 @@ mod tests {
             error,
             ResponsesTranslationError::UnsupportedTool(tool) if tool == "image_generation"
         ));
+    }
+
+    #[test]
+    fn narration_without_a_tool_call_is_detected() {
+        for content in [
+            "I'll search for the current top story on Hacker News for you.",
+            "Let me look up the latest information.",
+            "I'm going to check the web for that.",
+            "I need to search for current prices.",
+            "Sure! I will search the web and report back.",
+        ] {
+            assert!(
+                super::narrates_intent_to_search(content),
+                "expected narration: {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_replies_are_not_treated_as_narration() {
+        for content in [
+            "OK",
+            "The top story on Hacker News is Meta Muse Glimmer.",
+            "I searched earlier and found nothing.",
+            "I'll summarize the file you gave me.",
+            "Let me know if you want more detail.",
+            "I'll refactor the parser, then run the tests.",
+        ] {
+            assert!(
+                !super::narrates_intent_to_search(content),
+                "unexpected narration: {content:?}"
+            );
+        }
     }
 }
