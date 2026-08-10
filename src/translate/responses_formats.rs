@@ -321,6 +321,35 @@ pub fn anthropic_web_search_to_responses_request(
     out
 }
 
+/// Converts messages while mapping Anthropic search tools to the built-in tool.
+///
+/// The Anthropic search tool carries no input schema, so translating it as an
+/// ordinary function produces a function with empty parameters that upstreams
+/// reject. Emitting the built-in Responses search tool instead lets the normal
+/// search handling decide whether it can be emulated or must be declined.
+///
+/// Unlike [`anthropic_web_search_to_responses_request`] this does not force
+/// `tool_choice`, so the model still chooses when to search.
+pub fn anthropic_messages_to_responses_request_with_search_tools(
+    body: &Map<String, Value>,
+    model: &str,
+) -> Map<String, Value> {
+    let mut out = anthropic_messages_to_responses_request(body, model);
+    let tools: Vec<Value> = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(anthropic_tool_to_web_search_responses_tool)
+        .collect();
+    if tools.is_empty() {
+        out.remove("tools");
+    } else {
+        out.insert("tools".to_string(), Value::Array(tools));
+    }
+    out
+}
+
 fn copy_prompt_cache_controls(source: &Map<String, Value>, target: &mut Map<String, Value>) {
     for key in ["prompt_cache_key", "prompt_cache_retention"] {
         if let Some(value) = source.get(key) {

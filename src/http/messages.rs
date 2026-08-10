@@ -473,13 +473,21 @@ async fn handle_local_messages(
         "messages local request prepared"
     );
 
+    // An Anthropic search tool has no input schema, so it must be mapped to the
+    // built-in search tool rather than an empty function the upstream rejects.
     let responses_body =
-        crate::translate::responses_formats::anthropic_messages_to_responses_request(
+        crate::translate::responses_formats::anthropic_messages_to_responses_request_with_search_tools(
             &body,
             &target.public_id,
         );
-    let translated = crate::local::responses_to_chat(responses_body, &target.upstream_model)
-        .map_err(anthropic_responses_translation_error)?;
+    // A local model has no route to a search backend, and delegating to Copilot
+    // would breach local-model isolation, so search is declined here.
+    let translated = crate::local::responses::responses_to_chat_with_web_search(
+        responses_body,
+        &target.upstream_model,
+        crate::local::responses::WebSearchSupport::Unavailable,
+    )
+    .map_err(anthropic_responses_translation_error)?;
 
     if stream {
         let upstream = state

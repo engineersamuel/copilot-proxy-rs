@@ -495,6 +495,460 @@ pub(crate) async fn responses(
     Json(response).into_response()
 }
 
+/// Maximum characters of delegated search findings injected into a turn.
+const SEARCH_FINDINGS_LIMIT: usize = 12_000;
+
+/// Extracts the assistant text produced by a delegated search response.
+fn search_findings_text(response: &Value) -> Option<String> {
+    let output = response.get("output").and_then(Value::as_array)?;
+    let mut text = String::new();
+    for item in output {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        for block in item.get("content").and_then(Value::as_array)? {
+            if let Some(chunk) = block.get("text").and_then(Value::as_str) {
+                text.push_str(chunk);
+            }
+        }
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut text = text.to_string();
+    if text.len() > SEARCH_FINDINGS_LIMIT {
+        let mut cut = SEARCH_FINDINGS_LIMIT;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("\n[search findings truncated]");
+    }
+    Some(text)
+}
+
+/// Runs a web search on behalf of a model whose upstream cannot search.
+///
+/// The search itself is delegated to a search-capable Copilot model. Only the
+/// findings are returned; the original model still answers the user, so the
+/// responding model and its behavior are preserved.
+async fn delegate_web_search(
+    state: &AppState,
+    query: &str,
+    metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
+) -> Option<String> {
+    if query.trim().is_empty() {
+        return None;
+    }
+    let search_model = state.config.web_search_model.clone();
+    if search_model.is_empty() {
+        return None;
+    }
+    if !state
+        .models
+        .model_supports_responses_api(&search_model)
+        .await
+    {
+        tracing::warn!(
+            search.model = search_model.as_str(),
+            search.outcome = "unsupported_search_model",
+            "responses web search delegation skipped"
+        );
+        return None;
+    }
+
+    let mut search_body = Map::new();
+    search_body.insert("model".to_string(), Value::String(search_model.clone()));
+    search_body.insert("input".to_string(), Value::String(query.to_string()));
+    search_body.insert(
+        "instructions".to_string(),
+        Value::String(
+            "Search the web for the requested information. Reply with the findings \
+             and their source URLs. Do not attempt any other task."
+                .to_string(),
+        ),
+    );
+    search_body.insert(
+        "tools".to_string(),
+        serde_json::json!([{"type": "web_search"}]),
+    );
+    search_body.insert("stream".to_string(), Value::Bool(false));
+
+    let started = std::time::Instant::now();
+    let response = match state.copilot.post_responses(search_body, metadata).await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                search.model = search_model.as_str(),
+                search.outcome = "upstream_error",
+                search.error = %error,
+                "responses web search delegation failed"
+            );
+            return None;
+        }
+    };
+    let findings = search_findings_text(&response);
+    tracing::info!(
+        search.model = search_model.as_str(),
+        search.outcome = if findings.is_some() {
+            "delegated"
+        } else {
+            "empty"
+        },
+        search.duration_ms = started.elapsed().as_millis() as u64,
+        "responses web search delegation"
+    );
+    findings
+}
+
+/// Result of resolving emulated web search calls for a turn.
+enum WebSearchOutcome {
+    /// The model answered without searching; the finished turn is reusable.
+    Completed(Box<Value>),
+    /// Searches ran and their results were appended to the conversation.
+    Searched,
+}
+
+/// Maximum emulated search rounds allowed within a single turn.
+const MAX_SEARCH_ROUNDS: usize = 3;
+
+/// Runs the upstream turn, executing any emulated web search calls it makes.
+///
+/// The model is offered web search as a normal function, so no search happens
+/// unless the model asks for one. Each requested search is delegated to a
+/// search-capable model and fed back as a tool result, leaving the original
+/// model to compose the answer.
+async fn resolve_web_search_calls(
+    state: &AppState,
+    chat_body: &mut Map<String, Value>,
+    metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
+) -> Result<WebSearchOutcome, Response> {
+    let mut forced_retry_used = false;
+    let mut force_search = false;
+    for _ in 0..MAX_SEARCH_ROUNDS {
+        let mut probe = chat_body.clone();
+        probe.insert("stream".to_string(), Value::Bool(false));
+        probe.remove("stream_options");
+        if std::mem::take(&mut force_search) {
+            probe.insert(
+                "tool_choice".to_string(),
+                serde_json::json!({
+                    "type": "function",
+                    "function": {"name": crate::local::responses::WEB_SEARCH_TOOL_NAME}
+                }),
+            );
+        }
+
+        let chat = match state.copilot.post_chat(probe, metadata.clone()).await {
+            Ok(chat) => chat,
+            Err(error) => return Err(openai_copilot_error(error).into_response()),
+        };
+        let Some(message) = chat
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+        else {
+            return Ok(WebSearchOutcome::Completed(Box::new(chat)));
+        };
+        let search_calls: Vec<&Value> = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter(|call| {
+                        call.get("function")
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            == Some(crate::local::responses::WEB_SEARCH_TOOL_NAME)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if search_calls.is_empty() {
+            let narrated = message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(crate::local::responses::narrates_intent_to_search);
+            if narrated && !forced_retry_used {
+                // The model promised a search without calling the tool, so the
+                // turn would end with an intent and no findings. Retry once with
+                // the search forced. Only these turns pay the extra call.
+                forced_retry_used = true;
+                force_search = true;
+                tracing::info!(
+                    search.outcome = "forced_retry",
+                    "responses web search narration retried"
+                );
+                continue;
+            }
+            // The model did not want a search. Reuse this completed turn instead
+            // of paying for a second identical upstream call.
+            return Ok(WebSearchOutcome::Completed(Box::new(chat)));
+        }
+
+        let message = message.clone();
+        let mut appended = vec![message];
+        for call in search_calls {
+            let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default();
+            let query = call
+                .get("function")
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+                .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+                .and_then(|arguments| {
+                    arguments
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            let findings = delegate_web_search(state, &query, metadata.clone()).await;
+            let content = findings.unwrap_or_else(|| {
+                crate::local::responses::WEB_SEARCH_UNAVAILABLE_NOTE.to_string()
+            });
+            appended.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content
+            }));
+        }
+        if let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) {
+            messages.extend(appended);
+        }
+    }
+    Ok(WebSearchOutcome::Searched)
+}
+
+/// Streams a turn that may run an emulated web search.
+///
+/// The opening events are flushed before the search starts, so the client sees
+/// the response begin immediately and receives progress while the delegated
+/// search runs, rather than waiting on a silent connection.
+fn streaming_web_search_response(
+    state: AppState,
+    translated: crate::local::responses::TranslatedResponsesRequest,
+    requested_model: String,
+    response_id: String,
+    metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
+) -> Response {
+    let crate::local::responses::TranslatedResponsesRequest {
+        mut chat_body,
+        tool_kinds,
+        tool_names,
+        ..
+    } = translated;
+
+    let byte_stream = async_stream::stream! {
+        let mut adapter = crate::local::ChatToResponsesStream::new_with_tool_names(
+            response_id.clone(),
+            requested_model.clone(),
+            tool_kinds.clone(),
+            tool_names.clone(),
+        );
+        // Open the response before any slow work so the client is never silent.
+        for event in adapter.begin_events() {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+        }
+
+        let outcome = resolve_web_search_calls(&state, &mut chat_body, metadata.clone()).await;
+        match outcome {
+            Ok(WebSearchOutcome::Completed(chat)) => {
+                // Resolved without searching: replay the finished turn rather
+                // than asking the upstream for the same answer twice.
+                match crate::local::responses::chat_to_responses_with_tool_names(
+                    &chat,
+                    &response_id,
+                    &requested_model,
+                    &tool_kinds,
+                    &tool_names,
+                ) {
+                    Ok(response) => {
+                        for event in completed_response_events(&response) {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(event));
+                        }
+                    }
+                    Err(_) => {
+                        for event in adapter.fail() {
+                            yield Ok::<Bytes, std::io::Error>(
+                                Bytes::from(format!("{event}\n\n")),
+                            );
+                        }
+                    }
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+            // Searches ran; their results are now in the conversation, so the
+            // final answer is streamed from the upstream below.
+            Ok(WebSearchOutcome::Searched) => {}
+            Err(_) => {
+                for event in adapter.fail() {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+        }
+
+        let upstream = match state.copilot.stream_chat(chat_body, metadata).await {
+            Ok(upstream) => upstream,
+            Err(_) => {
+                for event in adapter.fail() {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{event}\n\n")));
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                return;
+            }
+        };
+
+        let adapter = std::sync::Arc::new(std::sync::Mutex::new(adapter));
+        let mapper_adapter = adapter.clone();
+        let mapped = crate::http::sse::map_sse_lines_many(
+            upstream.bytes_stream(),
+            state.config.max_decoded_body_bytes as usize,
+            move |line| {
+                mapper_adapter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map_line(line)
+            },
+        );
+        futures_util::pin_mut!(mapped);
+        while let Some(event) = mapped.next().await {
+            match event {
+                Ok(event) => yield Ok::<Bytes, std::io::Error>(event),
+                Err(_) => {
+                    let failed_events = adapter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .fail();
+                    for failed_event in failed_events {
+                        yield Ok::<Bytes, std::io::Error>(
+                            Bytes::from(format!("{failed_event}\n\n")),
+                        );
+                    }
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+                    return;
+                }
+            }
+        }
+        let failed_events = adapter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .fail();
+        for failed_event in failed_events {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!("{failed_event}\n\n")));
+        }
+        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
+    };
+
+    Response::builder()
+        .header(http::header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(byte_stream))
+        .unwrap()
+}
+
+/// Builds the Responses stream events for an already-finished turn.
+///
+/// The opening events are omitted: callers emit those before any slow work so
+/// the client sees the response start immediately.
+fn completed_response_events(response: &Value) -> Vec<String> {
+    let mut events = Vec::new();
+    let mut push = |event_type: &str, payload: Value| {
+        events.push(format!("event: {event_type}\ndata: {payload}\n\n"));
+    };
+    if let Some(output) = response.get("output").and_then(Value::as_array) {
+        for (index, item) in output.iter().enumerate() {
+            push(
+                "response.output_item.added",
+                serde_json::json!({
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": item
+                }),
+            );
+            // Text output is replayed through the same content-part and delta
+            // events a live stream emits, so a client that renders incremental
+            // text sees the same shape whether or not a search ran.
+            let content = item.get("content").and_then(Value::as_array);
+            for (content_index, part) in content.into_iter().flatten().enumerate() {
+                let Some(text) = part.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                let base = serde_json::json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": content_index
+                });
+                let with = |event_type: &str, extra: Value| {
+                    let mut payload = base.clone();
+                    if let (Some(payload), Some(extra)) =
+                        (payload.as_object_mut(), extra.as_object())
+                    {
+                        for (key, value) in extra {
+                            payload.insert(key.clone(), value.clone());
+                        }
+                    }
+                    if let Some(payload) = payload.as_object_mut() {
+                        payload.insert("type".to_string(), Value::String(event_type.to_string()));
+                    }
+                    payload
+                };
+                push(
+                    "response.content_part.added",
+                    with(
+                        "response.content_part.added",
+                        serde_json::json!({
+                            "part": {"type": "output_text", "text": "", "annotations": []}
+                        }),
+                    ),
+                );
+                push(
+                    "response.output_text.delta",
+                    with(
+                        "response.output_text.delta",
+                        serde_json::json!({"delta": text}),
+                    ),
+                );
+                push(
+                    "response.output_text.done",
+                    with(
+                        "response.output_text.done",
+                        serde_json::json!({"text": text}),
+                    ),
+                );
+                push(
+                    "response.content_part.done",
+                    with(
+                        "response.content_part.done",
+                        serde_json::json!({"part": part}),
+                    ),
+                );
+            }
+            push(
+                "response.output_item.done",
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item
+                }),
+            );
+        }
+    }
+    push(
+        "response.completed",
+        serde_json::json!({
+            "type": "response.completed",
+            "response": response
+        }),
+    );
+    events
+}
+
 /// Serves an OpenAI Responses request through Copilot's chat completions API.
 ///
 /// Models such as Gemini reject the upstream Responses API, so requests are
@@ -507,11 +961,47 @@ async fn handle_copilot_chat_responses(
     metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
     stream: bool,
 ) -> Response {
-    let translated = match crate::local::responses_to_chat(body, &copilot_model) {
+    let mut translated = match crate::local::responses_to_chat(body, &copilot_model) {
         Ok(translated) => translated,
         Err(error) => return openai_responses_translation_error(error).into_response(),
     };
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+
+    // Web search is offered to the upstream as an ordinary function, so a search
+    // only runs when the model asks for one. A streamed turn resolves the search
+    // inside the response body so the client is not held silent while it runs.
+    if translated.web_search_requested && stream {
+        return streaming_web_search_response(
+            state,
+            translated,
+            requested_model,
+            response_id,
+            metadata,
+        );
+    }
+    if translated.web_search_requested {
+        match resolve_web_search_calls(&state, &mut translated.chat_body, metadata.clone()).await {
+            Ok(WebSearchOutcome::Completed(chat)) => {
+                return match crate::local::responses::chat_to_responses_with_tool_names(
+                    &chat,
+                    &response_id,
+                    &requested_model,
+                    &translated.tool_kinds,
+                    &translated.tool_names,
+                ) {
+                    Ok(response) => Json(response).into_response(),
+                    Err(_) => openai_error(
+                        http::StatusCode::BAD_GATEWAY,
+                        "server_error",
+                        "upstream model returned invalid response",
+                    )
+                    .into_response(),
+                };
+            }
+            Ok(WebSearchOutcome::Searched) => {}
+            Err(error) => return error,
+        }
+    }
 
     if !stream {
         let chat = match state
@@ -639,7 +1129,13 @@ async fn handle_local_responses(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let translated = match crate::local::responses_to_chat(effective_body, &target.upstream_model) {
+    // A locally hosted model has no route to a search backend, and delegating to
+    // Copilot would breach local-model isolation, so search is declined here.
+    let translated = match crate::local::responses::responses_to_chat_with_web_search(
+        effective_body,
+        &target.upstream_model,
+        crate::local::responses::WebSearchSupport::Unavailable,
+    ) {
         Ok(translated) => translated,
         Err(error) => return openai_responses_translation_error(error).into_response(),
     };

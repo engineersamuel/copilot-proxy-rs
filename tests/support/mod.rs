@@ -31,6 +31,7 @@ type SeqMap = Arc<Mutex<HashMap<RequestKey, VecDeque<SeqEntry>>>>;
 type TextSeqMap = Arc<Mutex<HashMap<RequestKey, VecDeque<TextSeqEntry>>>>;
 type HeaderCaptureMap = Arc<Mutex<HashMap<RequestKey, CapturedHeaders>>>;
 type BodyCaptureMap = Arc<Mutex<HashMap<RequestKey, Vec<u8>>>>;
+type BodyLogMap = Arc<Mutex<HashMap<(String, String), Vec<Vec<u8>>>>>;
 
 fn repo_tempdir(prefix: &str) -> TempDir {
     tempfile::Builder::new()
@@ -60,6 +61,7 @@ struct MockState {
     hits: Arc<Mutex<HashMap<(String, String), usize>>>,
     last_headers: HeaderCaptureMap,
     last_request_body: BodyCaptureMap,
+    request_bodies: BodyLogMap,
 }
 
 impl Default for MockState {
@@ -71,6 +73,7 @@ impl Default for MockState {
             hits: Arc::new(Mutex::new(HashMap::new())),
             last_headers: Arc::new(Mutex::new(HashMap::new())),
             last_request_body: Arc::new(Mutex::new(HashMap::new())),
+            request_bodies: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -226,6 +229,23 @@ impl MockServer {
             .and_then(|bytes| serde_json::from_slice(bytes).ok())
     }
 
+    /// Every request body recorded for a route, in the order they arrived.
+    #[allow(dead_code)]
+    pub async fn request_bodies_json(&self, method: &str, path: &str) -> Vec<Value> {
+        self.state
+            .request_bodies
+            .lock()
+            .await
+            .get(&(method.to_string(), path.to_string()))
+            .map(|bodies| {
+                bodies
+                    .iter()
+                    .filter_map(|bytes| serde_json::from_slice(bytes).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn auth_endpoints(&self) -> AuthEndpoints {
         AuthEndpoints {
             device_code_url: format!("{}/device/code", self.base_url),
@@ -284,6 +304,15 @@ async fn handle_mock(
             .lock()
             .await
             .insert(key.clone(), body_bytes.to_vec());
+    }
+    {
+        state
+            .request_bodies
+            .lock()
+            .await
+            .entry(key.clone())
+            .or_default()
+            .push(body_bytes.to_vec());
     }
 
     if let Some(entry) = state.text_sequences.lock().await.get_mut(&key) {

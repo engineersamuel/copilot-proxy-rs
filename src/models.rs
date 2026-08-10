@@ -128,6 +128,11 @@ pub struct CodexModelEntry {
     pub effective_context_window_percent: u64,
     pub experimental_supported_tools: Vec<serde_json::Value>,
     pub input_modalities: Vec<String>,
+    /// Whether this model can service the Responses `web_search` tool.
+    ///
+    /// Copilot-backed models qualify because the proxy emulates search by
+    /// delegating to a search-capable model; locally hosted models have no such
+    /// route, so they report `false`.
     pub supports_search_tool: bool,
     pub use_responses_lite: bool,
     pub context_window_modes: Vec<ContextWindowMode>,
