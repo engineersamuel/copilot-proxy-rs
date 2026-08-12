@@ -34,6 +34,7 @@ pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
     ("claude-3-5-sonnet", "claude-3.5-sonnet"),
     ("claude-3-5-haiku-20241022", "claude-3.5-haiku"),
     ("claude-3-5-haiku", "claude-3.5-haiku"),
+    ("grok-4-6", "grok-4.6"),
 ];
 
 const GPT56_MODEL_CREATED: u64 = 1_783_555_200;
@@ -47,6 +48,11 @@ const GPT56_REASONING_EFFORTS: &[EffortLevel] = &[
     EffortLevel::XHigh,
     EffortLevel::Max,
 ];
+// Match live Copilot metadata for Grok 4.x (Responses-only, low/medium/high).
+const GROK46_MODEL_CREATED: u64 = 1_786_550_400;
+const GROK46_SUPPORTED_ENDPOINTS: &[&str] = &["/responses"];
+const GROK46_REASONING_EFFORTS: &[EffortLevel] =
+    &[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High];
 
 #[derive(Debug, Clone, Copy)]
 struct StaticCopilotModel {
@@ -78,6 +84,13 @@ const STATIC_COPILOT_MODELS: &[StaticCopilotModel] = &[
         owned_by: "openai",
         supported_endpoints: GPT56_SUPPORTED_ENDPOINTS,
         supported_efforts: GPT56_REASONING_EFFORTS,
+    },
+    StaticCopilotModel {
+        id: "grok-4.6",
+        created: GROK46_MODEL_CREATED,
+        owned_by: "xai",
+        supported_endpoints: GROK46_SUPPORTED_ENDPOINTS,
+        supported_efforts: GROK46_REASONING_EFFORTS,
     },
 ];
 
