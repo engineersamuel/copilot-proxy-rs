@@ -106,12 +106,7 @@ fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "grok-4.6"
-        ]
+        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]
     );
     let sol = response
         .models
@@ -404,12 +399,7 @@ async fn models_route_returns_static_gpt56_catalog_when_refresh_is_unavailable()
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
-        vec![
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "grok-4.6"
-        ]
+        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]
     );
     assert!(
         body["models"]
