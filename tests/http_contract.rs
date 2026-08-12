@@ -106,7 +106,12 @@ fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+        vec![
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "grok-4.6"
+        ]
     );
     let sol = response
         .models
@@ -124,6 +129,25 @@ fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
         sol.supported_endpoints,
         vec!["/responses".to_string(), "ws:/responses".to_string()]
     );
+    let grok_entry = response
+        .data
+        .iter()
+        .find(|model| model.id == "grok-4.6")
+        .expect("Grok 4.6 should be in the static fallback catalog");
+    assert_eq!(grok_entry.owned_by.as_str(), "xai");
+    let grok = response
+        .models
+        .iter()
+        .find(|model| model.slug == "grok-4.6")
+        .expect("Grok 4.6 should be in the static fallback catalog");
+    assert_eq!(
+        grok.supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort.as_str())
+            .collect::<Vec<_>>(),
+        vec!["low", "medium", "high"]
+    );
+    assert_eq!(grok.supported_endpoints, vec!["/responses".to_string()]);
 }
 
 #[tokio::test]
@@ -378,7 +402,15 @@ async fn models_route_returns_static_gpt56_catalog_when_refresh_is_unavailable()
         .iter()
         .filter_map(|model| model["id"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(ids, vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
+    assert_eq!(
+        ids,
+        vec![
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "grok-4.6"
+        ]
+    );
     assert!(
         body["models"]
             .as_array()
