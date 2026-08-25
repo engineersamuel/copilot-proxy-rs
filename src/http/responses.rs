@@ -623,7 +623,7 @@ async fn resolve_web_search_calls(
     state: &AppState,
     chat_body: &mut Map<String, Value>,
     metadata: Option<crate::copilot::request::CopilotRequestMetadata>,
-) -> Result<WebSearchOutcome, Response> {
+) -> Result<WebSearchOutcome, Box<Response>> {
     let mut forced_retry_used = false;
     let mut force_search = false;
     for _ in 0..MAX_SEARCH_ROUNDS {
@@ -642,7 +642,7 @@ async fn resolve_web_search_calls(
 
         let chat = match state.copilot.post_chat(probe, metadata.clone()).await {
             Ok(chat) => chat,
-            Err(error) => return Err(openai_copilot_error(error).into_response()),
+            Err(error) => return Err(Box::new(openai_copilot_error(error).into_response())),
         };
         let Some(message) = chat
             .get("choices")
@@ -999,7 +999,7 @@ async fn handle_copilot_chat_responses(
                 };
             }
             Ok(WebSearchOutcome::Searched) => {}
-            Err(error) => return error,
+            Err(error) => return *error,
         }
     }
 
