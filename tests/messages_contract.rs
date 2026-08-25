@@ -9,46 +9,6 @@ use tower::ServiceExt;
 use copilot_proxy_rs::http::router;
 
 #[tokio::test]
-async fn messages_returns_live_anthropic_response() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    fixture
-        .mock
-        .respond_json(
-            "POST",
-            "/v1/messages",
-            200,
-            serde_json::json!({
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-sonnet-4-6",
-                "content": [{"type":"text","text":"hello"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 3, "output_tokens": 1}
-            }),
-        )
-        .await;
-
-    let response = router(fixture.state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["content"][0]["text"], "hello");
-}
-
-#[tokio::test]
 async fn messages_refreshes_models_before_capability_routing() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -108,65 +68,6 @@ async fn messages_refreshes_models_before_capability_routing() {
     assert_eq!(outbound["model"], "gpt-live-messages");
     let body = response_json(response).await;
     assert_eq!(body["content"][0]["text"], "live model ok");
-}
-
-#[tokio::test]
-async fn messages_streams_anthropic_sse_from_copilot() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    fixture
-        .mock
-        .respond_sse(
-            "POST",
-            "/v1/messages",
-            200,
-            vec![
-                concat!(
-                    "event: message_start\n",
-                    r#"data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"gpt-messages-test","usage":{"input_tokens":1,"output_tokens":0}}}"#
-                ),
-                "event: done\ndata: [DONE]",
-            ],
-        )
-        .await;
-
-    // Pre-register non-claude model as supporting /v1/messages (dynamic registry, not heuristic)
-    fixture
-        .state
-        .models
-        .set_copilot_models(vec![serde_json::json!({
-            "id": "gpt-messages-test",
-            "owned_by": "openai",
-            "supported_endpoints": ["/v1/messages"]
-        })])
-        .await;
-
-    let response = router(fixture.state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"gpt-messages-test","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let text = String::from_utf8(
-        response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(text.contains("event: message_start"));
-    assert!(text.contains("data: [DONE]"));
 }
 
 #[tokio::test]

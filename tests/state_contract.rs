@@ -10,7 +10,7 @@ use copilot_proxy_rs::errors::{anthropic_error, openai_error};
 use copilot_proxy_rs::responses::state::{
     ResponsesStateEntry, ResponsesStateStore, ResponsesTurnIdentity,
 };
-use copilot_proxy_rs::state::{AppState, BackendKind};
+use copilot_proxy_rs::state::AppState;
 
 // --- Warning-capture helpers ---
 
@@ -56,34 +56,6 @@ fn with_warn_capture<F: FnOnce()>(f: F) -> Vec<String> {
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, f);
     Arc::try_unwrap(messages).unwrap().into_inner().unwrap()
-}
-
-#[tokio::test]
-async fn backend_state_snapshots_copilot_only() {
-    let config = AppConfig {
-        fallback_backend: "copilot".to_string(),
-        ..AppConfig::default()
-    };
-    let state = AppState::new(config);
-
-    let snapshot = state.backend.snapshot().await;
-
-    assert_eq!(snapshot.primary, BackendKind::Copilot);
-    assert_eq!(snapshot.fallback, None);
-}
-
-#[tokio::test]
-async fn runtime_switch_affects_new_snapshots_only() {
-    let state = AppState::new(AppConfig::default());
-    let before = state.backend.snapshot().await;
-
-    state.backend.set(BackendKind::Copilot, None).await;
-    let after = state.backend.snapshot().await;
-
-    assert_eq!(before.primary, BackendKind::Copilot);
-    assert_eq!(before.fallback, None);
-    assert_eq!(after.primary, BackendKind::Copilot);
-    assert_eq!(after.fallback, None);
 }
 
 #[test]

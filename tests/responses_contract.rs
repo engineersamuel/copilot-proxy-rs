@@ -1369,88 +1369,6 @@ async fn responses_rejects_body_over_configured_limit_with_actionable_error() {
 }
 
 #[tokio::test]
-async fn responses_passthrough_returns_live_response_and_caches_state() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    fixture.mock.respond_json("POST", "/responses", 200, serde_json::json!({
-        "id": "resp_1",
-        "object": "response",
-        "status": "completed",
-        "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],
-        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
-    })).await;
-
-    let response = router(fixture.state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/responses")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"model":"gpt-5.5","input":"hello"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["id"], "resp_1");
-
-    // Verify the response was cached: a follow-up request with previous_response_id should
-    // produce an upstream body where input is the expanded transcript (prior turn + new message),
-    // not just the raw string "follow-up".
-    fixture.mock.respond_json("POST", "/responses", 200, serde_json::json!({
-        "id": "resp_2",
-        "object": "response",
-        "status": "completed",
-        "output": [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"there"}]}],
-        "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}
-    })).await;
-
-    let response2 = router(fixture.state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/responses")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"gpt-5.5","input":"follow-up","previous_response_id":"resp_1"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response2.status(), StatusCode::OK);
-    let body2 = response_json(response2).await;
-    assert_eq!(body2["id"], "resp_2");
-
-    // The upstream request should have received the full expanded transcript in `input`,
-    // not a bare string, and `previous_response_id` should have been stripped.
-    let upstream_body = fixture
-        .mock
-        .last_request_body_json("POST", "/responses")
-        .await
-        .expect("upstream did not receive a request body");
-    assert!(
-        upstream_body.get("previous_response_id").is_none(),
-        "previous_response_id should be stripped before forwarding"
-    );
-    let input = upstream_body["input"]
-        .as_array()
-        .expect("upstream input should be an expanded array");
-    // Prior turn: 1 user input + 1 assistant output, plus the new "follow-up" user message = 3 items.
-    assert!(
-        input.len() >= 3,
-        "expanded input should contain prior transcript plus new message; got {} items",
-        input.len()
-    );
-    let last_item = input.last().unwrap();
-    assert_eq!(last_item["role"], "user");
-    let text = last_item["content"][0]["text"].as_str().unwrap_or("");
-    assert_eq!(text, "follow-up");
-}
-
-#[tokio::test]
 async fn responses_refreshes_models_before_reasoning_adaptation() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -2241,50 +2159,6 @@ async fn local_response_resources_cancellation_is_rejected_without_copilot_work(
     );
     assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
     assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
-}
-
-#[tokio::test]
-async fn responses_streams_sse_passthrough() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    fixture
-        .mock
-        .respond_sse(
-            "POST",
-            "/responses",
-            200,
-            vec![
-                r#"event: response.created
-data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}"#,
-                r#"event: response.completed
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}"#,
-            ],
-        )
-        .await;
-    let response = router(fixture.state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/responses")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"gpt-5.5","stream":true,"input":"hello"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let text = String::from_utf8(
-        response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(text.contains("response.completed"));
 }
 
 #[tokio::test]

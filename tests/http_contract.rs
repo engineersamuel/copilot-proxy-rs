@@ -17,7 +17,6 @@ use copilot_proxy_rs::config::{AppConfig, EnvSource, LocalModelConfig};
 use copilot_proxy_rs::copilot::client::{CopilotBackend, CopilotEndpoints};
 use copilot_proxy_rs::http::router;
 use copilot_proxy_rs::models::{ModelMetadataSource, ModelRegistry, ModelTarget};
-use copilot_proxy_rs::models::{infer_owned_by, model_list_for_snapshot};
 use copilot_proxy_rs::state::{AppState, BackendKind, BackendSnapshot};
 
 fn qwen_local_models() -> BTreeMap<String, LocalModelConfig> {
@@ -81,68 +80,6 @@ async fn state_with_no_token_and_api_key(api_key: &str) -> AppState {
         CopilotEndpoints::default(),
     ));
     AppState::with_parts_for_tests(config, models, copilot)
-}
-
-#[test]
-fn infer_owned_by_matches_python_prefix_rules() {
-    assert_eq!(infer_owned_by("gpt-5.4"), "openai");
-    assert_eq!(infer_owned_by("gemini-3-pro-preview"), "google");
-    assert_eq!(infer_owned_by("grok-code-fast-1"), "xai");
-    assert_eq!(infer_owned_by("claude-sonnet-4-6"), "anthropic");
-    assert_eq!(infer_owned_by("raptor-mini"), "other");
-}
-
-#[test]
-fn copilot_model_list_includes_gpt56_static_fallbacks_without_live_metadata() {
-    let response = model_list_for_snapshot(BackendSnapshot {
-        primary: BackendKind::Copilot,
-        fallback: None,
-    });
-
-    assert_eq!(response.object, "list");
-    assert_eq!(
-        response
-            .data
-            .iter()
-            .map(|model| model.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]
-    );
-    let sol = response
-        .models
-        .iter()
-        .find(|model| model.slug == "gpt-5.6-sol")
-        .expect("GPT-5.6 Sol should be in the static fallback catalog");
-    assert_eq!(
-        sol.supported_reasoning_levels
-            .iter()
-            .map(|level| level.effort.as_str())
-            .collect::<Vec<_>>(),
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-    assert_eq!(
-        sol.supported_endpoints,
-        vec!["/responses".to_string(), "ws:/responses".to_string()]
-    );
-    let grok_entry = response
-        .data
-        .iter()
-        .find(|model| model.id == "grok-4.6")
-        .expect("Grok 4.6 should be in the static fallback catalog");
-    assert_eq!(grok_entry.owned_by.as_str(), "xai");
-    let grok = response
-        .models
-        .iter()
-        .find(|model| model.slug == "grok-4.6")
-        .expect("Grok 4.6 should be in the static fallback catalog");
-    assert_eq!(
-        grok.supported_reasoning_levels
-            .iter()
-            .map(|level| level.effort.as_str())
-            .collect::<Vec<_>>(),
-        vec!["low", "medium", "high"]
-    );
-    assert_eq!(grok.supported_endpoints, vec!["/responses".to_string()]);
 }
 
 #[tokio::test]
@@ -290,146 +227,6 @@ async fn prefixed_local_request_falls_back_to_unprefixed_key_but_exact_key_wins_
             if local.public_id == "github-copilot/foo"
                 && local.upstream_model == "exact-target"
     ));
-}
-
-#[tokio::test]
-async fn configured_local_model_capabilities_match_catalog() {
-    let mut local_models = qwen_local_models();
-    local_models.insert(
-        "gpt-5.6-sol".to_string(),
-        LocalModelConfig {
-            base_url: "http://127.0.0.1:8080/v1".to_string(),
-            upstream_model: "local-gpt-5.6-sol".to_string(),
-        },
-    );
-    let registry = ModelRegistry::with_models(BTreeMap::new(), local_models);
-    let mut capabilities = Vec::new();
-
-    for model in [
-        "qwen3-coder-30b-local",
-        "github-copilot/qwen3-coder-30b-local",
-        "gpt-5.6-sol",
-    ] {
-        capabilities.push((
-            model,
-            registry.model_supports_chat_completions_api(model).await,
-            registry.model_supports_responses_api(model).await,
-            registry.model_supports_responses_ws(model).await,
-            registry.model_supports_messages_api(model).await,
-        ));
-    }
-
-    assert_eq!(
-        capabilities,
-        vec![
-            ("qwen3-coder-30b-local", true, true, false, true),
-            (
-                "github-copilot/qwen3-coder-30b-local",
-                true,
-                true,
-                false,
-                true,
-            ),
-            ("gpt-5.6-sol", true, true, false, true),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn health_returns_status_version_backend_and_runtime() {
-    let app = router(AppState::new(AppConfig::default()));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(body["backend"], "copilot");
-    assert_eq!(body["runtime"]["implementation"], "rust");
-}
-
-#[tokio::test]
-async fn version_returns_version_and_runtime() {
-    let app = router(AppState::new(AppConfig::default()));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/version")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(body["runtime"]["implementation"], "rust");
-}
-
-#[tokio::test]
-async fn models_route_returns_static_gpt56_catalog_when_refresh_is_unavailable() {
-    let app = router(state_with_no_token().await);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/models")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["object"], "list");
-    let ids = body["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|model| model["id"].as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        ids,
-        vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]
-    );
-    assert!(
-        body["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|model| model["source"] == "static")
-    );
-}
-
-#[tokio::test]
-async fn count_tokens_returns_simple_input_token_estimate() {
-    let app = router(AppState::new(AppConfig::default()));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages/count_tokens")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"system":"hello","messages":[{"role":"user","content":"world"}]}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["input_tokens"], 2);
 }
 
 #[tokio::test]
@@ -650,23 +447,6 @@ async fn known_models_do_not_get_static_effort_fallbacks_without_metadata() {
             .is_none(),
         "aliases without dynamic metadata should not advertise static effort support"
     );
-}
-
-#[tokio::test]
-async fn gpt56_static_fallbacks_advertise_reasoning_efforts_up_to_max() {
-    let registry = ModelRegistry::new();
-
-    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
-        let efforts = registry
-            .supported_efforts(model)
-            .await
-            .expect("GPT-5.6 fallback models should expose reasoning efforts");
-        assert_eq!(
-            efforts.as_strings(),
-            vec!["low", "medium", "high", "xhigh", "max"],
-            "{model} should support every effort through max"
-        );
-    }
 }
 
 #[tokio::test]

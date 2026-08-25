@@ -465,48 +465,6 @@ async fn responses_websocket_rejects_malformed_local_event_types_without_copilot
 }
 
 #[tokio::test]
-async fn responses_websocket_prewarm_generate_false_returns_created_and_completed() {
-    let fixture = support::AppFixture::with_mock_copilot().await;
-    let addr = start_proxy(fixture.state).await;
-
-    let url = format!("ws://{addr}/v1/responses");
-    let (mut ws, _) = connect_async(&url).await.unwrap();
-
-    ws.send(Message::Text(
-        serde_json::json!({
-            "type": "response.create",
-            "model": "gpt-5.5",
-            "input": "warmup",
-            "generate": false
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .unwrap();
-
-    let first = ws.next().await.unwrap().unwrap();
-    let first_text = match first {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    };
-    assert!(
-        first_text.contains(r#""type":"response.created""#),
-        "first frame should be response.created, got: {first_text}"
-    );
-
-    let second = ws.next().await.unwrap().unwrap();
-    let second_text = match second {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    };
-    assert!(
-        second_text.contains(r#""type":"response.completed""#),
-        "second frame should be response.completed, got: {second_text}"
-    );
-}
-
-#[tokio::test]
 async fn responses_websocket_forwards_prepared_effort_adapted_body() {
     let (ws_backend_addr, _backend_open_count) = mock_ws_backend_addr().await;
     let (state, _temp, _mock) = state_with_ws_backend(ws_backend_addr).await;

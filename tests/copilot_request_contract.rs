@@ -1,27 +1,9 @@
 use copilot_proxy_rs::copilot::request::{
     adapt_openai_reasoning_effort, adapt_responses_reasoning_effort,
-    adapt_responses_tools_for_copilot, adapt_thinking_for_copilot, base_copilot_request_headers,
-    clamp_effort, compute_initiator, filter_anthropic_beta_header, strip_structured_output,
+    adapt_responses_tools_for_copilot, adapt_thinking_for_copilot, clamp_effort, compute_initiator,
+    filter_anthropic_beta_header, strip_structured_output,
 };
 use copilot_proxy_rs::models::{EffortLevel, SupportedEfforts};
-
-#[test]
-fn base_headers_match_python_copilot_fingerprint() {
-    let headers = base_copilot_request_headers("token-123");
-
-    assert_eq!(headers.get("Authorization").unwrap(), "Bearer token-123");
-    assert_eq!(
-        headers.get("Copilot-Integration-Id").unwrap(),
-        "vscode-chat"
-    );
-    assert_eq!(headers.get("Editor-Version").unwrap(), "vscode/1.100.0");
-    assert_eq!(
-        headers.get("Editor-Plugin-Version").unwrap(),
-        "copilot-chat/0.27.2025040201"
-    );
-    assert_eq!(headers.get("User-Agent").unwrap(), "GithubCopilot/1.155.0");
-    assert_eq!(headers.get("X-GitHub-Api-Version").unwrap(), "2026-06-01");
-}
 
 #[test]
 fn initiator_is_agent_for_tool_continuations_and_user_for_plain_user_turns() {

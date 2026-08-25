@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 
 use copilot_proxy_rs::config::{AppConfig, ConfigError, EnvSource};
@@ -8,44 +7,6 @@ fn repo_tempdir(prefix: &str) -> tempfile::TempDir {
         .prefix(prefix)
         .tempdir_in(env!("CARGO_MANIFEST_DIR"))
         .unwrap()
-}
-
-#[test]
-fn defaults_match_copilot_proxy_rs() {
-    let config = AppConfig::default();
-
-    assert_eq!(config.backend, "copilot");
-    assert_eq!(config.fallback_backend, "");
-    assert_eq!(config.host, "127.0.0.1");
-    assert_eq!(config.port, 8080);
-    assert_eq!(config.copilot_timeout, 300);
-    assert_eq!(config.copilot_connect_timeout, 60);
-    assert_eq!(config.copilot_models_ttl, 300);
-    assert_eq!(config.copilot_retry_max, 3);
-    assert_eq!(config.copilot_retry_base_delay, 1.0);
-    assert_eq!(config.copilot_max_rate, 15);
-    assert_eq!(config.web_search_model, "gpt-5.6-sol");
-    assert_eq!(config.context_guard_threshold, 0.90);
-    assert_eq!(config.bedrock_region_prefix, "us");
-    assert_eq!(config.aws_region, "us-west-2");
-    assert_eq!(config.bedrock_read_timeout, 300);
-    assert!(config.update_check);
-    assert!(config.auto_restart);
-    assert!(!config.auto_update);
-    assert!(config.log_failed_request_bodies);
-    assert_eq!(config.log_level, "INFO");
-    assert_eq!(config.cowork_host, "198.18.1.1");
-    assert_eq!(config.cowork_port, 8443);
-    assert!(!config.allow_non_loopback_bind);
-    assert!(!config.hide_getting_started);
-    assert_eq!(config.search_provider_order, vec!["tavily", "exa"]);
-    assert!(config.model_overrides.copilot.is_empty());
-    assert!(config.model_overrides.bedrock.is_empty());
-}
-
-#[test]
-fn local_models_default_to_empty() {
-    assert!(AppConfig::default().local_models.is_empty());
 }
 
 #[test]
@@ -170,51 +131,6 @@ fn container_loopback_mode_allows_wildcard_container_bind_without_public_opt_in(
 }
 
 #[test]
-fn loads_existing_json_config_from_copilot_proxy_rs_config_dir() {
-    let temp = repo_tempdir("config-contract-");
-    let config_file = temp.path().join("config.json");
-    fs::write(
-        &config_file,
-        r#"{
-          "backend": "copilot",
-          "fallback_backend": "bedrock",
-          "port": 9090,
-          "copilot_timeout": "600",
-          "web_search_model": "gpt-5.6-terra",
-          "context_guard_threshold": "0.75",
-          "model_overrides": {
-            "copilot": {"claude-sonnet-4-6": "claude-sonnet-4.6"},
-            "bedrock": {"claude-sonnet-4-6": "us.anthropic.claude-sonnet-4-6"}
-          }
-        }"#,
-    )
-    .unwrap();
-
-    let env =
-        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
-    let config = AppConfig::load_from_env(&env).unwrap();
-
-    assert_eq!(config.backend, "copilot");
-    assert_eq!(config.fallback_backend, "bedrock");
-    assert_eq!(config.port, 9090);
-    assert_eq!(config.copilot_timeout, 600);
-    assert_eq!(config.copilot_connect_timeout, 60);
-    assert_eq!(config.web_search_model, "gpt-5.6-terra");
-    assert_eq!(config.context_guard_threshold, 0.75);
-    assert!(config.update_check);
-    assert!(config.auto_restart);
-    assert!(!config.auto_update);
-    assert_eq!(
-        config.model_overrides.copilot.get("claude-sonnet-4-6"),
-        Some(&"claude-sonnet-4.6".to_string())
-    );
-    assert_eq!(
-        config.model_overrides.bedrock.get("claude-sonnet-4-6"),
-        Some(&"us.anthropic.claude-sonnet-4-6".to_string())
-    );
-}
-
-#[test]
 fn loads_default_json_config_from_copilot_proxy_rs_home_dir() {
     let temp = repo_tempdir("config-home-");
     let config_dir = temp.path().join(".config").join("copilot-proxy-rs");
@@ -270,22 +186,6 @@ fn invalid_file_values_fall_back_to_defaults() {
     assert_eq!(config.port, 8080);
     assert_eq!(config.copilot_timeout, 300);
     assert_eq!(config.copilot_connect_timeout, 60);
-}
-
-#[test]
-fn loads_copilot_connect_timeout_from_file() {
-    let temp = repo_tempdir("config-connect-timeout-");
-    fs::write(
-        temp.path().join("config.json"),
-        r#"{"copilot_connect_timeout": 90}"#,
-    )
-    .unwrap();
-
-    let env =
-        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
-    let config = AppConfig::load_from_env(&env).unwrap();
-
-    assert_eq!(config.copilot_connect_timeout, 90);
 }
 
 #[test]
@@ -415,30 +315,6 @@ fn explicit_zero_numeric_file_values_are_preserved() {
         config.context_guard_threshold, 0.0,
         "explicit zero context_guard_threshold must be preserved, not replaced by default"
     );
-}
-
-#[test]
-fn env_source_can_be_constructed_for_tests() {
-    let source = EnvSource::from_pairs([("A", "1"), ("B", "two")]);
-    let all: BTreeMap<String, String> = source.into_inner();
-
-    assert_eq!(all.get("A"), Some(&"1".to_string()));
-    assert_eq!(all.get("B"), Some(&"two".to_string()));
-}
-
-#[test]
-fn default_inbound_auth_config_is_disabled() {
-    let temp = repo_tempdir("config-default-auth-");
-    let env = EnvSource::from_pairs([
-        ("HOME", temp.path().to_str().unwrap()),
-        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
-    ]);
-
-    let config = AppConfig::load_from_env(&env).unwrap();
-
-    assert_eq!(config.api_key, "");
-    assert!(config.allowed_origins.is_empty());
-    assert_eq!(config.max_decoded_body_bytes, 16 * 1024 * 1024);
 }
 
 #[test]

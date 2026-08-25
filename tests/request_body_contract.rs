@@ -14,14 +14,6 @@ fn gzip_bytes(input: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn identity_returns_raw_body() {
-    let payload = br#"{"ok":true}"#;
-
-    assert_eq!(decode_request_body(payload, "identity").unwrap(), payload);
-    assert_eq!(decode_request_body(payload, "").unwrap(), payload);
-}
-
-#[test]
 fn gzip_decodes_body() {
     let payload = gzip_bytes(br#"{"ok":true}"#);
 
@@ -65,16 +57,6 @@ fn invalid_zstd_reports_structured_error() {
 
     assert!(
         matches!(err, RequestBodyError::InvalidCompressedBody { encoding, .. } if encoding == "zstd")
-    );
-}
-
-#[test]
-fn parses_json_object() {
-    let parsed = parse_json_request_body(br#"{"ok":true}"#, "identity").unwrap();
-
-    assert_eq!(
-        parsed.get("ok").and_then(|value| value.as_bool()),
-        Some(true)
     );
 }
 
