@@ -935,9 +935,7 @@ pub fn responses_to_chat_with_web_search(
     if let Some(tools) = tools {
         chat_body.insert("tools".to_string(), Value::Array(tools));
     }
-    if let Some(tool_choice) = tool_choice
-        && tools_present
-    {
+    if let Some(tool_choice) = tool_choice.filter(|_| tools_present) {
         chat_body.insert("tool_choice".to_string(), tool_choice);
     }
 
@@ -1751,9 +1749,9 @@ fn translate_namespace_tool(
 /// fields are still rejected deterministically instead of being ignored.
 fn validate_web_search_tool(tool: &Map<String, Value>) -> Result<(), ResponsesTranslationError> {
     for key in ["external_web_access", "indexed_web_access"] {
-        if let Some(value) = tool.get(key)
-            && !value.is_boolean()
-            && !value.is_null()
+        if tool
+            .get(key)
+            .is_some_and(|value| !value.is_boolean() && !value.is_null())
         {
             return Err(ResponsesTranslationError::InvalidRequest(format!(
                 "web_search tool {key} must be a boolean"
@@ -1761,26 +1759,26 @@ fn validate_web_search_tool(tool: &Map<String, Value>) -> Result<(), ResponsesTr
         }
     }
     for key in ["filters", "user_location"] {
-        if let Some(value) = tool.get(key)
-            && !value.is_object()
-            && !value.is_null()
+        if tool
+            .get(key)
+            .is_some_and(|value| !value.is_object() && !value.is_null())
         {
             return Err(ResponsesTranslationError::InvalidRequest(format!(
                 "web_search tool {key} must be an object"
             )));
         }
     }
-    if let Some(value) = tool.get("search_context_size")
-        && !value.is_string()
-        && !value.is_null()
+    if tool
+        .get("search_context_size")
+        .is_some_and(|value| !value.is_string() && !value.is_null())
     {
         return Err(ResponsesTranslationError::InvalidRequest(
             "web_search tool search_context_size must be a string".to_string(),
         ));
     }
-    if let Some(value) = tool.get("search_content_types")
-        && !value.is_array()
-        && !value.is_null()
+    if tool
+        .get("search_content_types")
+        .is_some_and(|value| !value.is_array() && !value.is_null())
     {
         return Err(ResponsesTranslationError::InvalidRequest(
             "web_search tool search_content_types must be an array".to_string(),

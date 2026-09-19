@@ -75,9 +75,9 @@ fn openai_chat_messages_to_responses_input(value: &Value) -> Value {
             }));
             continue;
         }
-        if let Some(content) = object.get("content")
-            && !content.is_null()
-            && content.as_str() != Some("")
+        if let Some(content) = object
+            .get("content")
+            .filter(|content| !content.is_null() && content.as_str() != Some(""))
         {
             let mut translated_message = Map::new();
             translated_message.insert("role".to_string(), Value::String(role.to_string()));
