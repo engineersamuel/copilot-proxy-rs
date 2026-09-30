@@ -155,6 +155,39 @@ fn supported(efforts: &[EffortLevel]) -> SupportedEfforts {
 }
 
 #[test]
+fn claude_five_five_uses_adaptive_thinking() {
+    let efforts = supported(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]);
+    for model in [
+        "claude-opus-5.5",
+        "claude-opus-5-5",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5-5",
+    ] {
+        let mut adaptive = serde_json::json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"}
+        });
+        adapt_thinking_for_copilot(adaptive.as_object_mut().unwrap(), model, Some(&efforts));
+        assert_eq!(
+            adaptive["thinking"],
+            serde_json::json!({"type": "adaptive"}),
+            "{model}"
+        );
+        assert_eq!(adaptive["output_config"]["effort"], "high", "{model}");
+
+        let mut enabled = serde_json::json!({
+            "thinking": {"type": "enabled", "budget_tokens": 2048}
+        });
+        adapt_thinking_for_copilot(enabled.as_object_mut().unwrap(), model, Some(&efforts));
+        assert_eq!(
+            enabled["thinking"],
+            serde_json::json!({"type": "adaptive"}),
+            "{model}"
+        );
+    }
+}
+
+#[test]
 fn clamp_effort_uses_python_rank_order_and_unknown_values_clamp_to_highest() {
     let efforts = supported(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]);
 
