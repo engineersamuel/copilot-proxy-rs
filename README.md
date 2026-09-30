@@ -59,6 +59,10 @@ curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applica
 - Safe metadata logging that avoids raw prompt/body/token logging.
 - Fail-closed startup for non-loopback binds unless explicitly opted in.
 
+Claude Sonnet 5.5 and Opus 5.5 require adaptive thinking. The Messages route
+preserves adaptive thinking and its supported effort setting for these models,
+and converts legacy fixed-budget thinking to adaptive mode.
+
 ## Code structure
 
 - `src/http/` owns route wiring and HTTP/WebSocket handlers.
