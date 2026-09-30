@@ -45,49 +45,50 @@ pub fn base_copilot_request_headers(token: &str) -> BTreeMap<String, String> {
 
 pub fn compute_initiator(body: &Map<String, Value>, strict_continuation: bool) -> &'static str {
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
-        if let Some(last) = messages.last().and_then(Value::as_object) {
-            match last.get("role").and_then(Value::as_str).unwrap_or("") {
-                "assistant" | "tool" => return "agent",
-                "user" => {
-                    if content_has_agent_tool_result(last.get("content"))
-                        || is_suggestion_mode(last.get("content"))
-                    {
-                        return "agent";
-                    }
-                    return "user";
-                }
-                _ => {}
-            }
-        }
-        return "user";
+        return messages_initiator(messages);
     }
+    let continuing = strict_continuation && body.get("previous_response_id").is_some();
     if let Some(input) = body.get("input") {
         if input.is_string() {
             return "user";
         }
         if let Some(items) = input.as_array() {
-            if input_has_tool_outputs(items) {
-                return "agent";
-            }
-            if let Some(last) = items.last().and_then(Value::as_object) {
-                if matches!(
-                    last.get("type").and_then(Value::as_str),
-                    Some("function_call" | "custom_tool_call")
-                ) || last.get("role").and_then(Value::as_str) == Some("assistant")
-                {
-                    return "agent";
-                }
-            }
-            if strict_continuation
-                && body.get("previous_response_id").is_some()
-                && !input_has_user_message(items)
-            {
-                return "agent";
-            }
-            return "user";
+            return input_items_initiator(items, continuing);
         }
     }
-    if strict_continuation && body.get("previous_response_id").is_some() {
+    if continuing {
+        return "agent";
+    }
+    "user"
+}
+
+fn messages_initiator(messages: &[Value]) -> &'static str {
+    let Some(last) = messages.last().and_then(Value::as_object) else {
+        return "user";
+    };
+    match last.get("role").and_then(Value::as_str) {
+        Some("assistant" | "tool") => "agent",
+        Some("user")
+            if content_has_agent_tool_result(last.get("content"))
+                || is_suggestion_mode(last.get("content")) =>
+        {
+            "agent"
+        }
+        _ => "user",
+    }
+}
+
+fn input_items_initiator(items: &[Value], continuing: bool) -> &'static str {
+    if input_has_tool_outputs(items) {
+        return "agent";
+    }
+    let last_is_agent = items.last().and_then(Value::as_object).is_some_and(|last| {
+        matches!(
+            last.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) || last.get("role").and_then(Value::as_str) == Some("assistant")
+    });
+    if last_is_agent || (continuing && !input_has_user_message(items)) {
         return "agent";
     }
     "user"
@@ -273,31 +274,31 @@ fn normalize_input_namespace_descriptions(body: &mut Map<String, Value>) {
             continue;
         };
         for tool in tools {
-            let Some(tool_obj) = tool.as_object_mut() else {
-                continue;
-            };
-            if tool_obj.get("type").and_then(Value::as_str) != Some("namespace") {
-                continue;
-            }
-            let Some(name) = tool_obj.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            if name.is_empty() || name.trim().is_empty() {
-                continue;
-            }
-            let name = name.to_string();
-            let needs_fallback = match tool_obj.get("description") {
-                None => true,
-                Some(Value::String(text)) => text.trim().is_empty(),
-                Some(_) => true,
-            };
-            if needs_fallback {
-                tool_obj.insert(
-                    "description".to_string(),
-                    Value::String(format!("Tools in the {name} namespace.")),
-                );
-            }
+            normalize_namespace_description(tool);
         }
+    }
+}
+
+fn normalize_namespace_description(tool: &mut Value) {
+    let Some(tool_obj) = tool.as_object_mut() else {
+        return;
+    };
+    if tool_obj.get("type").and_then(Value::as_str) != Some("namespace") {
+        return;
+    }
+    let Some(name) = tool_obj.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    if name.trim().is_empty() {
+        return;
+    }
+    let needs_fallback = tool_obj
+        .get("description")
+        .and_then(Value::as_str)
+        .is_none_or(|text| text.trim().is_empty());
+    if needs_fallback {
+        let description = format!("Tools in the {name} namespace.");
+        tool_obj.insert("description".to_string(), Value::String(description));
     }
 }
 

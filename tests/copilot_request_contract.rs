@@ -41,6 +41,115 @@ fn anthropic_beta_header_normalizes_and_forwards_all_tokens() {
     assert_eq!(filter_anthropic_beta_header("  ,  , "), None);
 }
 
+#[test]
+fn initiator_preserves_message_precedence_and_continuation_rules() {
+    let cases = [
+        (r#"{}"#, "user", "user"),
+        (r#"{"previous_response_id":null}"#, "user", "agent"),
+        (
+            r#"{"previous_response_id":"p","input":"hello"}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"previous_response_id":"p","input":null}"#,
+            "user",
+            "agent",
+        ),
+        (
+            r#"{"previous_response_id":"p","input":[]}"#,
+            "user",
+            "agent",
+        ),
+        (
+            r#"{"previous_response_id":"p","input":[{"role":"user"}]}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"previous_response_id":"p","input":[{"role":"system"}]}"#,
+            "user",
+            "agent",
+        ),
+        (r#"{"input":[{"role":"assistant"}]}"#, "agent", "agent"),
+        (r#"{"input":[{"type":"function_call"}]}"#, "agent", "agent"),
+        (
+            r#"{"input":[{"type":"custom_tool_call"}]}"#,
+            "agent",
+            "agent",
+        ),
+        (
+            r#"{"input":[{"type":"function_call_output"},{"role":"user"}]}"#,
+            "agent",
+            "agent",
+        ),
+        (
+            r#"{"input":[{"type":"custom_tool_call_output"}]}"#,
+            "agent",
+            "agent",
+        ),
+        (
+            r#"{"input":[{"type":"function_call"},{"role":"user"}]}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"previous_response_id":"p","input":[null]}"#,
+            "user",
+            "agent",
+        ),
+        (
+            r#"{"messages":[],"previous_response_id":"p","input":[{"role":"assistant"}]}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"messages":[null],"previous_response_id":"p"}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"messages":[{"role":"system"}],"previous_response_id":"p"}"#,
+            "user",
+            "user",
+        ),
+        (r#"{"messages":[{"role":"assistant"}]}"#, "agent", "agent"),
+        (
+            r#"{"messages":[{"role":"tool"},{"role":"user","content":"hello"}]}"#,
+            "user",
+            "user",
+        ),
+        (
+            r#"{"messages":[{"role":"user","content":[{"type":"tool_result"}]}]}"#,
+            "agent",
+            "agent",
+        ),
+        (
+            r#"{"messages":[{"role":"user","content":" [SUGGESTION MODE: test]"}]}"#,
+            "agent",
+            "agent",
+        ),
+        (
+            r#"{"messages":null,"input":[{"role":"assistant"}]}"#,
+            "agent",
+            "agent",
+        ),
+    ];
+    for (source, normal, strict) in cases {
+        let body: serde_json::Value = serde_json::from_str(source).unwrap();
+        assert_eq!(
+            compute_initiator(body.as_object().unwrap(), false),
+            normal,
+            "{source}"
+        );
+        assert_eq!(
+            compute_initiator(body.as_object().unwrap(), true),
+            strict,
+            "{source}"
+        );
+    }
+}
+
 fn supported(efforts: &[EffortLevel]) -> SupportedEfforts {
     SupportedEfforts::new(efforts.to_vec()).unwrap()
 }
