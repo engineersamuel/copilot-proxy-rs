@@ -339,7 +339,12 @@ pub fn adapt_thinking_for_copilot(
         Some("enabled") if is_adaptive_only_model(model) => {
             thinking.clear();
             thinking.insert("type".to_string(), Value::String("adaptive".to_string()));
-            body.remove("output_config");
+            if !matches!(
+                model,
+                "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
+            ) {
+                body.remove("output_config");
+            }
         }
         Some("adaptive") if !is_adaptive_capable_model(model) => {
             let budget_tokens = thinking

@@ -155,35 +155,29 @@ fn supported(efforts: &[EffortLevel]) -> SupportedEfforts {
 }
 
 #[test]
-fn claude_five_five_uses_adaptive_thinking() {
-    let efforts = supported(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]);
+fn claude_five_five_preserves_adaptive_thinking_and_requested_effort() {
+    let efforts = supported(&[EffortLevel::Medium, EffortLevel::Max]);
     for model in [
-        "claude-opus-5.5",
-        "claude-opus-5-5",
         "claude-sonnet-5.5",
         "claude-sonnet-5-5",
+        "claude-opus-5.5",
+        "claude-opus-5-5",
     ] {
-        let mut adaptive = serde_json::json!({
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "high"}
-        });
-        adapt_thinking_for_copilot(adaptive.as_object_mut().unwrap(), model, Some(&efforts));
-        assert_eq!(
-            adaptive["thinking"],
-            serde_json::json!({"type": "adaptive"}),
-            "{model}"
-        );
-        assert_eq!(adaptive["output_config"]["effort"], "high", "{model}");
-
-        let mut enabled = serde_json::json!({
-            "thinking": {"type": "enabled", "budget_tokens": 2048}
-        });
-        adapt_thinking_for_copilot(enabled.as_object_mut().unwrap(), model, Some(&efforts));
-        assert_eq!(
-            enabled["thinking"],
-            serde_json::json!({"type": "adaptive"}),
-            "{model}"
-        );
+        for (kind, effort) in [("adaptive", "medium"), ("enabled", "max")] {
+            let mut body = serde_json::json!({
+                "thinking": {"type": kind, "budget_tokens": 2048},
+                "output_config": {"effort": effort}
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            adapt_thinking_for_copilot(&mut body, model, Some(&efforts));
+            assert_eq!(body["thinking"]["type"], "adaptive", "{model}");
+            assert_eq!(body["output_config"]["effort"], effort, "{model}");
+            if kind == "enabled" {
+                assert!(body["thinking"].get("budget_tokens").is_none(), "{model}");
+            }
+        }
     }
 }
 
