@@ -8,3 +8,5 @@
 - Sanitize raw upstream Copilot error bodies before returning client errors.
 - Honor the configured request-body limit at Axum's buffering layer and add
   actionable 413 responses plus content-safe request-size diagnostics.
+- Normalize Chat Completions tool-call indices during Responses streaming so
+  tools after text remain valid while unknown-index deltas still fail closed.

@@ -819,6 +819,157 @@ async fn local_responses_stream_translates_split_chat_sse_and_caches_output() {
 }
 
 #[tokio::test]
+async fn local_responses_stream_remaps_tool_index_after_text_and_caches_output() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"delta":{"content":"I will calculate it."}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","type":"function","function":{"name":"calculate","arguments":"{\"x\":"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"1}"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "calculate",
+                        "stream": true,
+                        "tools": [{
+                            "type": "function",
+                            "name": "calculate",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    let events = text
+        .split("\n\n")
+        .filter_map(|frame| {
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .filter(|data| *data != "[DONE]")
+                .and_then(|data| serde_json::from_str::<Value>(data).ok())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["type"] == "response.failed"),
+        "{text:?}"
+    );
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .unwrap();
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        "I will calculate it."
+    );
+    assert_eq!(
+        completed["response"]["output"][1]["id"],
+        "fc_".to_string() + completed["response"]["id"].as_str().unwrap() + "_0"
+    );
+    assert_eq!(completed["response"]["output"][1]["call_id"], "call_1");
+    assert_eq!(
+        completed["response"]["output"][1]["arguments"],
+        r#"{"x":1}"#
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1);
+
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "The result is 1."}
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+            }),
+        )
+        .await;
+    let follow_up = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "previous_response_id": completed["response"]["id"],
+                        "input": [{
+                            "type": "function_call_output",
+                            "call_id": "call_1",
+                            "output": "1"
+                        }],
+                        "tools": [{
+                            "type": "function",
+                            "name": "calculate",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["messages"][1]["content"], "I will calculate it.",
+        "{outbound}"
+    );
+    assert_eq!(
+        outbound["messages"][2]["tool_calls"][0]["id"], "call_1",
+        "{outbound}"
+    );
+    assert_eq!(
+        outbound["messages"][3]["tool_call_id"], "call_1",
+        "{outbound}"
+    );
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
 async fn local_responses_stream_eof_fails_with_done_and_does_not_cache() {
     let fixture = support::AppFixture::with_mock_local().await;
     fixture
@@ -1294,6 +1445,84 @@ async fn local_responses_stream_malformed_tool_calls_fail_without_cache() {
 }
 
 #[tokio::test]
+async fn local_responses_stream_unknown_tool_index_fails_without_cache() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/v1/chat/completions",
+            200,
+            vec![
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","function":{"name":"calculate","arguments":"{\"x\":"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}"#,
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                "data: [DONE]",
+            ],
+        )
+        .await;
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "qwen3-coder-30b-local",
+                        "input": "calculate",
+                        "stream": true,
+                        "tools": [{
+                            "type": "function",
+                            "name": "calculate",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        text.matches("event: response.failed").count(),
+        1,
+        "{text:?}"
+    );
+    assert_eq!(
+        text.matches("event: response.completed").count(),
+        0,
+        "{text:?}"
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1, "{text:?}");
+    let failed = text
+        .split("\n\n")
+        .find_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let event = serde_json::from_str::<Value>(data).ok()?;
+            (event["type"] == "response.failed").then_some(event)
+        })
+        .unwrap();
+    assert_eq!(failed["response"]["error"]["code"], "invalid_response");
+    assert_local_response_not_cached(&fixture, failed["response"]["id"].as_str().unwrap()).await;
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
 async fn responses_accepts_body_between_axum_default_and_configured_limit() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
@@ -1565,6 +1794,124 @@ async fn copilot_chat_responses_streams_unsearched_turn_without_repeating_upstre
     // rather than ask the upstream for the same answer twice.
     assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
     assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+}
+
+#[tokio::test]
+async fn copilot_chat_responses_stream_remaps_tool_indices_after_text() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "GET",
+            "/models",
+            200,
+            serde_json::json!({
+                "data": [{
+                    "id": "claude-chat-only",
+                    "owned_by": "anthropic",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"supports": {}}
+                }]
+            }),
+        )
+        .await;
+    fixture
+        .mock
+        .respond_sse_split_chunks(
+            "POST",
+            "/chat/completions",
+            200,
+            vec![
+                concat!(
+                    r#"data: {"choices":[{"delta":{"content":"Using tools."}}]}"#,
+                    "\n\n",
+                    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","function":{"name":"first","arguments":"{\"value\":"}},{"index":2,"id":"call_2","function":{"name":"second","arguments":"{\"value\":"}}]}}]}"#,
+                    "\n\n",
+                    r#"data: {"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"arguments":"2}"}},{"index":1,"function":{"arg"#
+                )
+                .as_bytes(),
+                concat!(
+                    r#"uments":"1}"}}]}}]}"#,
+                    "\n\n",
+                    r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":4,"total_tokens":6}}"#,
+                    "\n\n",
+                    "data: [DONE]\n\n"
+                )
+                .as_bytes(),
+            ],
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "claude-chat-only",
+                        "input": "Use both tools.",
+                        "stream": true,
+                        "tools": [{
+                            "type": "function",
+                            "name": "first",
+                            "parameters": {"type": "object"}
+                        }, {
+                            "type": "function",
+                            "name": "second",
+                            "parameters": {"type": "object"}
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let text = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    let completed = text
+        .split("\n\n")
+        .filter_map(|frame| {
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .and_then(|data| serde_json::from_str::<Value>(data).ok())
+        })
+        .find(|event| event["type"] == "response.completed")
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!text.contains("event: response.failed"), "{text:?}");
+    assert_eq!(completed["response"]["model"], "claude-chat-only");
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        "Using tools."
+    );
+    assert_eq!(completed["response"]["output"][1]["call_id"], "call_1");
+    assert_eq!(
+        completed["response"]["output"][1]["arguments"],
+        r#"{"value":1}"#
+    );
+    assert_eq!(completed["response"]["output"][2]["call_id"], "call_2");
+    assert_eq!(
+        completed["response"]["output"][2]["arguments"],
+        r#"{"value":2}"#
+    );
+    assert_eq!(text.matches("data: [DONE]").count(), 1);
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/messages").await, 0);
 }
 
 #[tokio::test]
