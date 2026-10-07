@@ -152,6 +152,16 @@ struct StreamingToolCall {
     done: bool,
 }
 
+#[derive(Debug)]
+struct StreamingToolDelta<'a> {
+    upstream_index: usize,
+    call_type_seen: bool,
+    call_id: Option<&'a str>,
+    name: Option<&'a str>,
+    arguments: Option<&'a str>,
+    kind: Option<LocalToolKind>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamStatus {
     InProgress,
@@ -182,6 +192,7 @@ pub struct ChatToResponsesStream {
     text: String,
     text_output_index: Option<usize>,
     text_done: bool,
+    tool_index_map: BTreeMap<usize, usize>,
     tool_calls: BTreeMap<usize, StreamingToolCall>,
     next_output_index: usize,
     usage: Value,
@@ -248,6 +259,7 @@ impl ChatToResponsesStream {
             text: String::new(),
             text_output_index: None,
             text_done: false,
+            tool_index_map: BTreeMap::new(),
             tool_calls: BTreeMap::new(),
             next_output_index: 0,
             usage: Value::Null,
@@ -267,21 +279,11 @@ impl ChatToResponsesStream {
             return Vec::new();
         }
         if data == "[DONE]" {
-            if !self.finish_seen {
-                return self.failed_event();
-            }
-            let mut events = Vec::new();
-            match self.finish_events() {
-                Ok(finish_events) => events.extend(finish_events),
-                Err(()) => return self.failed_event(),
-            }
-            events.extend(self.complete_event());
-            return events;
+            return self.map_done_line();
         }
 
-        let chunk: Value = match serde_json::from_str(data) {
-            Ok(chunk) => chunk,
-            Err(_) => return self.failed_event(),
+        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+            return self.failed_event();
         };
         let Some(chunk) = chunk.as_object() else {
             return self.failed_event();
@@ -289,77 +291,103 @@ impl ChatToResponsesStream {
         if self.finish_seen {
             return self.map_post_finish_chunk(chunk);
         }
-        let mut events = self.start_events();
-
-        if let Some(usage) = chunk.get("usage") {
-            match translate_chat_usage(Some(usage)) {
-                Ok(usage) => self.usage = usage,
-                Err(_) => return self.failed_event(),
-            }
+        match self.map_chunk_events(chunk) {
+            Ok(events) => events,
+            Err(()) => self.failed_event(),
         }
+    }
 
-        if let Some(choices) = chunk.get("choices") {
-            let Some(choices) = choices.as_array() else {
-                return self.failed_event();
-            };
-            if let Some(choice) = choices.first() {
-                let Some(choice) = choice.as_object() else {
-                    return self.failed_event();
-                };
-                if let Some(delta) = choice.get("delta") {
-                    let Some(delta) = delta.as_object() else {
-                        return self.failed_event();
-                    };
-                    if let Some(content) = delta.get("content") {
-                        match content {
-                            Value::String(content) if !content.is_empty() => {
-                                events.extend(self.text_delta_events(content));
-                            }
-                            Value::String(_) | Value::Null => {}
-                            _ => return self.failed_event(),
-                        }
-                    }
-                    if let Some(tool_calls) = delta.get("tool_calls") {
-                        let Some(tool_calls) = tool_calls.as_array() else {
-                            return self.failed_event();
-                        };
-                        for call in tool_calls {
-                            match self.tool_delta_events(call) {
-                                Ok(call_events) => events.extend(call_events),
-                                Err(()) => return self.failed_event(),
-                            }
-                        }
-                    }
-                }
-                if let Some(finish_reason) = choice.get("finish_reason") {
-                    if !finish_reason.is_null() {
-                        let Ok((status, incomplete_details)) =
-                            translate_finish_reason(Some(finish_reason))
-                        else {
-                            return self.failed_event();
-                        };
-                        self.status = match status {
-                            "completed" => StreamStatus::Completed,
-                            "incomplete" => StreamStatus::Incomplete,
-                            _ => return self.failed_event(),
-                        };
-                        self.incomplete_details = incomplete_details;
-                        self.finish_seen = true;
-                        match self.finish_events() {
-                            Ok(finish_events) => events.extend(finish_events),
-                            Err(()) => return self.failed_event(),
-                        }
-                    }
-                }
-            }
-        } else if !chunk.contains_key("usage") {
+    fn map_done_line(&mut self) -> Vec<String> {
+        if !self.finish_seen {
             return self.failed_event();
         }
+        let Ok(mut events) = self.finish_events() else {
+            return self.failed_event();
+        };
+        events.extend(self.complete_event());
+        events
+    }
 
+    fn map_chunk_events(&mut self, chunk: &Map<String, Value>) -> Result<Vec<String>, ()> {
+        let mut events = self.start_events();
+        self.map_chunk_usage(chunk.get("usage"))?;
+        self.map_chunk_choices(chunk, &mut events)?;
         if self.finish_seen && !self.usage.is_null() {
             events.extend(self.complete_event());
         }
-        events
+        Ok(events)
+    }
+
+    fn map_chunk_usage(&mut self, usage: Option<&Value>) -> Result<(), ()> {
+        let Some(usage) = usage else {
+            return Ok(());
+        };
+        self.usage = translate_chat_usage(Some(usage)).map_err(|_| ())?;
+        Ok(())
+    }
+
+    fn map_chunk_choices(
+        &mut self,
+        chunk: &Map<String, Value>,
+        events: &mut Vec<String>,
+    ) -> Result<(), ()> {
+        let Some(choices) = chunk.get("choices") else {
+            return chunk.contains_key("usage").then_some(()).ok_or(());
+        };
+        let choices = choices.as_array().ok_or(())?;
+        let Some(choice) = choices.first() else {
+            return Ok(());
+        };
+        self.map_choice(choice, events)
+    }
+
+    fn map_choice(&mut self, choice: &Value, events: &mut Vec<String>) -> Result<(), ()> {
+        let choice = choice.as_object().ok_or(())?;
+        if let Some(delta) = choice.get("delta") {
+            self.map_choice_delta(delta, events)?;
+        }
+        self.map_finish_reason(choice.get("finish_reason"), events)
+    }
+
+    fn map_choice_delta(&mut self, delta: &Value, events: &mut Vec<String>) -> Result<(), ()> {
+        let delta = delta.as_object().ok_or(())?;
+        if let Some(content) = delta.get("content") {
+            match content {
+                Value::String(content) if !content.is_empty() => {
+                    events.extend(self.text_delta_events(content));
+                }
+                Value::String(_) | Value::Null => {}
+                _ => return Err(()),
+            }
+        }
+        let Some(tool_calls) = delta.get("tool_calls") else {
+            return Ok(());
+        };
+        for call in tool_calls.as_array().ok_or(())? {
+            events.extend(self.tool_delta_events(call)?);
+        }
+        Ok(())
+    }
+
+    fn map_finish_reason(
+        &mut self,
+        finish_reason: Option<&Value>,
+        events: &mut Vec<String>,
+    ) -> Result<(), ()> {
+        let Some(finish_reason) = finish_reason.filter(|reason| !reason.is_null()) else {
+            return Ok(());
+        };
+        let (status, incomplete_details) =
+            translate_finish_reason(Some(finish_reason)).map_err(|_| ())?;
+        self.status = match status {
+            "completed" => StreamStatus::Completed,
+            "incomplete" => StreamStatus::Incomplete,
+            _ => return Err(()),
+        };
+        self.incomplete_details = incomplete_details;
+        self.finish_seen = true;
+        events.extend(self.finish_events()?);
+        Ok(())
     }
 
     fn map_post_finish_chunk(&mut self, chunk: &Map<String, Value>) -> Vec<String> {
@@ -476,15 +504,27 @@ impl ChatToResponsesStream {
     }
 
     fn tool_delta_events(&mut self, value: &Value) -> Result<Vec<String>, ()> {
+        let delta = self.parse_tool_delta(value)?;
+        let local_index = self.local_tool_index(&delta)?;
+        let output_tool_name = delta
+            .name
+            .and_then(|name| self.tool_names.get(name))
+            .cloned();
+        let call = self.tool_calls.get_mut(&local_index).ok_or(())?;
+        apply_streaming_tool_delta(call, &delta, output_tool_name.as_ref())?;
+        streaming_tool_delta_events(&self.response_id, call, delta.arguments)
+    }
+
+    fn parse_tool_delta<'a>(&self, value: &'a Value) -> Result<StreamingToolDelta<'a>, ()> {
         let fragment = value.as_object().ok_or(())?;
-        let index = fragment
+        let upstream_index = fragment
             .get("index")
             .and_then(Value::as_u64)
             .and_then(|index| usize::try_from(index).ok())
             .ok_or(())?;
-        let call_type = match fragment.get("type") {
-            None => None,
-            Some(Value::String(call_type)) if call_type == "function" => Some(()),
+        let call_type_seen = match fragment.get("type") {
+            None => false,
+            Some(Value::String(call_type)) if call_type == "function" => true,
             Some(_) => return Err(()),
         };
         let call_id = match fragment.get("id") {
@@ -512,126 +552,48 @@ impl ChatToResponsesStream {
         let kind = name
             .map(|name| self.tool_kinds.get(name).copied().ok_or(()))
             .transpose()?;
-        if !self.tool_calls.contains_key(&index) {
-            if index != self.tool_calls.len() {
-                return Err(());
-            }
-            let output_index = self.next_output_index;
-            self.next_output_index += 1;
-            self.tool_calls.insert(
-                index,
-                StreamingToolCall {
-                    tool_index: index,
-                    output_index,
-                    call_id: None,
-                    name: None,
-                    arguments: String::new(),
-                    kind: None,
-                    output_name: None,
-                    namespace: None,
-                    type_seen: false,
-                    added: false,
-                    done: false,
-                },
-            );
+        Ok(StreamingToolDelta {
+            upstream_index,
+            call_type_seen,
+            call_id,
+            name,
+            arguments: arguments_delta,
+            kind,
+        })
+    }
+
+    fn local_tool_index(&mut self, delta: &StreamingToolDelta<'_>) -> Result<usize, ()> {
+        if let Some(local_index) = self.tool_index_map.get(&delta.upstream_index) {
+            return Ok(*local_index);
+        }
+        if !delta.call_type_seen && delta.call_id.is_none() && delta.name.is_none() {
+            return Err(());
         }
 
-        let call = self.tool_calls.get_mut(&index).ok_or(())?;
-        if call_type.is_some() {
-            call.type_seen = true;
-        }
-        if let Some(call_id) = call_id {
-            if call
-                .call_id
-                .as_deref()
-                .is_some_and(|stored| stored != call_id)
-            {
-                return Err(());
-            }
-        }
-        if let Some(name) = name {
-            if call.name.as_deref().is_some_and(|stored| stored != name) {
-                return Err(());
-            }
-        }
-        if call.call_id.is_none() {
-            if let Some(call_id) = call_id {
-                call.call_id = Some(call_id.to_string());
-            }
-        }
-        if call.name.is_none() {
-            if let Some(name) = name {
-                call.name = Some(name.to_string());
-                call.kind = kind;
-                if let Some(tool_name) = self.tool_names.get(name) {
-                    call.output_name = Some(tool_name.name.clone());
-                    call.namespace = tool_name.namespace.clone();
-                } else {
-                    call.output_name = Some(name.to_string());
-                }
-            }
-        }
-        if let Some(arguments_delta) = arguments_delta {
-            call.arguments.push_str(arguments_delta);
-        }
-
-        let mut events = Vec::new();
-        let metadata = call
-            .call_id
-            .clone()
-            .zip(call.name.clone())
-            .zip(call.kind)
-            .map(|((call_id, name), kind)| (call_id, name, kind));
-        if !call.added && metadata.is_some() {
-            call.added = true;
-            let (call_id, _, kind) = metadata.ok_or(())?;
-            let name = call.output_name.as_deref().ok_or(())?;
-            let item_id = kind.stream_item_id(&self.response_id, call.tool_index);
-            let mut item = match kind {
-                LocalToolKind::Function => json!({
-                    "id": item_id,
-                    "type": "function_call",
-                    "status": "in_progress",
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": ""
-                }),
-                LocalToolKind::Custom => json!({
-                    "id": item_id,
-                    "type": "custom_tool_call",
-                    "status": "in_progress",
-                    "call_id": call_id,
-                    "name": name,
-                    "input": ""
-                }),
-            };
-            insert_tool_namespace(&mut item, call.namespace.as_deref());
-            events.push(stream_event(
-                "response.output_item.added",
-                json!({"output_index": call.output_index, "item": item}),
-            ));
-            if !call.arguments.is_empty() {
-                events.push(stream_event(
-                    kind.stream_delta_event(),
-                    json!({
-                        "item_id": item_id,
-                        "output_index": call.output_index,
-                        "delta": call.arguments
-                    }),
-                ));
-            }
-        } else if call.added && arguments_delta.is_some_and(|delta| !delta.is_empty()) {
-            let kind = call.kind.ok_or(())?;
-            events.push(stream_event(
-                kind.stream_delta_event(),
-                json!({
-                    "item_id": kind.stream_item_id(&self.response_id, call.tool_index),
-                    "output_index": call.output_index,
-                    "delta": arguments_delta
-                }),
-            ));
-        }
-        Ok(events)
+        // Some upstreams count preceding text blocks in tool indices. Keep the
+        // upstream index only as a lookup key and assign dense local positions.
+        let local_index = self.tool_calls.len();
+        let output_index = self.next_output_index;
+        self.next_output_index += 1;
+        self.tool_index_map
+            .insert(delta.upstream_index, local_index);
+        self.tool_calls.insert(
+            local_index,
+            StreamingToolCall {
+                tool_index: local_index,
+                output_index,
+                call_id: None,
+                name: None,
+                arguments: String::new(),
+                kind: None,
+                output_name: None,
+                namespace: None,
+                type_seen: false,
+                added: false,
+                done: false,
+            },
+        );
+        Ok(local_index)
     }
 
     fn finish_events(&mut self) -> Result<Vec<String>, ()> {
@@ -806,6 +768,119 @@ impl ChatToResponsesStream {
             }]
         })
     }
+}
+
+fn apply_streaming_tool_delta(
+    call: &mut StreamingToolCall,
+    delta: &StreamingToolDelta<'_>,
+    output_tool_name: Option<&ResponsesToolName>,
+) -> Result<(), ()> {
+    if delta.call_type_seen {
+        call.type_seen = true;
+    }
+    if delta
+        .call_id
+        .zip(call.call_id.as_deref())
+        .is_some_and(|(incoming, stored)| incoming != stored)
+    {
+        return Err(());
+    }
+    if delta
+        .name
+        .zip(call.name.as_deref())
+        .is_some_and(|(incoming, stored)| incoming != stored)
+    {
+        return Err(());
+    }
+    if call.call_id.is_none() {
+        call.call_id = delta.call_id.map(str::to_string);
+    }
+    if call.name.is_none() {
+        if let Some(name) = delta.name {
+            call.name = Some(name.to_string());
+            call.kind = delta.kind;
+            call.output_name = Some(
+                output_tool_name
+                    .map(|tool_name| tool_name.name.as_str())
+                    .unwrap_or(name)
+                    .to_string(),
+            );
+            call.namespace = output_tool_name.and_then(|tool_name| tool_name.namespace.clone());
+        }
+    }
+    if let Some(arguments) = delta.arguments {
+        call.arguments.push_str(arguments);
+    }
+    Ok(())
+}
+
+fn streaming_tool_delta_events(
+    response_id: &str,
+    call: &mut StreamingToolCall,
+    arguments_delta: Option<&str>,
+) -> Result<Vec<String>, ()> {
+    if call.added {
+        return streaming_tool_arguments_delta_event(response_id, call, arguments_delta);
+    }
+    let Some((call_id, kind)) = call.call_id.clone().zip(call.kind) else {
+        return Ok(Vec::new());
+    };
+    let name = call.output_name.as_deref().ok_or(())?;
+    call.added = true;
+    let item_id = kind.stream_item_id(response_id, call.tool_index);
+    let mut item = match kind {
+        LocalToolKind::Function => json!({
+            "id": item_id,
+            "type": "function_call",
+            "status": "in_progress",
+            "call_id": call_id,
+            "name": name,
+            "arguments": ""
+        }),
+        LocalToolKind::Custom => json!({
+            "id": item_id,
+            "type": "custom_tool_call",
+            "status": "in_progress",
+            "call_id": call_id,
+            "name": name,
+            "input": ""
+        }),
+    };
+    insert_tool_namespace(&mut item, call.namespace.as_deref());
+    let mut events = vec![stream_event(
+        "response.output_item.added",
+        json!({"output_index": call.output_index, "item": item}),
+    )];
+    if !call.arguments.is_empty() {
+        events.push(stream_event(
+            kind.stream_delta_event(),
+            json!({
+                "item_id": item_id,
+                "output_index": call.output_index,
+                "delta": call.arguments
+            }),
+        ));
+    }
+    Ok(events)
+}
+
+fn streaming_tool_arguments_delta_event(
+    response_id: &str,
+    call: &StreamingToolCall,
+    arguments_delta: Option<&str>,
+) -> Result<Vec<String>, ()> {
+    let Some(arguments_delta) = arguments_delta.filter(|arguments| !arguments.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let kind = call.kind.ok_or(())?;
+    Ok(vec![stream_event(
+        kind.stream_delta_event(),
+        json!({
+            "item_id": kind.stream_item_id(response_id, call.tool_index),
+            "output_index": call.output_index,
+            "delta": arguments_delta
+        }),
+    )])
 }
 
 fn streaming_tool_item(response_id: &str, call: &StreamingToolCall) -> Option<Value> {
@@ -2178,10 +2253,10 @@ mod tests {
         );
         let lines = [
             json!({"choices": [{"delta": {"tool_calls": [{
-                "index": 0, "id": "call_1", "type": "function"
+                "index": 1, "id": "call_1", "type": "function"
             }]}}]}),
             json!({"choices": [{"delta": {"tool_calls": [{
-                "index": 0, "function": {"name": "calculate", "arguments": "{\"x\":1}"}
+                "index": 1, "function": {"name": "calculate", "arguments": "{\"x\":1}"}
             }]}}]}),
             json!({
                 "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
@@ -2205,6 +2280,41 @@ mod tests {
                 .is_some_and(|event| event.starts_with("event: response.completed\n"))
         );
         assert_eq!(adapter.output_items()[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_sse_accepts_type_only_nonzero_tool_start() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_type_only".to_string(),
+            "claude-opus-5.5".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        let lines = [
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1, "type": "function"
+            }]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1, "function": {"arguments": "{\"x\":1}"}
+            }]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1, "id": "call_1", "function": {"name": "calculate"}
+            }]}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+
+        let mut events = lines
+            .into_iter()
+            .flat_map(|line| adapter.map_line(&format!("data: {line}")))
+            .collect::<Vec<_>>();
+        events.extend(adapter.map_line("data: [DONE]"));
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.starts_with("event: response.failed\n"))
+        );
+        assert_eq!(adapter.output_items()[0]["call_id"], "call_1");
+        assert_eq!(adapter.output_items()[0]["arguments"], r#"{"x":1}"#);
     }
 
     #[test]
@@ -2389,14 +2499,14 @@ mod tests {
     }
 
     #[test]
-    fn chat_sse_out_of_order_tool_index_fails() {
+    fn chat_sse_nonzero_initial_tool_index_is_normalized() {
         let mut adapter = ChatToResponsesStream::new(
             "resp_local_ordered_calls".to_string(),
             "qwen3-coder-30b-local".to_string(),
             BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
         );
 
-        let terminal = adapter.map_line(&format!(
+        let mut events = adapter.map_line(&format!(
             "data: {}",
             json!({"choices": [{"delta": {"tool_calls": [{
                 "index": 1, "id": "call_1", "function": {
@@ -2404,9 +2514,158 @@ mod tests {
                 }
             }]}}]})
         ));
+        events.extend(
+            adapter.map_line(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        );
+        events.extend(adapter.map_line("data: [DONE]"));
 
-        assert_eq!(terminal.len(), 1);
-        assert!(terminal[0].starts_with("event: response.failed\n"));
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.starts_with("event: response.failed\n"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("event: response.completed\n"))
+        );
+        assert_eq!(
+            adapter.output_items()[0]["id"],
+            "fc_resp_local_ordered_calls_0"
+        );
+        assert_eq!(adapter.output_items()[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn chat_sse_text_then_tool_index_one_completes() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_text_then_tool".to_string(),
+            "claude-opus-5.5".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        let lines = [
+            json!({"choices": [{"delta": {"content": "I will calculate it."}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "calculate", "arguments": "{\"x\":"}
+            }]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1,
+                "function": {"arguments": "1}"}
+            }]}}]}),
+            json!({
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+            }),
+        ];
+
+        let mut events = lines
+            .into_iter()
+            .flat_map(|line| adapter.map_line(&format!("data: {line}")))
+            .collect::<Vec<_>>();
+        events.extend(adapter.map_line("data: [DONE]"));
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.starts_with("event: response.failed\n"))
+        );
+        assert_eq!(adapter.output_items().len(), 2);
+        assert_eq!(
+            adapter.output_items()[0]["content"][0]["text"],
+            "I will calculate it."
+        );
+        assert_eq!(
+            adapter.output_items()[1]["id"],
+            "fc_resp_local_text_then_tool_0"
+        );
+        assert_eq!(adapter.output_items()[1]["arguments"], r#"{"x":1}"#);
+        assert_eq!(adapter.completed_response()["usage"]["total_tokens"], 5);
+    }
+
+    #[test]
+    fn chat_sse_parallel_nonzero_tool_indices_keep_arguments_separate() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_parallel_tools".to_string(),
+            "claude-opus-5.5".to_string(),
+            BTreeMap::from([
+                ("first".to_string(), LocalToolKind::Function),
+                ("second".to_string(), LocalToolKind::Function),
+            ]),
+        );
+        let lines = [
+            json!({"choices": [{"delta": {"content": "Using two tools."}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 1, "id": "call_1", "function": {
+                    "name": "first", "arguments": "{\"value\":"
+                }},
+                {"index": 2, "id": "call_2", "function": {
+                    "name": "second", "arguments": "{\"value\":"
+                }}
+            ]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 2, "function": {"arguments": "2}"}},
+                {"index": 1, "function": {"arguments": "1}"}}
+            ]}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+
+        let mut events = lines
+            .into_iter()
+            .flat_map(|line| adapter.map_line(&format!("data: {line}")))
+            .collect::<Vec<_>>();
+        events.extend(adapter.map_line("data: [DONE]"));
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.starts_with("event: response.failed\n"))
+        );
+        assert_eq!(
+            adapter.output_items()[1]["id"],
+            "fc_resp_local_parallel_tools_0"
+        );
+        assert_eq!(adapter.output_items()[1]["arguments"], r#"{"value":1}"#);
+        assert_eq!(
+            adapter.output_items()[2]["id"],
+            "fc_resp_local_parallel_tools_1"
+        );
+        assert_eq!(adapter.output_items()[2]["arguments"], r#"{"value":2}"#);
+    }
+
+    #[test]
+    fn chat_sse_unknown_tool_index_arguments_delta_fails_once() {
+        let mut adapter = ChatToResponsesStream::new(
+            "resp_local_unknown_tool".to_string(),
+            "claude-opus-5.5".to_string(),
+            BTreeMap::from([("calculate".to_string(), LocalToolKind::Function)]),
+        );
+        let started = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 1,
+                "id": "call_1",
+                "function": {"name": "calculate", "arguments": "{\"x\":"}
+            }]}}]})
+        ));
+        assert!(
+            started
+                .iter()
+                .any(|event| event.starts_with("event: response.output_item.added\n"))
+        );
+
+        let failed = adapter.map_line(&format!(
+            "data: {}",
+            json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "function": {"arguments": "1}"}
+            }]}}]})
+        ));
+
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].starts_with("event: response.failed\n"));
+        assert!(adapter.map_line("data: [DONE]").is_empty());
     }
 
     #[test]
