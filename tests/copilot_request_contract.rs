@@ -182,6 +182,44 @@ fn claude_five_five_preserves_adaptive_thinking_and_requested_effort() {
 }
 
 #[test]
+fn claude_five_five_drops_disabled_thinking() {
+    for model in [
+        "claude-sonnet-5.5",
+        "claude-sonnet-5-5",
+        "claude-opus-5.5",
+        "claude-opus-5-5",
+    ] {
+        let mut body = serde_json::json!({
+            "max_tokens": 64,
+            "thinking": {"type": "disabled"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        adapt_thinking_for_copilot(&mut body, model, None);
+        assert!(body.get("thinking").is_none(), "{model}");
+        assert_eq!(body["max_tokens"], 64, "{model}");
+    }
+}
+
+#[test]
+fn older_claude_models_keep_disabled_thinking() {
+    for model in [
+        "claude-opus-5",
+        "claude-opus-4.8",
+        "claude-sonnet-5",
+        "claude-haiku-4.5",
+    ] {
+        let mut body = serde_json::json!({"thinking": {"type": "disabled"}})
+            .as_object()
+            .unwrap()
+            .clone();
+        adapt_thinking_for_copilot(&mut body, model, None);
+        assert_eq!(body["thinking"]["type"], "disabled", "{model}");
+    }
+}
+
+#[test]
 fn clamp_effort_uses_python_rank_order_and_unknown_values_clamp_to_highest() {
     let efforts = supported(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]);
 

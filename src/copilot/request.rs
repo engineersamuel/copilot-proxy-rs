@@ -220,6 +220,87 @@ pub fn strip_agent_message_encrypted_content(body: &mut Map<String, Value>) -> u
     stripped
 }
 
+/// Removes `agent_message` encrypted parts that use the `RT\x02` CBOR envelope
+/// (base64 prefix `UlQC`). Copilot rejects that format on every attempt, so
+/// sending it only costs a failed round trip. Parts are removed only when the
+/// same message keeps readable content; Fernet blobs and reasoning ciphertext
+/// stay untouched.
+pub fn strip_rejected_agent_message_encrypted_content(body: &mut Map<String, Value>) -> usize {
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return 0;
+    };
+    let mut stripped = 0;
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if !content
+            .iter()
+            .any(|part| part.get("type").and_then(Value::as_str) != Some("encrypted_content"))
+        {
+            continue;
+        }
+        content.retain(|part| {
+            let keep = !is_rejected_encrypted_envelope_part(part);
+            if !keep {
+                stripped += 1;
+            }
+            keep
+        });
+    }
+    stripped
+}
+
+fn is_rejected_encrypted_envelope_part(part: &Value) -> bool {
+    part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+        && part
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(is_rejected_encrypted_envelope)
+}
+
+/// Matches `RT`, envelope version `0x02`, a CBOR map header, and a first
+/// text key of `version`.
+fn is_rejected_encrypted_envelope(blob: &str) -> bool {
+    const PREFIX_CHARS: usize = 16;
+    let Some(prefix) = blob.get(..PREFIX_CHARS) else {
+        return false;
+    };
+    let Some(bytes) = decode_base64_prefix(prefix) else {
+        return false;
+    };
+    bytes.len() == 12
+        && bytes[..3] == *b"RT\x02"
+        && (0xa1..=0xb7).contains(&bytes[3])
+        && bytes[4] == 0x67
+        && bytes[5..12] == *b"version"
+}
+
+fn decode_base64_prefix(chars: &str) -> Option<Vec<u8>> {
+    fn sextet(byte: u8) -> Option<u32> {
+        match byte {
+            b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+            b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(chars.len() / 4 * 3);
+    for chunk in chars.as_bytes().chunks_exact(4) {
+        let mut word = 0u32;
+        for &byte in chunk {
+            word = (word << 6) | sextet(byte)?;
+        }
+        out.extend_from_slice(&word.to_be_bytes()[1..]);
+    }
+    Some(out)
+}
+
 fn strip_unsupported_responses_tools(body: &mut Map<String, Value>) {
     let remove_tools_key = if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut)
     {
@@ -336,13 +417,15 @@ pub fn adapt_thinking_for_copilot(
         return;
     };
     match thinking.get("type").and_then(Value::as_str) {
+        // Copilot rejects `disabled` for 5.5 models; omitting `thinking` gives
+        // the same no-thinking response.
+        Some("disabled") if is_claude_five_five_model(model) => {
+            body.remove("thinking");
+        }
         Some("enabled") if is_adaptive_only_model(model) => {
             thinking.clear();
             thinking.insert("type".to_string(), Value::String("adaptive".to_string()));
-            if !matches!(
-                model,
-                "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
-            ) {
+            if !is_claude_five_five_model(model) {
                 body.remove("output_config");
             }
         }
@@ -392,6 +475,13 @@ fn adapt_output_config_effort(
     if output_config.is_empty() {
         body.remove("output_config");
     }
+}
+
+fn is_claude_five_five_model(model: &str) -> bool {
+    matches!(
+        model,
+        "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
+    )
 }
 
 fn is_adaptive_only_model(model: &str) -> bool {
@@ -472,4 +562,84 @@ pub fn input_has_user_message(items: &[Value]) -> bool {
             .and_then(Value::as_str)
             == Some("user")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const REJECTED_ENVELOPE: &str =
+        "UlQCpmd2ZXJzaW9uYzEuMGpjaXBoZXJ0ZXh0AAECAwQFBgcICQoLDA0ODxAREhM=";
+    const OTHER_ENVELOPE_VERSION: &str =
+        "UlQDpmd2ZXJzaW9uYzEuMGpjaXBoZXJ0ZXh0AAECAwQFBgcICQoLDA0ODxAREhM=";
+    const FERNET: &str = "gAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJic=";
+
+    fn body_with(content: Value) -> Map<String, Value> {
+        json!({"input": [{"type": "agent_message", "content": content}]})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn detects_only_the_rejected_envelope_format() {
+        assert!(is_rejected_encrypted_envelope(REJECTED_ENVELOPE));
+        assert!(is_rejected_encrypted_envelope(
+            &REJECTED_ENVELOPE.replace('+', "-").replace('/', "_")
+        ));
+        assert!(!is_rejected_encrypted_envelope(OTHER_ENVELOPE_VERSION));
+        assert!(!is_rejected_encrypted_envelope(FERNET));
+        assert!(!is_rejected_encrypted_envelope("UlQC"));
+        assert!(!is_rejected_encrypted_envelope("opaque"));
+        assert!(!is_rejected_encrypted_envelope(
+            "UlQC\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"
+        ));
+    }
+
+    #[test]
+    fn strips_rejected_envelope_and_keeps_fernet_and_text() {
+        let mut body = body_with(json!([
+            {"type": "input_text", "text": "result"},
+            {"type": "encrypted_content", "encrypted_content": FERNET},
+            {"type": "encrypted_content", "encrypted_content": REJECTED_ENVELOPE}
+        ]));
+
+        assert_eq!(strip_rejected_agent_message_encrypted_content(&mut body), 1);
+        assert_eq!(
+            body["input"][0]["content"],
+            json!([
+                {"type": "input_text", "text": "result"},
+                {"type": "encrypted_content", "encrypted_content": FERNET}
+            ])
+        );
+    }
+
+    #[test]
+    fn keeps_rejected_envelope_without_readable_sibling() {
+        let content = json!([
+            {"type": "encrypted_content", "encrypted_content": REJECTED_ENVELOPE}
+        ]);
+        let mut body = body_with(content.clone());
+
+        assert_eq!(strip_rejected_agent_message_encrypted_content(&mut body), 0);
+        assert_eq!(body["input"][0]["content"], content);
+    }
+
+    #[test]
+    fn ignores_non_agent_message_items() {
+        let mut body = json!({"input": [{
+            "type": "reasoning",
+            "encrypted_content": REJECTED_ENVELOPE,
+            "content": [
+                {"type": "input_text", "text": "x"},
+                {"type": "encrypted_content", "encrypted_content": REJECTED_ENVELOPE}
+            ]
+        }]})
+        .as_object()
+        .unwrap()
+        .clone();
+
+        assert_eq!(strip_rejected_agent_message_encrypted_content(&mut body), 0);
+    }
 }

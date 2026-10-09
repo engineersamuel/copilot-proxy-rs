@@ -11,6 +11,7 @@ use crate::copilot::errors::{CopilotError, CopilotHttpError, TransientBackendErr
 use crate::copilot::request::{
     CopilotRequestMetadata, ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR,
     base_copilot_request_headers, compute_initiator, strip_agent_message_encrypted_content,
+    strip_rejected_agent_message_encrypted_content,
 };
 use crate::models::{EffortLevel, ModelRegistry};
 
@@ -229,6 +230,7 @@ impl CopilotBackend {
         body: Map<String, Value>,
         metadata: Option<CopilotRequestMetadata>,
     ) -> Result<Value, CopilotError> {
+        let body = self.strip_rejected_agent_message_ciphertext(body, false);
         let result = self
             .post_json(
                 &self.endpoints.responses_url,
@@ -254,6 +256,7 @@ impl CopilotBackend {
         body: Map<String, Value>,
         metadata: Option<CopilotRequestMetadata>,
     ) -> Result<reqwest::Response, CopilotError> {
+        let body = self.strip_rejected_agent_message_ciphertext(body, true);
         let result = self
             .stream_request(
                 &self.endpoints.responses_url,
@@ -978,6 +981,28 @@ fn strip_unsupported_anthropic_beta_headers(
             .insert("anthropic-beta".to_string(), retained.join(", "));
     }
     removed
+}
+
+impl CopilotBackend {
+    fn strip_rejected_agent_message_ciphertext(
+        &self,
+        mut body: Map<String, Value>,
+        stream: bool,
+    ) -> Map<String, Value> {
+        if !self.config.strip_rejected_agent_message_ciphertext {
+            return body;
+        }
+        let stripped = strip_rejected_agent_message_encrypted_content(&mut body);
+        if stripped > 0 {
+            tracing::info!(
+                api.family = "responses",
+                stream,
+                input.encrypted_content.rejected_stripped = stripped as u64,
+                "copilot responses removed known-rejected agent message encrypted content"
+            );
+        }
+        body
+    }
 }
 
 fn is_encrypted_function_output_decryption_error<T>(result: &Result<T, CopilotError>) -> bool {

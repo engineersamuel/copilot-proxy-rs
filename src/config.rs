@@ -105,6 +105,8 @@ pub struct AppConfig {
     pub max_decoded_body_bytes: u64,
     #[serde(deserialize_with = "deserialize_bool")]
     pub log_failed_request_bodies: bool,
+    #[serde(deserialize_with = "deserialize_bool")]
+    pub strip_rejected_agent_message_ciphertext: bool,
     #[serde(deserialize_with = "deserialize_string")]
     pub log_level: String,
     #[serde(deserialize_with = "deserialize_string")]
@@ -177,6 +179,7 @@ impl Default for AppConfig {
             allowed_origins: Vec::new(),
             max_decoded_body_bytes: 16 * 1024 * 1024,
             log_failed_request_bodies: true,
+            strip_rejected_agent_message_ciphertext: true,
             log_level: "INFO".to_string(),
             cowork_host: "198.18.1.1".to_string(),
             cowork_port: 8443,
@@ -247,6 +250,8 @@ struct FileConfig {
     max_decoded_body_bytes: Option<u64>,
     #[serde(deserialize_with = "deserialize_opt_bool")]
     log_failed_request_bodies: Option<bool>,
+    #[serde(deserialize_with = "deserialize_opt_bool")]
+    strip_rejected_agent_message_ciphertext: Option<bool>,
     #[serde(deserialize_with = "deserialize_opt_string")]
     log_level: Option<String>,
     #[serde(deserialize_with = "deserialize_opt_string")]
@@ -401,6 +406,9 @@ impl AppConfig {
         }
         if let Some(v) = file.log_failed_request_bodies {
             self.log_failed_request_bodies = v;
+        }
+        if let Some(v) = file.strip_rejected_agent_message_ciphertext {
+            self.strip_rejected_agent_message_ciphertext = v;
         }
         if let Some(v) = file.log_level {
             if !v.is_empty() {
@@ -594,6 +602,11 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
         env,
         "COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES",
         &mut config.log_failed_request_bodies,
+    );
+    apply_bool(
+        env,
+        "COPILOT_PROXY_RS_STRIP_REJECTED_AGENT_MESSAGE_CIPHERTEXT",
+        &mut config.strip_rejected_agent_message_ciphertext,
     );
     apply_string(env, "COPILOT_PROXY_RS_LOG_LEVEL", &mut config.log_level);
     config.log_level = config.log_level.to_ascii_uppercase();

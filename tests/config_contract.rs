@@ -330,6 +330,10 @@ fn env_overrides_inbound_auth_config() {
         ),
         ("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES", "4096"),
         ("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES", "false"),
+        (
+            "COPILOT_PROXY_RS_STRIP_REJECTED_AGENT_MESSAGE_CIPHERTEXT",
+            "false",
+        ),
     ]);
 
     let config = AppConfig::load_from_env(&env).unwrap();
@@ -344,4 +348,5 @@ fn env_overrides_inbound_auth_config() {
     );
     assert_eq!(config.max_decoded_body_bytes, 4096);
     assert!(!config.log_failed_request_bodies);
+    assert!(!config.strip_rejected_agent_message_ciphertext);
 }
