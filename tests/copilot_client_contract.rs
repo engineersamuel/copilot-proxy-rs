@@ -837,6 +837,174 @@ async fn stream_responses_retries_without_agent_message_ciphertext_after_decrypt
     );
 }
 
+const REJECTED_ENVELOPE: &str = "UlQCpmd2ZXJzaW9uYzEuMGpjaXBoZXJ0ZXh0AAECAwQFBgcICQoLDA0ODxAREhM=";
+const FERNET_BLOB: &str = "gAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJic=";
+
+fn responses_body_with_rejected_envelope(
+    stream: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "stream": stream,
+        "input": [{
+            "type": "agent_message",
+            "author": "/root/reviewer",
+            "recipient": "/root",
+            "content": [
+                {"type": "input_text", "text": "review result"},
+                {"type": "encrypted_content", "encrypted_content": FERNET_BLOB},
+                {"type": "encrypted_content", "encrypted_content": REJECTED_ENVELOPE}
+            ]
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+}
+
+async fn mock_with_ok_responses(body: serde_json::Value) -> support::MockServer {
+    let mock = support::MockServer::start().await;
+    mock.respond_json("POST", "/responses", 200, body).await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+    mock
+}
+
+fn expected_content_without_rejected_envelope() -> serde_json::Value {
+    serde_json::json!([
+        {"type": "input_text", "text": "review result"},
+        {"type": "encrypted_content", "encrypted_content": FERNET_BLOB}
+    ])
+}
+
+#[tokio::test]
+async fn post_responses_removes_rejected_envelope_before_first_attempt() {
+    let mock = mock_with_ok_responses(serde_json::json!({"id": "resp_ok", "output": []})).await;
+    let fixture = support::backend_fixture(mock).await;
+
+    let events = with_event_capture(|| async {
+        fixture
+            .backend
+            .post_responses(responses_body_with_rejected_envelope(false), None)
+            .await
+            .unwrap();
+    })
+    .await;
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"],
+        expected_content_without_rejected_envelope()
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    let message = "copilot responses removed known-rejected agent message encrypted content";
+    assert_eq!(
+        field(
+            &events,
+            message,
+            "input.encrypted_content.rejected_stripped"
+        )
+        .as_deref(),
+        Some("1")
+    );
+    assert_eq!(field(&events, message, "stream").as_deref(), Some("false"));
+    assert!(
+        field(
+            &events,
+            "copilot responses retrying without agent message encrypted content",
+            "stream"
+        )
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn stream_responses_removes_rejected_envelope_before_first_attempt() {
+    let mock = mock_with_ok_responses(serde_json::json!({"stream": "accepted"})).await;
+    let fixture = support::backend_fixture(mock).await;
+
+    let events = with_event_capture(|| async {
+        let response = fixture
+            .backend
+            .stream_responses(responses_body_with_rejected_envelope(true), None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    })
+    .await;
+
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"],
+        expected_content_without_rejected_envelope()
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    assert_eq!(
+        field(
+            &events,
+            "copilot responses removed known-rejected agent message encrypted content",
+            "stream"
+        )
+        .as_deref(),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn post_responses_keeps_rejected_envelope_when_removal_disabled() {
+    let mock = mock_with_ok_responses(serde_json::json!({"id": "resp_ok", "output": []})).await;
+    let temp = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    std::fs::write(temp.path().join("github_token"), "github-token").unwrap();
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+        (
+            "COPILOT_PROXY_RS_STRIP_REJECTED_AGENT_MESSAGE_CIPHERTEXT",
+            "false",
+        ),
+    ]);
+    let config = Arc::new(AppConfig::load_from_env(&env).unwrap());
+    assert!(!config.strip_rejected_agent_message_ciphertext);
+    let auth = Arc::new(CopilotAuth::with_env_for_tests(
+        config.clone(),
+        env,
+        mock.auth_endpoints(),
+        false,
+    ));
+    let backend = CopilotBackend::with_endpoints_for_tests(
+        config,
+        auth,
+        Arc::new(ModelRegistry::new()),
+        mock.copilot_endpoints(),
+    );
+
+    backend
+        .post_responses(responses_body_with_rejected_envelope(false), None)
+        .await
+        .unwrap();
+
+    let outbound = mock
+        .last_request_body_json("POST", "/responses")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["input"][0]["content"][2]["encrypted_content"],
+        REJECTED_ENVELOPE
+    );
+}
+
 #[tokio::test]
 async fn post_chat_logs_full_failure_diagnostics_only_when_enabled() {
     let mock = support::MockServer::start().await;

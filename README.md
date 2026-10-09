@@ -149,6 +149,7 @@ Important variables:
 | `COPILOT_PROXY_RS_ALLOWED_ORIGINS` | Optional comma-separated exact WebSocket Origin allowlist for `/v1/responses`. Requests without an Origin header are allowed; requests with an Origin header are rejected when this is empty or has no exact match. |
 | `COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES` | Maximum decoded JSON request body size after gzip/zstd decompression. Defaults to `16777216` bytes. |
 | `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` | Logs full failed Copilot request and upstream response bodies at `WARN`. Defaults to `true`; set to `false` if local container logs must not retain prompts or tool output. |
+| `COPILOT_PROXY_RS_STRIP_REJECTED_AGENT_MESSAGE_CIPHERTEXT` | Removes `agent_message` encrypted blobs in the `RT\x02` envelope format (base64 prefix `UlQC`) before the first Copilot request, because Copilot rejects that format on every attempt. Defaults to `true`; set to `false` to forward them unchanged. |
 | `COPILOT_TIMEOUT` | Total upstream request timeout in seconds (also used for stream read idle timeout and Linux `TCP_USER_TIMEOUT`). Defaults to `300`. |
 | `COPILOT_CONNECT_TIMEOUT` | Upstream connect/TLS handshake timeout in seconds. Defaults to `60`. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
@@ -183,7 +184,16 @@ warning is also emitted if a successful HTTP stream reaches EOF or a transport
 error without any terminal Responses event.
 
 Codex encrypted reasoning and collaboration content is forwarded unchanged on
-the first Copilot request. If Copilot returns the specific
+the first Copilot request, with one exception. Some sub-agents (observed with
+`gpt-6-astra` reviewers) produce `agent_message` ciphertext in an `RT\x02` CBOR
+envelope (base64 prefix `UlQC`) that Copilot cannot decrypt on any attempt.
+Because Codex resends its full history, that blob would otherwise cause a failed
+round trip and a full diagnostics dump on every later turn. The proxy removes
+only those blobs, and only when the same message keeps readable content, then
+logs `copilot responses removed known-rejected agent message encrypted content`
+at `INFO` with the removed count. Fernet-format blobs and reasoning ciphertext
+are untouched. Set `COPILOT_PROXY_RS_STRIP_REJECTED_AGENT_MESSAGE_CIPHERTEXT=false`
+to disable this. For any other ciphertext, if Copilot returns the specific
 `Encrypted function output content could not be decrypted or decoded` error,
 the proxy retries once after removing only nested `encrypted_content` blocks
 from `agent_message` items that retain readable content. Encrypted-only agent
