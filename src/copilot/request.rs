@@ -417,13 +417,15 @@ pub fn adapt_thinking_for_copilot(
         return;
     };
     match thinking.get("type").and_then(Value::as_str) {
+        // Copilot rejects `disabled` for 5.5 models; omitting `thinking` gives
+        // the same no-thinking response.
+        Some("disabled") if is_claude_five_five_model(model) => {
+            body.remove("thinking");
+        }
         Some("enabled") if is_adaptive_only_model(model) => {
             thinking.clear();
             thinking.insert("type".to_string(), Value::String("adaptive".to_string()));
-            if !matches!(
-                model,
-                "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
-            ) {
+            if !is_claude_five_five_model(model) {
                 body.remove("output_config");
             }
         }
@@ -473,6 +475,13 @@ fn adapt_output_config_effort(
     if output_config.is_empty() {
         body.remove("output_config");
     }
+}
+
+fn is_claude_five_five_model(model: &str) -> bool {
+    matches!(
+        model,
+        "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
+    )
 }
 
 fn is_adaptive_only_model(model: &str) -> bool {
