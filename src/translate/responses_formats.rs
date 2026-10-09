@@ -776,6 +776,7 @@ pub fn responses_sse_to_anthropic_sse_line(line: &str) -> Option<String> {
 #[derive(Debug, Clone)]
 struct ChatToolCall {
     id: String,
+    index: usize,
 }
 
 #[derive(Debug)]
@@ -836,25 +837,40 @@ impl ResponsesToChatStream {
                     .and_then(Value::as_str)
                     == Some("function_call") =>
             {
-                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
-                let index = value
+                let upstream_index = value
                     .get("output_index")
                     .and_then(Value::as_u64)
-                    .unwrap_or(0);
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid Responses function-call output index",
+                        )
+                    })?;
                 let item = value.get("item").unwrap_or(&Value::Null);
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+                let index = if let Some(call) = self.tool_calls.get(&upstream_index) {
+                    if call.id != call_id {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "conflicting Responses function-call identity",
+                        ));
+                    }
+                    call.index
+                } else {
+                    // Responses indices count all output items; Chat indices count only tools.
+                    let index = self.tool_calls.len();
+                    self.tool_calls.insert(
+                        upstream_index,
+                        ChatToolCall {
+                            id: call_id.to_string(),
+                            index,
+                        },
+                    );
+                    index
+                };
+                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
                 self.saw_tool_call = true;
-                self.tool_calls.insert(
-                    index,
-                    ChatToolCall {
-                        id: call_id.clone(),
-                    },
-                );
                 events.push(self.chunk(json!({
                     "choices": [{
                         "index": 0,
@@ -872,26 +888,34 @@ impl ResponsesToChatStream {
                 Ok(events)
             }
             Some("response.function_call_arguments.delta") => {
-                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
-                let index = value
+                let upstream_index = value
                     .get("output_index")
                     .and_then(Value::as_u64)
-                    .unwrap_or(0);
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid Responses function-call output index",
+                        )
+                    })?;
+                let call = self.tool_calls.get(&upstream_index).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unknown Responses function-call output index",
+                    )
+                })?;
                 let event_call_id = value.get("call_id").and_then(Value::as_str).unwrap_or("");
-                let call_id = self
-                    .tool_calls
-                    .get(&index)
-                    .map(|tool_call| tool_call.id.as_str())
-                    .filter(|call_id| !call_id.is_empty())
-                    .unwrap_or(event_call_id);
+                let call_id = if call.id.is_empty() {
+                    event_call_id
+                } else {
+                    call.id.as_str()
+                };
                 let arguments = value.get("delta").and_then(Value::as_str).unwrap_or("");
-                self.saw_tool_call = true;
-                events.push(self.chunk(json!({
+                let chunk = self.chunk(json!({
                     "choices": [{
                         "index": 0,
                         "delta": {
                             "tool_calls": [{
-                                "index": index,
+                                "index": call.index,
                                 "id": call_id,
                                 "type": "function",
                                 "function": {"arguments": arguments}
@@ -899,7 +923,10 @@ impl ResponsesToChatStream {
                         },
                         "finish_reason": null
                     }]
-                })));
+                }));
+                let mut events = self.role_chunk().into_iter().collect::<Vec<_>>();
+                self.saw_tool_call = true;
+                events.push(chunk);
                 Ok(events)
             }
             Some("response.completed") => Ok(self.finish(value.get("response"))),
@@ -967,9 +994,181 @@ impl ResponsesToChatStream {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::openai_chat_to_responses_request;
+    use super::{ResponsesToChatStream, openai_chat_to_responses_request};
+
+    fn map_event(
+        adapter: &mut ResponsesToChatStream,
+        event: Value,
+    ) -> Result<Vec<String>, std::io::Error> {
+        adapter.map_line(&format!("data: {event}"))
+    }
+
+    fn function_start(index: u64, id: &str) -> Value {
+        json!({
+            "type":"response.output_item.added",
+            "output_index":index,
+            "item":{"type":"function_call","call_id":id,"name":"calculate","arguments":""}
+        })
+    }
+
+    fn tool_deltas(events: &[String]) -> Vec<Value> {
+        events
+            .iter()
+            .filter(|line| line.as_str() != "data: [DONE]")
+            .filter_map(|line| {
+                let chunk: Value =
+                    serde_json::from_str(line.strip_prefix("data: ").unwrap()).unwrap();
+                chunk["choices"][0]["delta"]["tool_calls"]
+                    .as_array()
+                    .cloned()
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn responses_chat_stream_maps_parallel_calls_in_first_seen_order() {
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning"}}),
+            function_start(7, "call_first"),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message"}}),
+            json!({"type":"response.output_text.delta","output_index":1,"delta":"Using tools."}),
+            function_start(2, "call_second"),
+            json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"value\":"}),
+            json!({"type":"response.function_call_arguments.delta","output_index":7,"delta":"{\"value\":"}),
+            json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"2}"}),
+            json!({"type":"response.function_call_arguments.delta","output_index":7,"delta":"1}"}),
+        ];
+        let replay = || {
+            let mut adapter = ResponsesToChatStream::new("test-model".into());
+            let lines: Vec<_> = events
+                .iter()
+                .flat_map(|event| map_event(&mut adapter, event.clone()).unwrap())
+                .collect();
+            tool_deltas(&lines)
+        };
+        let calls = replay();
+        assert_eq!(calls, replay());
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call["index"].clone())
+                .collect::<Vec<_>>(),
+            json!([0, 1, 1, 0, 1, 0]).as_array().unwrap().clone()
+        );
+        let mut arguments = [String::new(), String::new()];
+        for call in calls {
+            let index = call["index"].as_u64().unwrap() as usize;
+            assert_eq!(call["id"], ["call_first", "call_second"][index]);
+            arguments[index].push_str(call["function"]["arguments"].as_str().unwrap());
+        }
+        assert_eq!(arguments, [r#"{"value":1}"#, r#"{"value":2}"#]);
+    }
+
+    #[test]
+    fn responses_chat_stream_maps_large_upstream_index_to_zero() {
+        let mut adapter = ResponsesToChatStream::new("test-model".into());
+        let start = map_event(&mut adapter, function_start(u64::MAX, "call_large")).unwrap();
+        let delta = map_event(
+            &mut adapter,
+            json!({"type":"response.function_call_arguments.delta","output_index":u64::MAX,"delta":"{}"}),
+        )
+        .unwrap();
+        assert_eq!(tool_deltas(&start)[0]["index"], 0);
+        assert_eq!(tool_deltas(&delta)[0]["index"], 0);
+        assert_eq!(tool_deltas(&delta)[0]["id"], "call_large");
+    }
+
+    #[test]
+    fn responses_chat_stream_reuses_identical_starts_without_consuming_indices() {
+        let mut adapter = ResponsesToChatStream::new("test-model".into());
+        let mut lines = Vec::new();
+        for event in [
+            function_start(7, "call_first"),
+            function_start(7, "call_first"),
+            function_start(2, "call_second"),
+        ] {
+            lines.extend(map_event(&mut adapter, event).unwrap());
+        }
+        assert_eq!(
+            tool_deltas(&lines)
+                .iter()
+                .map(|call| call["index"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(0), json!(0), json!(1)]
+        );
+    }
+
+    #[test]
+    fn responses_chat_stream_rejects_conflicting_start_identity() {
+        let mut adapter = ResponsesToChatStream::new("test-model".into());
+        map_event(&mut adapter, function_start(7, "call_first")).unwrap();
+        let error = map_event(&mut adapter, function_start(7, "call_other")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(adapter.tool_calls.len(), 1);
+        assert_eq!(adapter.tool_calls[&7].id, "call_first");
+    }
+
+    #[test]
+    fn responses_chat_stream_rejects_unknown_upstream_continuations() {
+        for setup in [
+            vec![],
+            vec![
+                json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}),
+            ],
+            vec![function_start(7, "call_first")],
+        ] {
+            let mut adapter = ResponsesToChatStream::new("test-model".into());
+            for event in setup {
+                map_event(&mut adapter, event).unwrap();
+            }
+            let error = map_event(
+                &mut adapter,
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"call_id":"call_first","delta":"{}"}),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn responses_chat_stream_rejects_invalid_function_indices() {
+        for event_type in [
+            "response.output_item.added",
+            "response.function_call_arguments.delta",
+        ] {
+            for index in [
+                None,
+                Some(Value::Null),
+                Some(json!(-1)),
+                Some(json!(0.5)),
+                Some(json!("0")),
+            ] {
+                let mut adapter = ResponsesToChatStream::new("test-model".into());
+                if event_type == "response.function_call_arguments.delta" {
+                    map_event(&mut adapter, function_start(0, "call_zero")).unwrap();
+                }
+                let role_emitted = adapter.role_emitted;
+                let saw_tool_call = adapter.saw_tool_call;
+                let call_count = adapter.tool_calls.len();
+                let mut event = json!({
+                    "type":event_type,
+                    "item":{"type":"function_call","call_id":"call_invalid","name":"calculate"},
+                    "delta":"{}"
+                });
+                if let Some(index) = index {
+                    event["output_index"] = index;
+                }
+                let error = map_event(&mut adapter, event.clone()).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{event}");
+                assert_eq!(adapter.role_emitted, role_emitted);
+                assert_eq!(adapter.saw_tool_call, saw_tool_call);
+                assert_eq!(adapter.tool_calls.len(), call_count);
+            }
+        }
+    }
 
     #[test]
     fn openai_chat_bridge_normalizes_multimodal_content_for_responses() {
