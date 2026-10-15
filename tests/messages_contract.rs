@@ -9,6 +9,103 @@ use tower::ServiceExt;
 use copilot_proxy_rs::http::router;
 
 #[tokio::test]
+async fn messages_resolves_opusplan_after_discovery_for_json_and_streaming() {
+    for stream in [false, true] {
+        let fixture = support::AppFixture::with_mock_copilot().await;
+        fixture
+            .mock
+            .respond_json(
+                "GET",
+                "/models",
+                200,
+                serde_json::json!({
+                    "data": [{
+                        "id": "claude-opus-5.5",
+                        "supported_endpoints": ["/v1/messages"],
+                        "capabilities": {"supports": {"reasoning_effort": ["low", "medium", "high"]}}
+                    }]
+                }),
+            )
+            .await;
+        if stream {
+            fixture
+                .mock
+                .respond_sse(
+                    "POST",
+                    "/v1/messages",
+                    200,
+                    vec![
+                        r#"event: message_stop
+data: {"type":"message_stop"}"#,
+                    ],
+                )
+                .await;
+        } else {
+            fixture
+                .mock
+                .respond_json(
+                    "POST",
+                    "/v1/messages",
+                    200,
+                    serde_json::json!({
+                        "type": "message",
+                        "model": "claude-opus-5.5",
+                        "content": [{"type": "text", "text": "hello"}]
+                    }),
+                )
+                .await;
+        }
+        let response = router(fixture.state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "opusplan",
+                            "stream": stream,
+                            "max_tokens": 4096,
+                            "thinking": {"type": "adaptive"},
+                            "output_config": {"effort": "medium"},
+                            "messages": [{"role": "user", "content": "hello"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "stream={stream}");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        if stream {
+            assert_eq!(
+                std::str::from_utf8(&body).unwrap(),
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+            );
+        } else {
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["content"][0]["text"], "hello");
+        }
+        assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+        assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 0);
+        let outbound = fixture
+            .mock
+            .last_request_body_json("POST", "/v1/messages")
+            .await
+            .unwrap();
+        assert_eq!(outbound["model"], "claude-opus-5.5");
+        assert_eq!(outbound["stream"], stream);
+        assert_eq!(
+            outbound["thinking"],
+            serde_json::json!({"type": "adaptive"})
+        );
+        assert_eq!(outbound["output_config"]["effort"], "medium");
+    }
+}
+
+#[tokio::test]
 async fn messages_refreshes_models_before_capability_routing() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture

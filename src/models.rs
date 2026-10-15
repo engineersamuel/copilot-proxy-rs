@@ -733,17 +733,15 @@ impl ModelRegistry {
         if let Some(target) = inner.copilot_overrides.get(model) {
             return target.clone();
         }
-        let ids: std::collections::BTreeSet<String> = inner
+        if inner
             .models
             .iter()
-            .filter_map(|m| {
-                m.get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect();
-        if !ids.is_empty() && ids.contains(model) {
+            .any(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model))
+        {
             return model.to_string();
+        }
+        if let Some(target) = latest_claude_model(model, &inner.models) {
+            return target.to_string();
         }
         drop(inner);
         COPILOT_MODEL_ALIASES
@@ -825,6 +823,38 @@ impl ModelRegistry {
 
 fn strip_model_prefix(model: &str) -> &str {
     model.strip_prefix("github-copilot/").unwrap_or(model)
+}
+
+fn latest_claude_model<'a>(model: &str, models: &'a [serde_json::Value]) -> Option<&'a str> {
+    let family = match model.strip_suffix("[1m]").unwrap_or(model) {
+        "opus" | "opusplan" => "opus",
+        "sonnet" => "sonnet",
+        "haiku" => "haiku",
+        _ => return None,
+    };
+    models
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id")?.as_str()?;
+            let version = id
+                .strip_prefix("claude-")?
+                .strip_prefix(family)?
+                .strip_prefix('-')?;
+            if !version
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
+            {
+                return None;
+            }
+            let version = version
+                .split('.')
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            Some((version, id))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, id)| id)
 }
 
 fn canonical_model_id(model: &str) -> &str {
