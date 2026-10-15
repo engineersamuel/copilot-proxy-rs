@@ -450,6 +450,131 @@ async fn known_models_do_not_get_static_effort_fallbacks_without_metadata() {
 }
 
 #[tokio::test]
+async fn claude_family_aliases_resolve_to_latest_live_versions() {
+    let registry = ModelRegistry::new();
+    registry
+        .set_copilot_models(
+            [
+                "claude-opus-4.8",
+                "claude-opus-5.5",
+                "claude-opus-5",
+                "claude-opus-99-preview",
+                "claude-sonnet-5.5",
+                "claude-haiku-5.5",
+            ]
+            .into_iter()
+            .map(|id| serde_json::json!({"id": id}))
+            .collect(),
+        )
+        .await;
+
+    for (alias, expected) in [
+        ("opusplan", "claude-opus-5.5"),
+        ("opusplan[1m]", "claude-opus-5.5"),
+        ("github-copilot/opusplan", "claude-opus-5.5"),
+        ("opus", "claude-opus-5.5"),
+        ("opus[1m]", "claude-opus-5.5"),
+        ("sonnet", "claude-sonnet-5.5"),
+        ("sonnet[1m]", "claude-sonnet-5.5"),
+        ("haiku", "claude-haiku-5.5"),
+    ] {
+        assert_eq!(
+            registry.get_copilot_openai_model(alias).await,
+            expected,
+            "{alias}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_family_aliases_follow_refreshes_and_compare_versions_numerically() {
+    let registry = ModelRegistry::new();
+    for (versions, expected) in [
+        (
+            vec!["claude-opus-5.5", "claude-opus-5.10", "claude-opus-5.9"],
+            "claude-opus-5.10",
+        ),
+        (vec!["claude-opus-6", "claude-opus-5.10"], "claude-opus-6"),
+        (vec!["claude-opus-5.5"], "claude-opus-5.5"),
+    ] {
+        registry
+            .set_copilot_models(
+                versions
+                    .into_iter()
+                    .map(|id| serde_json::json!({"id": id}))
+                    .collect(),
+            )
+            .await;
+        assert_eq!(
+            registry.get_copilot_openai_model("opusplan").await,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_family_aliases_do_not_guess_unavailable_models() {
+    let registry = ModelRegistry::new();
+    assert_eq!(
+        registry.get_copilot_openai_model("opusplan").await,
+        "opusplan"
+    );
+    registry
+        .set_copilot_models(vec![serde_json::json!({"id": "claude-sonnet-5.5"})])
+        .await;
+    assert_eq!(
+        registry.get_copilot_openai_model("opusplan").await,
+        "opusplan"
+    );
+    assert_eq!(
+        registry.get_copilot_openai_model("claude-opus-4.8").await,
+        "claude-opus-4.8"
+    );
+}
+
+#[tokio::test]
+async fn claude_family_aliases_preserve_overrides_and_live_exact_ids() {
+    let registry = ModelRegistry::with_copilot_overrides(BTreeMap::from([(
+        "opusplan".to_string(),
+        "claude-opus-5".to_string(),
+    )]));
+    registry
+        .set_copilot_models(vec![
+            serde_json::json!({"id": "opus"}),
+            serde_json::json!({"id": "claude-opus-5.5"}),
+        ])
+        .await;
+    assert_eq!(
+        registry.get_copilot_openai_model("opusplan").await,
+        "claude-opus-5"
+    );
+    assert_eq!(registry.get_copilot_openai_model("opus").await, "opus");
+}
+
+#[tokio::test]
+async fn claude_family_aliases_do_not_replace_configured_local_targets() {
+    let local_config = LocalModelConfig {
+        base_url: "http://127.0.0.1:9000/v1".to_string(),
+        upstream_model: "local-opus".to_string(),
+    };
+    let registry = ModelRegistry::with_models(
+        BTreeMap::new(),
+        BTreeMap::from([("opusplan".to_string(), local_config)]),
+    );
+    registry
+        .set_copilot_models(vec![serde_json::json!({"id": "claude-opus-5.5"})])
+        .await;
+
+    for alias in ["opusplan", "github-copilot/opusplan"] {
+        assert!(matches!(
+            registry.resolve_target(alias).await,
+            ModelTarget::Local(target)
+                if target.public_id == "opusplan" && target.upstream_model == "local-opus"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn gpt56_aliases_resolve_to_canonical_models() {
     let registry = ModelRegistry::new();
 

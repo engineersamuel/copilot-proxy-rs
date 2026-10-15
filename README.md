@@ -230,6 +230,26 @@ reasoning efforts; live Copilot metadata overrides them when available.
 Context-window fields are reported only when Copilot advertises them; otherwise
 they are `null` and `context_window_modes` is empty.
 
+Claude family aliases `opus`, `sonnet`, and `haiku` resolve to the highest
+numeric version in the cached live Copilot model list. For example, `opus`
+resolves to `claude-opus-5.5` when that is the newest listed Opus model. The
+selection updates after a successful metadata refresh; no version is pinned in
+the proxy. Explicit model IDs and configured overrides keep their existing
+priority. If no matching family is cached, the proxy forwards the original ID
+and lets Copilot return an error rather than guessing a model.
+
+The proxy also accepts `opusplan` as an alias for the newest listed Opus.
+Claude Code normally handles `opusplan` itself: Opus in plan mode and Sonnet in
+execution mode. If a client sends the literal `opusplan` ID, the proxy cannot
+detect that mode and uses Opus for every such request. To preserve the hybrid
+behavior, configure Claude Code's `ANTHROPIC_DEFAULT_OPUS_MODEL=opus` and
+`ANTHROPIC_DEFAULT_SONNET_MODEL=sonnet`, then select `opusplan` in the client.
+See [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+These aliases also accept the `[1m]` suffix, such as `opusplan[1m]`. The proxy
+uses the selected model's native context limit; this suffix does not add
+context capacity or bypass upstream limits.
+
 Configured local models are declared in `config.json`, for example:
 
 ```json
