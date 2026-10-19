@@ -7,6 +7,58 @@ use tokio::sync::RwLock;
 use crate::config::LocalModelConfig;
 use crate::state::BackendSnapshot;
 
+/// Ids hidden from `/v1/models` listings, embedded from `config/model-excludes.txt`.
+const BUILTIN_MODEL_EXCLUDES: &str = include_str!("../config/model-excludes.txt");
+
+/// Parse one id per line; `#` starts a comment; blanks and whitespace ignored.
+pub fn parse_model_excludes(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Exclude matcher: exact ids, plus `prefix*` patterns (trailing `*` only).
+#[derive(Debug, Default, Clone)]
+pub struct ModelExcludes {
+    exact: std::collections::BTreeSet<String>,
+    prefixes: Vec<String>,
+}
+
+impl ModelExcludes {
+    pub fn contains(&self, id: &str) -> bool {
+        self.exact.contains(id) || self.prefixes.iter().any(|p| id.starts_with(p.as_str()))
+    }
+}
+
+/// Entries that would match everything (`*`, empty prefix); they are ignored.
+pub fn invalid_model_excludes(extra: &[String]) -> Vec<String> {
+    extra
+        .iter()
+        .filter(|e| e.strip_suffix('*').is_some_and(str::is_empty))
+        .cloned()
+        .collect()
+}
+
+/// Built-in excludes plus runtime additions (listing only).
+pub fn model_exclude_set(extra: &[String]) -> ModelExcludes {
+    let mut out = ModelExcludes::default();
+    for entry in parse_model_excludes(BUILTIN_MODEL_EXCLUDES)
+        .into_iter()
+        .chain(extra.iter().cloned())
+    {
+        match entry.strip_suffix('*') {
+            Some(prefix) if !prefix.is_empty() => out.prefixes.push(prefix.to_string()),
+            Some(_) => {}
+            None => {
+                out.exact.insert(entry);
+            }
+        }
+    }
+    out
+}
+
 pub const COPILOT_MODEL_ALIASES: &[(&str, &str)] = &[
     ("gpt-5-6-sol", "gpt-5.6-sol"),
     ("gpt-5-6-luna", "gpt-5.6-luna"),
@@ -722,6 +774,14 @@ impl ModelRegistry {
             data: data.into_values().collect(),
             models: models.into_values().collect(),
         }
+    }
+
+    /// True when `model` is rerouted to a different Copilot model by config.
+    pub async fn has_copilot_override(&self, model: &str) -> bool {
+        let inner = self.inner.read().await;
+        inner
+            .copilot_overrides
+            .contains_key(strip_model_prefix(model))
     }
 
     pub async fn get_copilot_openai_model(&self, model: &str) -> String {

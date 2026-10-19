@@ -1,0 +1,164 @@
+{
+ "tier": "free",
+ "pagination": {
+  "page": 1,
+  "has_more": false
+ },
+ "data": [
+  {
+   "name": "Claude Sonnet 5.5 (Medium, Default Fallback)",
+   "slug": "claude-sonnet-5-5-medium",
+   "release_date": "2026-09-28",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 40.8,
+    "artificial_analysis_coding_index": null,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 41.4,
+    "artificial_analysis_strategy_and_ops_index": 45.2,
+    "artificial_analysis_legal_index": 43.7,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": 42.4,
+    "artificial_analysis_economics_index": 47.2
+   },
+   "pricing": {
+    "price_1m_input_tokens": 2,
+    "price_1m_output_tokens": 10,
+    "price_1m_cache_hit_tokens": 0.1,
+    "price_1m_cache_write_tokens": 2.5
+   },
+   "performance": {
+    "median_output_tokens_per_second": 107.18,
+    "median_time_to_first_token_seconds": 1.11,
+    "median_time_to_first_answer_token_seconds": 1.11,
+    "median_end_to_end_response_time_seconds": 5.78
+   }
+  },
+  {
+   "name": "GPT-6.1 Sol (Xhigh)",
+   "slug": "gpt-6-1-sol-xhigh",
+   "release_date": "2026-09-29",
+   "model_creator": {
+    "name": "OpenAI"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 51,
+    "artificial_analysis_coding_index": null,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 53.2,
+    "artificial_analysis_strategy_and_ops_index": 56,
+    "artificial_analysis_legal_index": 56.8,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": 53.2,
+    "artificial_analysis_economics_index": 58.3
+   },
+   "pricing": {
+    "price_1m_input_tokens": 2,
+    "price_1m_output_tokens": 10,
+    "price_1m_cache_hit_tokens": 0.1,
+    "price_1m_cache_write_tokens": 2.5
+   },
+   "performance": {
+    "median_output_tokens_per_second": 54.16,
+    "median_time_to_first_token_seconds": 147.47,
+    "median_time_to_first_answer_token_seconds": 147.47,
+    "median_end_to_end_response_time_seconds": 156.7
+   }
+  },
+  {
+   "name": "Claude Sonnet 5.5 (High, Default Fallback)",
+   "slug": "claude-sonnet-5-5-high",
+   "release_date": "2026-09-28",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 46.8,
+    "artificial_analysis_coding_index": null,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 47.1,
+    "artificial_analysis_strategy_and_ops_index": 51.6,
+    "artificial_analysis_legal_index": 48.7,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": 48.3,
+    "artificial_analysis_economics_index": 51.8
+   },
+   "pricing": {
+    "price_1m_input_tokens": 2,
+    "price_1m_output_tokens": 10,
+    "price_1m_cache_hit_tokens": 0.1,
+    "price_1m_cache_write_tokens": 2.5
+   },
+   "performance": {
+    "median_output_tokens_per_second": 107.68,
+    "median_time_to_first_token_seconds": 10.68,
+    "median_time_to_first_answer_token_seconds": 10.68,
+    "median_end_to_end_response_time_seconds": 15.33
+   }
+  },
+  {
+   "name": "Claude Opus 5.5 (Max, Default Fallback)",
+   "slug": "claude-opus-5-5",
+   "release_date": "2026-09-22",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 57.6,
+    "artificial_analysis_coding_index": null,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 60.7,
+    "artificial_analysis_strategy_and_ops_index": 63.7,
+    "artificial_analysis_legal_index": 63.3,
+    "artificial_analysis_healthcare_and_medical_index": 60.5,
+    "artificial_analysis_engineering_index": 60.4,
+    "artificial_analysis_economics_index": 65.6
+   },
+   "pricing": {
+    "price_1m_input_tokens": 4,
+    "price_1m_output_tokens": 20,
+    "price_1m_cache_hit_tokens": 0.2,
+    "price_1m_cache_write_tokens": 5
+   },
+   "performance": {
+    "median_output_tokens_per_second": 94.66,
+    "median_time_to_first_token_seconds": 614.99,
+    "median_time_to_first_answer_token_seconds": 614.99,
+    "median_end_to_end_response_time_seconds": 620.27
+   }
+  },
+  {
+   "name": "Claude Haiku 5.5 (Low)",
+   "slug": "claude-haiku-5-5-low",
+   "release_date": "2026-10-07",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 29.5,
+    "artificial_analysis_coding_index": null,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 28.8,
+    "artificial_analysis_strategy_and_ops_index": 28,
+    "artificial_analysis_legal_index": 30.6,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": 31.2,
+    "artificial_analysis_economics_index": 37.5
+   },
+   "pricing": {
+    "price_1m_input_tokens": 0.1,
+    "price_1m_output_tokens": 0.5,
+    "price_1m_cache_hit_tokens": 0.01,
+    "price_1m_cache_write_tokens": 0.125
+   },
+   "performance": {
+    "median_output_tokens_per_second": 162.51,
+    "median_time_to_first_token_seconds": 8.22,
+    "median_time_to_first_answer_token_seconds": 8.22,
+    "median_end_to_end_response_time_seconds": 11.29
+   }
+  }
+ ]
+}

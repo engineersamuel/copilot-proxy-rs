@@ -283,6 +283,83 @@ You can define local request aliases in `config.json` with
 }
 ```
 
+### Model stats (optional)
+
+Set `AA_API_KEY` (environment, or `~/.config/copilot-proxy-rs/.env.local`) to add [Artificial Analysis](https://artificialanalysis.ai)
+stats to `/v1/models` `data` entries: `stats` (intelligence, coding, agentic
+indexes, prices per 1M tokens, median output tokens/sec, creator, release date),
+`description`, `excels_at`, and `curated` (true when text is hand-written; see
+`docs/model-stats.md`). Fields are omitted when a model is unmatched, and `null`
+measurements are omitted rather than shown as zero. The catalog refreshes in the
+background only when a listed model has no cached stats. An id AA does not know is
+recorded as resolved and is not retried until the model id set changes. On errors or 429
+the last good copy is served.
+`/v1/models` never fails because of Artificial Analysis. Responses with stats
+include `stats_attribution`.
+
+### Model router
+
+`POST /v1/models` takes a task description and recommends the best listed model.
+The candidates are the models `GET /v1/models` returns right now (with stats,
+descriptions and exclusions applied). The [TypeSafe JEV API](https://docs.typesafe.ai/api)
+picks the best fit.
+
+**Setup.** Set `TYPESAFE_API_KEY` in the environment, or put the line
+`TYPESAFE_API_KEY=...` in `~/.config/copilot-proxy-rs/.env.local`. Without a key
+the endpoint returns 503.
+
+**Call it.** Post JSON with an `input` field (1 byte to 16 KiB of text):
+
+```sh
+curl -fsS http://127.0.0.1:8080/v1/models \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Refactor a large Rust codebase and fix the failing tests"}'
+```
+
+`curl -d` sends a POST by default. Add the same auth header you use for
+`GET /v1/models` if inbound auth is on. To build the body from a shell variable
+safely, let `jq` do the quoting:
+
+```sh
+jq -nc --arg i "$TASK" '{input:$i}' |
+  curl -fsS http://127.0.0.1:8080/v1/models -H 'Content-Type: application/json' -d @-
+```
+
+**Reply.**
+
+```json
+{
+  "recommended": {"id": "claude-opus-5.5", "description": "...", "excels_at": ["..."]},
+  "confidence": 0.99,
+  "ranking": [{"id": "claude-opus-5.5", "probability": 0.99}],
+  "jev_model": "jev-preview",
+  "routed_by": "ui-rule"
+}
+```
+
+- `recommended` is always an id from the current `GET /v1/models` list.
+- `confidence` is the probability of the recommended model (0 to 1).
+- `ranking` lists the top 5 models.
+- `routed_by` is `ui-rule` when the UI rule chose the model, otherwise `jev`.
+- UI, frontend, CSS, layout, design and visual tasks always go to the latest
+  listed Opus model. Pick just the id with `jq -r .recommended.id`.
+
+**Errors.** 400 for empty, oversize or invalid input. 503 for a missing key. 502
+for any upstream failure, timeout (20 s) or an unlisted choice. Inputs, keys and
+upstream bodies are never logged.
+
+**Settings.** `COPILOT_PROXY_RS_JEV_MODEL` (default `jev-preview`) and
+`COPILOT_PROXY_RS_JEV_URL` (default `https://api.typesafe.ai`). See
+`docs/model-router.md`. To check how stable the picks are, run
+`scripts/router-repeat.sh BASE_URL tests/fixtures/router-prompts.txt 5`.
+
+### Hiding models from `/v1/models`
+
+List ids to hide in `config/model-excludes.txt` (one per line, `#` comments),
+then rebuild; or set `COPILOT_PROXY_RS_MODEL_EXCLUDES=id1,id2` to add more at
+runtime. A trailing `*` is a prefix pattern (`gpt-4*`); other entries are
+exact. This only affects listings; requests to hidden ids still route.
+
 ## Safety model
 
 All Copilot-backed routes use the server operator's Copilot credentials. Do not

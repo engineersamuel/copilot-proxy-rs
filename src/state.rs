@@ -6,6 +6,7 @@ use crate::auth::CopilotAuth;
 use crate::config::AppConfig;
 use crate::copilot::client::CopilotBackend;
 use crate::local::LocalBackend;
+use crate::model_stats::ModelStatsStore;
 use crate::models::ModelRegistry;
 use crate::responses::state::ResponsesStateStore;
 
@@ -14,6 +15,7 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     pub backend: Arc<BackendState>,
     pub models: Arc<ModelRegistry>,
+    pub model_stats: Arc<ModelStatsStore>,
     pub copilot: Arc<CopilotBackend>,
     pub local: Arc<LocalBackend>,
     pub responses: Arc<ResponsesStateStore>,
@@ -36,16 +38,28 @@ impl AppState {
                 "unrecognized fallback_backend; ignoring"
             );
         }
+        if !crate::models::invalid_model_excludes(&config.model_excludes).is_empty() {
+            tracing::warn!(
+                "ignoring COPILOT_PROXY_RS_MODEL_EXCLUDES entry \"*\": it would hide every model"
+            );
+        }
         let models = Arc::new(ModelRegistry::with_models(
             config.model_overrides.copilot.clone(),
             config.local_models.clone(),
         ));
+        let model_stats = Arc::new(
+            ModelStatsStore::new(config.aa_api_key.0.clone()).with_cache_path(
+                crate::config::config_dir(&crate::config::EnvSource::current())
+                    .join("model-stats-cache.json"),
+            ),
+        );
         let auth = Arc::new(CopilotAuth::new(config.clone()));
         let copilot = Arc::new(CopilotBackend::new(config.clone(), auth, models.clone()));
         Self {
             backend: Arc::new(BackendState::new(BackendKind::Copilot, None)),
             config,
             models,
+            model_stats,
             copilot,
             local: Arc::new(LocalBackend::new()),
             responses: Arc::new(ResponsesStateStore::default()),
@@ -57,10 +71,12 @@ impl AppState {
         models: Arc<ModelRegistry>,
         copilot: Arc<CopilotBackend>,
     ) -> Self {
+        let model_stats = Arc::new(ModelStatsStore::new(config.aa_api_key.0.clone()));
         Self {
             backend: Arc::new(BackendState::new(BackendKind::Copilot, None)),
             config,
             models,
+            model_stats,
             copilot,
             local: Arc::new(LocalBackend::new()),
             responses: Arc::new(ResponsesStateStore::default()),

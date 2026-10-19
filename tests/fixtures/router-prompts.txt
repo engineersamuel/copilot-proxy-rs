@@ -1,0 +1,12 @@
+Build a responsive pricing page with a sticky header and polished CSS
+Redesign this dashboard layout so the visual hierarchy is clearer
+Fix the flexbox alignment bug in our React navbar component
+Turn this screenshot of a mobile mockup into pixel-accurate HTML and CSS
+Rename a variable in one function
+What does the git status command do?
+Convert this date string to ISO format in Python
+Prove that the sum of two even integers is even and explain each step
+Find the subtle race condition in this lock-free queue implementation
+Analyze the tradeoffs of eventual versus strong consistency for a payments ledger
+Autonomously migrate a large monorepo from Jest to Vitest and fix all failing tests
+Investigate a flaky CI pipeline across many services, find the root cause, and open a fix

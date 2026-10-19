@@ -4,6 +4,7 @@ pub mod copilot;
 pub mod errors;
 pub mod http;
 pub mod local;
+pub mod model_stats;
 pub mod models;
 pub mod request_body;
 pub mod responses;

@@ -31,6 +31,7 @@ async fn start_proxy_with_config(config: AppConfig) -> SocketAddr {
         config: Arc::new(config),
         backend: fixture.state.backend,
         models: fixture.state.models,
+        model_stats: fixture.state.model_stats,
         copilot: fixture.state.copilot,
         local: Arc::new(LocalBackend::new()),
         responses: fixture.state.responses,
