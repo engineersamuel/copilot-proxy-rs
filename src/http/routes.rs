@@ -1,5 +1,6 @@
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::handler::Handler as _;
 use axum::middleware;
 use axum::routing::{get, post};
 
@@ -18,7 +19,12 @@ pub fn router(state: AppState) -> Router {
     // Keep the Copilot-backed routes behind inbound auth middleware.
     let protected_routes = Router::new()
         .route("/debug/copilot/models", get(debug_copilot_models))
-        .route("/v1/models", get(list_models))
+        .route(
+            "/v1/models",
+            get(list_models).post(crate::http::model_router::route_model.layer(
+                DefaultBodyLimit::max(crate::http::model_router::MAX_BODY_BYTES),
+            )),
+        )
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", post(messages))
         .route("/v1/chat/completions", post(chat_completions))

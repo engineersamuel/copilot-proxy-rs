@@ -1,0 +1,32 @@
+# Model ids hidden from /v1/models listings (requests to them still work).
+# One entry per line; "#" starts a comment; blank lines are ignored.
+# A trailing "*" is a prefix match; anything else is an exact id.
+
+# Anthropic
+claude-haiku-4.5
+claude-sonnet-5
+
+# Google
+gemini-3.7-flash
+
+# OpenAI (legacy families)
+gpt-3*
+gpt-4*
+
+# OpenAI (current generation, exact: kept ids share these prefixes)
+gpt-5-mini
+gpt-5.3-codex
+gpt-5.4*
+gpt-5.5
+gpt-5.6-luna
+gpt-5.6-sol
+gpt-5.6-terra
+gpt-6-sol
+
+# xAI
+grok-4.5
+grok-4.6
+
+# Non-chat
+text-embedding-*
+trajectory-compaction

@@ -9,7 +9,7 @@ use crate::errors::{AnthropicErrorResponse, anthropic_error};
 use crate::http::errors::{
     anthropic_request_body_error_type, request_body_error_details, request_body_rejection_details,
 };
-use crate::models::{CopilotModelsDebugSnapshot, ModelsListResponse};
+use crate::models::CopilotModelsDebugSnapshot;
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 
@@ -66,12 +66,157 @@ pub(crate) async fn version() -> Json<VersionResponse> {
     })
 }
 
-pub(crate) async fn list_models(State(state): State<AppState>) -> Json<ModelsListResponse> {
+pub(crate) async fn list_models(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(build_models_value(&state).await)
+}
+
+/// The enriched, exclusion-filtered model list shared by `GET` and `POST /v1/models`.
+pub(crate) async fn build_models_value(state: &AppState) -> serde_json::Value {
     let snapshot = state.backend.snapshot().await;
     if snapshot.primary == crate::state::BackendKind::Copilot {
         state.copilot.refresh_models_if_stale().await;
     }
-    Json(state.models.list_for_snapshot(snapshot).await)
+    let list = state.models.list_for_snapshot(snapshot).await;
+    let mut value = serde_json::to_value(&list).unwrap_or_default();
+    exclude_models(
+        &mut value,
+        &crate::models::model_exclude_set(&state.config.model_excludes),
+    );
+    if merge_model_insights(&mut value, &state.model_stats, &state.models).await {
+        value["stats_attribution"] = crate::model_stats::attribution();
+    }
+    mark_latest_opus_for_ui(&mut value);
+    value
+}
+
+/// Numeric version segments and `-fast` flag from `claude-opus-5.5[-fast]`.
+fn opus_version(id: &str) -> Option<(Vec<u32>, bool)> {
+    let rest = id.strip_prefix("claude-opus-")?;
+    let (rest, fast) = match rest.strip_suffix("-fast") {
+        Some(r) => (r, true),
+        None => (rest, false),
+    };
+    let version = rest
+        .split(['.', '-'])
+        .map(|p| p.parse::<u32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some((version, fast))
+}
+
+/// Id of the latest listed Opus: highest numeric version, non-fast on ties.
+pub(crate) fn latest_opus_id<'a>(ids: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    ids.filter_map(|id| {
+        let (v, fast) = opus_version(id)?;
+        Some(((v, !fast), id))
+    })
+    .max_by(|a, b| a.0.cmp(&b.0))
+    .map(|(_, id)| id)
+}
+
+/// User-specified preference: the latest listed Opus is the UI/visual model.
+fn mark_latest_opus_for_ui(value: &mut serde_json::Value) {
+    let Some(entries) = value.get_mut("data").and_then(|d| d.as_array_mut()) else {
+        return;
+    };
+    let latest = latest_opus_id(
+        entries
+            .iter()
+            .filter(|e| e.get("ui_eligible").is_some())
+            .filter_map(|e| e.get("id")?.as_str()),
+    )
+    .map(str::to_string);
+    for entry in entries.iter_mut() {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("ui_eligible");
+        }
+    }
+    let Some(latest) = latest else { return };
+    let Some(entry) = entries
+        .iter_mut()
+        .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(latest.as_str()))
+        .and_then(|e| e.as_object_mut())
+    else {
+        return;
+    };
+    let description = entry
+        .get("description")
+        .and_then(|d| d.as_str())
+        .map(|d| format!("{} Preferred for UI and visual work.", d.trim_end()))
+        .unwrap_or_else(|| "Preferred for UI and visual work.".to_string());
+    entry.insert("description".into(), description.into());
+    let tags = entry
+        .entry("excels_at")
+        .or_insert_with(|| serde_json::json!([]));
+    if let Some(tags) = tags.as_array_mut() {
+        for tag in ["ui-design", "visual-work"] {
+            if !tags.iter().any(|t| t == tag) {
+                tags.push(tag.into());
+            }
+        }
+    }
+}
+
+/// Drop excluded ids from both listings. Listing only; routing is unchanged.
+fn exclude_models(value: &mut serde_json::Value, excluded: &crate::models::ModelExcludes) {
+    for (list, key) in [("data", "id"), ("models", "slug")] {
+        if let Some(items) = value.get_mut(list).and_then(|v| v.as_array_mut()) {
+            items.retain(|item| {
+                !item
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| excluded.contains(id))
+            });
+        }
+    }
+}
+
+/// Add optional stats fields to each Copilot-routed `data` entry. Returns true
+/// when any entry carries Artificial Analysis stats.
+async fn merge_model_insights(
+    value: &mut serde_json::Value,
+    store: &std::sync::Arc<crate::model_stats::ModelStatsStore>,
+    registry: &crate::models::ModelRegistry,
+) -> bool {
+    let Some(entries) = value.get_mut("data").and_then(|d| d.as_array_mut()) else {
+        return false;
+    };
+    let mut eligible = Vec::new();
+    for entry in entries.iter() {
+        let Some(id) = entry.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        if registry.configured_local_target(id).is_some() || registry.has_copilot_override(id).await
+        {
+            continue;
+        }
+        eligible.push(id.to_string());
+    }
+    store.sync_models(&eligible);
+    store.spawn_refresh_if_stale(&eligible);
+    let mut any_stats = false;
+    for entry in entries {
+        let Some(id) = entry.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        if !eligible.iter().any(|e| e == id) {
+            continue;
+        }
+        let Some(insights) = store.insights_for(id) else {
+            continue;
+        };
+        any_stats |= insights.stats.is_some();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("ui_eligible".into(), true.into());
+        }
+        if let (Some(target), Ok(serde_json::Value::Object(extra))) =
+            (entry.as_object_mut(), serde_json::to_value(&insights))
+        {
+            for (key, field) in extra {
+                target.entry(key).or_insert(field);
+            }
+        }
+    }
+    any_stats
 }
 
 pub(crate) async fn debug_copilot_models(
@@ -134,5 +279,34 @@ pub(crate) fn runtime_info() -> RuntimeInfo {
     RuntimeInfo {
         implementation: "rust",
         pid: std::process::id(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::latest_opus_id;
+
+    #[test]
+    fn latest_opus_numeric_and_variants() {
+        fn pick<'a>(ids: &[&'a str]) -> Option<&'a str> {
+            latest_opus_id(ids.iter().copied())
+        }
+        assert_eq!(
+            pick(&["claude-opus-5.9", "claude-opus-5.10"]),
+            Some("claude-opus-5.10")
+        );
+        assert_eq!(
+            pick(&["claude-opus-5.5-fast", "claude-opus-5.5"]),
+            Some("claude-opus-5.5")
+        );
+        assert_eq!(
+            pick(&["claude-opus-4.8", "claude-opus-5.5-fast"]),
+            Some("claude-opus-5.5-fast")
+        );
+        assert_eq!(
+            pick(&["claude-opus-4.8-fast"]),
+            Some("claude-opus-4.8-fast")
+        );
+        assert_eq!(pick(&["claude-sonnet-5.5"]), None);
     }
 }

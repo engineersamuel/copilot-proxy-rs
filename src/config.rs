@@ -54,6 +54,22 @@ fn is_loopback_bind_host(host: &str) -> bool {
         .is_ok_and(|addr| addr.is_loopback())
 }
 
+/// String whose `Debug` output never shows the value.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl PartialEq<&str> for Secret {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -99,6 +115,21 @@ pub struct AppConfig {
     pub container_loopback_only: bool,
     #[serde(deserialize_with = "deserialize_string")]
     pub api_key: String,
+    /// Artificial Analysis API key for optional `/models` stats (env only).
+    #[serde(skip)]
+    pub aa_api_key: Secret,
+    /// TypeSafe JEV key for `POST /v1/models` (env or `.env.local` only).
+    #[serde(skip)]
+    pub typesafe_api_key: Secret,
+    /// JEV model string (env `COPILOT_PROXY_RS_JEV_MODEL`).
+    #[serde(skip)]
+    pub jev_model: String,
+    /// JEV base URL (env `COPILOT_PROXY_RS_JEV_URL`; for tests/self-hosting).
+    #[serde(skip)]
+    pub jev_base_url: String,
+    /// Extra ids hidden from `/v1/models` (env `COPILOT_PROXY_RS_MODEL_EXCLUDES`).
+    #[serde(skip)]
+    pub model_excludes: Vec<String>,
     #[serde(deserialize_with = "deserialize_string_vec")]
     pub allowed_origins: Vec<String>,
     #[serde(deserialize_with = "deserialize_u64")]
@@ -176,6 +207,11 @@ impl Default for AppConfig {
             allow_non_loopback_bind: false,
             container_loopback_only: false,
             api_key: String::new(),
+            aa_api_key: Secret::default(),
+            typesafe_api_key: Secret::default(),
+            jev_model: "jev-preview".to_string(),
+            jev_base_url: "https://api.typesafe.ai".to_string(),
+            model_excludes: Vec::new(),
             allowed_origins: Vec::new(),
             max_decoded_body_bytes: 16 * 1024 * 1024,
             log_failed_request_bodies: true,
@@ -499,6 +535,53 @@ impl AppConfig {
     }
 }
 
+pub fn config_dir(env: &EnvSource) -> PathBuf {
+    config_path(env)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// Environment value first, else `<name>=` from `.env.local`; empty if neither.
+fn secret_from_env_or_file(env: &EnvSource, name: &str) -> Secret {
+    Secret(
+        env.get(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| read_env_local_key(env, name))
+            .unwrap_or_default(),
+    )
+}
+
+/// Read only `<name>=VALUE` from `<config dir>/.env.local`. Nothing else
+/// in that file is parsed, kept, or logged.
+fn read_env_local_key(env: &EnvSource, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    let raw = fs::read_to_string(config_dir(env).join(".env.local")).ok()?;
+    raw.lines().find_map(|line| {
+        let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+        let value = line.strip_prefix(prefix.as_str())?.trim();
+        let value = match value.chars().next() {
+            Some(q @ ('"' | '\'')) => value[1..].split(q).next().unwrap_or(""),
+            Some('#') => "",
+            _ => strip_inline_comment(value),
+        };
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// Cut at the first `#` that follows whitespace (space or tab).
+fn strip_inline_comment(value: &str) -> &str {
+    let mut prev_ws = false;
+    for (i, c) in value.char_indices() {
+        if c == '#' && prev_ws {
+            return value[..i].trim();
+        }
+        prev_ws = c.is_whitespace();
+    }
+    value.trim()
+}
+
 fn config_path(env: &EnvSource) -> PathBuf {
     if let Some(dir) = env.get("COPILOT_PROXY_RS_CONFIG_DIR") {
         return PathBuf::from(dir).join("config.json");
@@ -582,6 +665,18 @@ fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
         &mut config.container_loopback_only,
     );
     apply_string(env, "COPILOT_PROXY_RS_API_KEY", &mut config.api_key);
+    if let Some(value) = env.get("COPILOT_PROXY_RS_MODEL_EXCLUDES") {
+        config.model_excludes = value
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    config.aa_api_key = secret_from_env_or_file(env, "AA_API_KEY");
+    config.typesafe_api_key = secret_from_env_or_file(env, "TYPESAFE_API_KEY");
+    apply_string(env, "COPILOT_PROXY_RS_JEV_MODEL", &mut config.jev_model);
+    apply_string(env, "COPILOT_PROXY_RS_JEV_URL", &mut config.jev_base_url);
     if let Some(value) = env.get("COPILOT_PROXY_RS_ALLOWED_ORIGINS") {
         config.allowed_origins = value
             .split(',')
