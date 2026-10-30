@@ -1287,14 +1287,32 @@ async fn models_return_promptly_with_cold_cache_and_slow_aa() {
 
 #[tokio::test]
 async fn excluded_ids_are_unlisted_but_others_stay() {
+    let excluded_ids = [
+        "claude-sonnet-5",
+        "claude-haiku-4.5",
+        "gpt-3.5-turbo",
+        "gpt-3.5-turbo-0613",
+        "gpt-4",
+        "gpt-4-0125-preview",
+        "gpt-4-0613",
+        "gpt-4-o-preview",
+        "gpt-4.1",
+        "gpt-4.1-2025-04-14",
+        "text-embedding-3-small",
+        "text-embedding-3-small-inference",
+        "text-embedding-ada-002",
+    ];
     let state = state_with_no_token().await;
     state
         .models
-        .set_copilot_models(vec![
-            copilot_model("gpt-4-0613"),
-            copilot_model("claude-haiku-4.5"),
-            copilot_model("claude-opus-5.5"),
-        ])
+        .set_copilot_models(
+            excluded_ids
+                .iter()
+                .copied()
+                .chain(["claude-opus-5.5"])
+                .map(copilot_model)
+                .collect(),
+        )
         .await;
     let body = models_json(state).await;
     let ids = |list: &str, key: &str| -> Vec<String> {
@@ -1307,8 +1325,9 @@ async fn excluded_ids_are_unlisted_but_others_stay() {
     };
     for (list, key) in [("data", "id"), ("models", "slug")] {
         let got = ids(list, key);
-        assert!(!got.contains(&"gpt-4-0613".to_string()), "{list}");
-        assert!(!got.contains(&"claude-haiku-4.5".to_string()), "{list}");
+        for id in excluded_ids {
+            assert!(!got.iter().any(|listed| listed == id), "{list}: {id}");
+        }
         assert!(got.contains(&"claude-opus-5.5".to_string()), "{list}");
     }
 }
