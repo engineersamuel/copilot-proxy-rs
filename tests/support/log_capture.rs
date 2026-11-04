@@ -18,6 +18,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 pub struct CapturedEvent {
     pub message: String,
     pub fields: Vec<(String, String)>,
+    pub level: Option<tracing::Level>,
 }
 
 // Global layer with no per-instance state; events are routed to a thread-local buffer.
@@ -97,6 +98,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventCaptureLayer 
             if let Some(events) = te.borrow().as_ref() {
                 let mut visitor = EventVisitor::default();
                 event.record(&mut visitor);
+                visitor.event.level = Some(*event.metadata().level());
                 events.lock().unwrap().push(visitor.event);
             }
         });

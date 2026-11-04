@@ -1,7 +1,8 @@
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
 use axum::handler::Handler as _;
 use axum::middleware;
+use axum::response::Response;
 use axum::routing::{get, post};
 
 use crate::http::chat::chat_completions;
@@ -42,5 +43,23 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/version", get(version))
         .merge(protected_routes)
+        .layer(middleware::from_fn(log_failed_request))
         .with_state(state)
+}
+
+async fn log_failed_request(request: Request, next: middleware::Next) -> Response {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".to_string());
+    let response = next.run(request).await;
+    if response.status().is_client_error() || response.status().is_server_error() {
+        tracing::info!(
+            http.route = route,
+            http.status_code = response.status().as_u16(),
+            "http request failed"
+        );
+    }
+    response
 }

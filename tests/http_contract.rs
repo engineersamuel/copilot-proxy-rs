@@ -910,6 +910,107 @@ async fn response_json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
+async fn http_errors_are_logged_at_info_without_private_request_data() {
+    use support::log_capture::with_event_capture;
+
+    let mut fixture = support::AppFixture::with_mock_local().await;
+    Arc::make_mut(&mut fixture.state.config).api_key = "private-client-token".to_string();
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/chat/completions",
+            500,
+            serde_json::json!({"error": {"message": "private-upstream-diagnostic"}}),
+        )
+        .await;
+    let app = router(fixture.state.clone());
+    for (method, uri, body, authenticated, status, route) in [
+        ("POST", "/v1/messages", "{}", true, 400, "/v1/messages"),
+        (
+            "POST",
+            "/v1/chat/completions",
+            "{}",
+            true,
+            400,
+            "/v1/chat/completions",
+        ),
+        ("POST", "/v1/responses", "[", true, 400, "/v1/responses"),
+        (
+            "POST",
+            "/v1/chat/completions",
+            "{}",
+            false,
+            401,
+            "/v1/chat/completions",
+        ),
+        (
+            "GET",
+            "/private-uri-marker?query=private-query-marker",
+            "",
+            true,
+            404,
+            "unmatched",
+        ),
+        (
+            "GET",
+            "/v1/chat/completions",
+            "",
+            true,
+            405,
+            "/v1/chat/completions",
+        ),
+        (
+            "POST",
+            "/v1/chat/completions",
+            r#"{"model":"qwen3-coder-30b-local","messages":[{"role":"user","content":"private-user-prompt"}]}"#,
+            true,
+            500,
+            "/v1/chat/completions",
+        ),
+        ("GET", "/health", "", true, 200, "/health"),
+    ] {
+        let events = with_event_capture(|| async {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if authenticated {
+                request = request.header("authorization", "Bearer private-client-token");
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status, "{method} {uri}");
+        })
+        .await;
+        let failures: Vec<_> = events
+            .iter()
+            .filter(|event| event.message == "http request failed")
+            .collect();
+        if status == 200 {
+            assert!(failures.is_empty());
+        } else {
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].level, Some(tracing::Level::INFO));
+            assert!(
+                failures[0]
+                    .fields
+                    .contains(&("http.status_code".to_string(), status.to_string()))
+            );
+            assert!(
+                failures[0]
+                    .fields
+                    .contains(&("http.route".to_string(), route.to_string()))
+            );
+        }
+        assert!(!format!("{events:?}").contains("private-"));
+    }
+}
+
+#[tokio::test]
 async fn health_does_not_require_inbound_auth() {
     let app = router(AppState::new(AppConfig {
         api_key: "local-secret".to_string(),
