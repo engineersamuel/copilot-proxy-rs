@@ -76,20 +76,7 @@ async fn messages_inner(
         return handle_local_messages(state, body, local_target, stream).await;
     }
     state.copilot.refresh_models_if_stale().await;
-    let metadata = {
-        let mut meta = CopilotRequestMetadata::default();
-        if let Some(beta_value) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
-            if let Some(filtered) = filter_anthropic_beta_header(beta_value) {
-                meta.extra_headers
-                    .insert("anthropic-beta".to_string(), filtered);
-            }
-        }
-        if meta.extra_headers.is_empty() {
-            None
-        } else {
-            Some(meta)
-        }
-    };
+    let metadata = messages_copilot_metadata(&headers);
     let copilot_model = state
         .models
         .get_copilot_openai_model(&requested_model)
@@ -251,6 +238,16 @@ async fn messages_inner(
         .await;
     };
     Ok(Json(response).into_response())
+}
+
+fn messages_copilot_metadata(headers: &HeaderMap) -> Option<CopilotRequestMetadata> {
+    let beta_value = headers.get("anthropic-beta")?.to_str().ok()?;
+    let filtered = filter_anthropic_beta_header(beta_value)?;
+    let mut metadata = CopilotRequestMetadata::default();
+    metadata
+        .extra_headers
+        .insert("anthropic-beta".to_string(), filtered);
+    Some(metadata)
 }
 
 fn normalize_message_level_system(

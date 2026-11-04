@@ -1200,6 +1200,71 @@ async fn messages_moves_message_level_system_blocks_to_top_level() {
 }
 
 #[tokio::test]
+async fn messages_logs_rejected_system_blocks_without_sending_upstream() {
+    use support::log_capture::{field, with_event_capture};
+
+    for block in [
+        serde_json::json!({"type": "image", "source": "private-system-content"}),
+        serde_json::json!({"type": "text", "text": {"invalid": "private-system-content"}}),
+    ] {
+        let fixture = support::AppFixture::with_mock_copilot().await;
+        let events = with_event_capture(|| async {
+            let response = router(fixture.state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/messages")
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer private-client-token")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "model": "claude-opus-5.5",
+                                "max_tokens": 32,
+                                "stream": true,
+                                "messages": [
+                                    {"role": "system", "content": [block]},
+                                    {"role": "user", "content": "private-user-prompt"}
+                                ]
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body["error"]["message"],
+                "system message content blocks must be text blocks"
+            );
+        })
+        .await;
+
+        assert_eq!(
+            field(&events, "http request failed", "http.status_code").as_deref(),
+            Some("400")
+        );
+        assert_eq!(
+            field(&events, "http request failed", "http.route").as_deref(),
+            Some("/v1/messages")
+        );
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.message == "http request failed")
+                .and_then(|event| event.level),
+            Some(tracing::Level::INFO)
+        );
+        assert!(!format!("{events:?}").contains("private-"));
+        assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+        assert_eq!(fixture.mock.hits("POST", "/v1/messages").await, 0);
+    }
+}
+
+#[tokio::test]
 async fn messages_stream_preserves_anthropic_cache_control_for_claude_requests() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
