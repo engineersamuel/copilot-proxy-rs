@@ -1,0 +1,31 @@
+[tools]
+process-compose = "1.124.0"
+
+[env]
+PC_SOCKET_PATH = "{{config_root}}/tmp/pc/pc.sock"
+PC_LOG_FILE = "{{config_root}}/tmp/pc/logs/process-compose.log"
+PC_LOG_NO_COLOR = "1"
+
+[tasks."proxy:up"]
+description = "Start the proxy detached with Unix-socket control"
+run = """
+umask 077
+mkdir -p tmp/pc/logs
+process-compose -U -f process-compose.yaml up -D --tui=false
+"""
+
+[tasks."proxy:down"]
+description = "Stop this worktree's managed proxy"
+run = "process-compose -U down"
+
+[tasks."proxy:restart"]
+description = "Restart the managed proxy with its existing environment"
+run = "process-compose -U process restart proxy"
+
+[tasks."proxy:status"]
+description = "Show the managed proxy's status and readiness"
+run = "process-compose -U process list --output wide"
+
+[tasks."proxy:logs"]
+description = "Follow the managed proxy's logs"
+run = "process-compose -U process logs proxy --follow"

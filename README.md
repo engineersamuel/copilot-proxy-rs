@@ -33,6 +33,53 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: Run with mise and process-compose (Native)
+
+With Rust 1.85+ installed, run:
+
+```bash
+./scripts/bootstrap.sh
+mise run proxy:up
+```
+
+The bootstrap script installs mise if missing (Homebrew when available, otherwise
+the official curl installer), trusts this repository's `mise.toml`, and runs
+`mise install` to install the pinned process-compose version. For a curl install,
+add `$HOME/.local/bin` to your shell's `PATH`.
+
+| Task | Action |
+| --- | --- |
+| `mise run proxy:up` | Build and start the proxy detached, without the TUI. |
+| `mise run proxy:down` | Stop this worktree's process-compose instance and proxy. |
+| `mise run proxy:restart` | Restart the proxy with the running instance's environment. |
+| `mise run proxy:status` | Show process state and HTTP readiness. |
+| `mise run proxy:logs` | Follow proxy logs (Ctrl-C stops following, not the proxy). |
+
+The proxy defaults to TCP `127.0.0.1:8080`. `COPILOT_PROXY_RS_PORT` selects
+another port for both the proxy and its `/health` readiness probe:
+
+```bash
+COPILOT_PROXY_RS_PORT=18080 mise run proxy:up
+mise run proxy:status
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:down
+```
+
+Use an unused port if a proxy is already running; these tasks do not manage
+instances started by Cargo or Docker. Startup is asynchronous and the initial
+release build can take several minutes; wait for `proxy:status` to show readiness
+before sending requests. To change environment variables, use `proxy:down` and
+then `proxy:up` with the new values, rather than `proxy:restart`.
+
+Every task controls process-compose using only the Unix socket
+`tmp/pc/pc.sock` (`PC_SOCKET_PATH`), never its default TCP control port 8080.
+The socket and logs under `tmp/pc/` are worktree-local and gitignored.
+Proxy logs rotate at 10 MiB with up to three backups retained for seven days.
+`RUST_LOG` defaults to `info`; failed-request body logging is disabled for this
+launcher. Other application configuration and saved authentication are reused.
+For initial browser-based authentication, run
+`cargo run --bin copilot-proxy-rs` interactively before starting detached.
+
 ### Verify
 Check health:
 ```bash
