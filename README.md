@@ -47,7 +47,7 @@ The script installs mise only if it is missing, trusts this repository's
 
 | Task | Purpose |
 | --- | --- |
-| `mise run proxy:up` | Build the release binary, start detached, and wait for `/health` readiness. |
+| `mise run proxy:up` | Build the release binary, start detached, and wait for `/health` readiness. Does nothing (no rebuild) if already running. |
 | `mise run proxy:down` | Stop the proxy and its process-compose supervisor. |
 | `mise run proxy:restart` | Restart the proxy process without rebuilding. |
 | `mise run proxy:status` | List the supervised process and its readiness. |
@@ -74,6 +74,8 @@ Logs live under `.process-compose/`, which is ignored by Git.
 Control tasks need no port override: they address the socket, and restart
 retains the environment from `proxy:up`. Only run `proxy:up` with a free proxy
 port; these tasks do not manage an existing standalone or Docker instance.
+`proxy:up` removes a socket file with nothing behind it, but fails without
+touching it if the socket accepts and does not answer within 5 seconds.
 
 ### Verify
 Check health:
