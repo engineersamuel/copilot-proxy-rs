@@ -464,6 +464,32 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
+## Run with process-compose (mise tasks)
+
+[process-compose](https://github.com/F1bonacc1/process-compose) supervises a
+release build of the proxy. [mise](https://mise.jdx.dev) pins the
+process-compose version (`mise.toml`) and runs the tasks.
+
+```bash
+scripts/bootstrap.sh   # installs mise only if missing, then runs `mise install`
+mise run proxy:up      # build --release, start detached, wait up to 120s for /health
+mise run proxy:status  # process list (status, health, PID)
+mise run proxy:logs    # follow proxy logs
+mise run proxy:restart # down, rebuild, up
+mise run proxy:down    # stop and remove the control socket
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COPILOT_PROXY_RS_PORT` | `8080` | Proxy port and readiness probe port |
+| `COPILOT_PROXY_RS_PC_SOCKET` | `${TMPDIR:-/tmp}/copilot-proxy-rs-<port>.sock` | process-compose control socket |
+| `RUST_LOG` | `info` | Proxy log level under process-compose |
+
+`proxy:up` refuses to start when the port is already in use. The
+process-compose control API listens only on the unix socket (`-U -u`); it never
+opens a TCP port. An inherited `PC_SOCKET_PATH` is ignored. Run each instance
+with its own port, for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`.
+
 ## Live smoke test
 
 After starting the server with valid Copilot credentials:
