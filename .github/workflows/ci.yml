@@ -19,4 +19,5 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: cargo test --locked
         env:
+          REQUIRE_MISE: "1"
           REQUIRE_PROCESS_COMPOSE: "1"

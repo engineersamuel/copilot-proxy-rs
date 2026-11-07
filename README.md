@@ -464,12 +464,12 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-The process-compose contract test runs `process-compose --dry-run` only when
-process-compose is on PATH; otherwise it skips. CI installs it (pinned in
-`mise.toml`) and makes it required:
+The process-compose contract tests run `process-compose --dry-run` and
+`mise tasks ls` only when those tools are on PATH; otherwise they skip. CI
+installs both (pinned in `mise.toml`) and makes them required:
 
 ```bash
-REQUIRE_PROCESS_COMPOSE=1 cargo test
+REQUIRE_PROCESS_COMPOSE=1 REQUIRE_MISE=1 cargo test
 ```
 
 ## Run with process-compose (mise tasks)

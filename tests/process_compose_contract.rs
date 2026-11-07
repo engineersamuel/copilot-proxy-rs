@@ -56,18 +56,24 @@ fn mise_pins_process_compose_and_defines_proxy_tasks() {
             .unwrap_or_else(|| panic!("task {task} needs a run string"));
         assert_eq!(run, format!("scripts/process-compose.sh {verb}"), "{task}");
     }
-    if on_path("mise") {
-        let out = Command::new("mise")
-            .current_dir(root())
-            .args(["tasks", "ls"])
-            .env("MISE_TRUSTED_CONFIG_PATHS", root())
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", stderr(&out));
-        let listed = String::from_utf8_lossy(&out.stdout);
-        for task in TASKS {
-            assert!(listed.contains(task), "mise tasks ls misses {task}");
-        }
+}
+
+#[test]
+fn mise_tasks_ls_lists_proxy_tasks_when_installed() {
+    if !tool_available("mise", "REQUIRE_MISE") {
+        return;
+    }
+    let out = Command::new("mise")
+        .current_dir(root())
+        .args(["tasks", "ls"])
+        .env("MISE_TRUSTED_CONFIG_PATHS", root())
+        .env_remove("MISE_ENV")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let listed = String::from_utf8_lossy(&out.stdout);
+    for task in TASKS {
+        assert!(listed.contains(task), "mise tasks ls misses {task}");
     }
 }
 
