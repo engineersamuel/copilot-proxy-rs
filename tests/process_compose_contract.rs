@@ -5,6 +5,63 @@ fn repo_file(path: &str) -> String {
 }
 
 #[test]
+fn mise_does_not_read_the_ambient_process_compose_socket() {
+    let mise = repo_file("mise.toml");
+    assert!(!mise.contains("get_env(name='PC_SOCKET_PATH'"));
+    assert!(mise.contains("get_env(name='COPILOT_PROXY_RS_PC_SOCKET'"));
+}
+
+fn assert_mise_socket(override_socket: Option<&Path>, expected: &Path) {
+    for args in [
+        vec!["env", "--json"],
+        vec!["exec", "--", "sh", "-c", "printf '%s' \"$PC_SOCKET_PATH\""],
+    ] {
+        let mut command = Command::new("mise");
+        command
+            .args(&args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("PC_SOCKET_PATH", "/tmp/other.sock")
+            .env_remove("COPILOT_PROXY_RS_PC_SOCKET");
+        if let Some(socket) = override_socket {
+            command.env("COPILOT_PROXY_RS_PC_SOCKET", socket);
+        }
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping socket environment check: mise is not installed");
+                return;
+            }
+            Err(error) => panic!("failed to run mise: {error}"),
+        };
+        assert!(
+            output.status.success(),
+            "mise {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let actual = if args[0] == "env" {
+            let env: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            env["PC_SOCKET_PATH"].as_str().unwrap().to_owned()
+        } else {
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_eq!(actual, expected.to_str().unwrap(), "mise {args:?}");
+    }
+}
+
+#[test]
+fn mise_ignores_an_unrelated_supervisor_socket() {
+    let socket = Path::new(env!("CARGO_MANIFEST_DIR")).join(".process-compose/pc.sock");
+    assert_mise_socket(None, &socket);
+}
+
+#[test]
+fn mise_accepts_only_the_project_specific_socket_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("pc.sock");
+    assert_mise_socket(Some(&socket), &socket);
+}
+
+#[test]
 fn mise_pins_process_compose_and_exposes_lifecycle_tasks() {
     let mise = repo_file("mise.toml");
     let tools = mise
@@ -125,7 +182,11 @@ fn preflight_rejects_a_port_that_is_already_listening() {
     let busy = Command::new("bash")
         .arg(&script)
         .env("COPILOT_PROXY_RS_PORT", &port)
-        .env("PC_SOCKET_PATH", "/nonexistent/pc.sock")
+        .env("COPILOT_PROXY_RS_PC_SOCKET", "/nonexistent/pc.sock")
+        .env(
+            "PC_SOCKET_PATH",
+            format!("/tmp/{}/pc.sock", "a".repeat(120)),
+        )
         .output()
         .unwrap();
     assert!(!busy.status.success());
@@ -135,7 +196,11 @@ fn preflight_rejects_a_port_that_is_already_listening() {
     let free = Command::new("bash")
         .arg(&script)
         .env("COPILOT_PROXY_RS_PORT", &port)
-        .env("PC_SOCKET_PATH", "/nonexistent/pc.sock")
+        .env("COPILOT_PROXY_RS_PC_SOCKET", "/nonexistent/pc.sock")
+        .env(
+            "PC_SOCKET_PATH",
+            format!("/tmp/{}/pc.sock", "a".repeat(120)),
+        )
         .status()
         .unwrap();
     assert!(free.success());
@@ -204,13 +269,13 @@ fn preflight_rejects_wildcard_hosts_and_long_socket_paths() {
     let long = Command::new("bash")
         .arg(script("proxy-preflight.sh"))
         .env(
-            "PC_SOCKET_PATH",
+            "COPILOT_PROXY_RS_PC_SOCKET",
             format!("/tmp/{}/pc.sock", "a".repeat(120)),
         )
         .output()
         .unwrap();
     assert!(!long.status.success());
-    assert!(String::from_utf8_lossy(&long.stderr).contains("PC_SOCKET_PATH"));
+    assert!(String::from_utf8_lossy(&long.stderr).contains("COPILOT_PROXY_RS_PC_SOCKET"));
 }
 
 #[test]
@@ -227,7 +292,8 @@ fn preflight_rejects_live_supervisor_and_clears_stale_socket() {
         Command::new("bash")
             .arg(script("proxy-preflight.sh"))
             .env("PATH", path)
-            .env("PC_SOCKET_PATH", &sock)
+            .env("PC_SOCKET_PATH", "/tmp/other.sock")
+            .env("COPILOT_PROXY_RS_PC_SOCKET", &sock)
             .env("COPILOT_PROXY_RS_PORT", &port)
             .output()
             .unwrap()
@@ -281,4 +347,37 @@ fn status_and_logs_guard_a_missing_supervisor() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("proxy:up"));
     fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn supervisor_scripts_ignore_ambient_sockets_even_outside_mise() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = fake_pc(
+        temp.path(),
+        r#"[ "$PC_SOCKET_PATH" = "$EXPECTED_SOCKET" ] || exit 1
+echo '[{"name":"copilot-proxy-rs","status":"Running","is_ready":"Ready","pid":42}]'"#,
+    );
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join(".process-compose/pc.sock");
+    let custom = temp.path().join("custom.sock");
+    for socket in [&default, &custom] {
+        for name in ["proxy-require-supervisor.sh", "proxy-wait-ready.sh"] {
+            let mut command = Command::new(script(name));
+            command
+                .current_dir(temp.path())
+                .env("PATH", &path)
+                .env("PC_SOCKET_PATH", "/tmp/other.sock")
+                .env_remove("COPILOT_PROXY_RS_PC_SOCKET")
+                .env("EXPECTED_SOCKET", socket)
+                .env("PROXY_WAIT_GRACE", "0");
+            if socket == &custom {
+                command.env("COPILOT_PROXY_RS_PC_SOCKET", socket);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }
