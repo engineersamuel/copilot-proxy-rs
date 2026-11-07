@@ -2,6 +2,9 @@
 # Usage: proxy-wait-ready.sh [old_pid]; with old_pid, a Ready row with that PID is stale.
 set -euo pipefail
 
+# shellcheck source=scripts/proxy-socket.sh
+source "$(dirname "${BASH_SOURCE[0]}")/proxy-socket.sh"
+
 old_pid="${1:-0}"
 grace="${PROXY_WAIT_GRACE:-10}"
 deadline=$((SECONDS + 120))

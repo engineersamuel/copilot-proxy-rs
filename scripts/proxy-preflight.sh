@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=scripts/proxy-socket.sh
+source "$(dirname "${BASH_SOURCE[0]}")/proxy-socket.sh"
+
 port="${COPILOT_PROXY_RS_PORT:-8080}"
 host="${COPILOT_PROXY_RS_HOST:-127.0.0.1}"
-socket="${PC_SOCKET_PATH:-.process-compose/pc.sock}"
+socket="$PC_SOCKET_PATH"
 
 case "$host" in
   0.0.0.0 | :: | "[::]")
@@ -14,7 +17,7 @@ esac
 
 # sun_path is ~104 bytes on macOS and ~108 on Linux.
 if ((${#socket} > 100)); then
-  echo "Control socket path is ${#socket} bytes (limit ~100): ${socket}. Set PC_SOCKET_PATH to a shorter path, e.g. /tmp/copilot-proxy-rs.sock." >&2
+  echo "Control socket path is ${#socket} bytes (limit ~100): ${socket}. Set COPILOT_PROXY_RS_PC_SOCKET to a shorter path, e.g. /tmp/copilot-proxy-rs.sock." >&2
   exit 1
 fi
 

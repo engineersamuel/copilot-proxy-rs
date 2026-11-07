@@ -70,10 +70,14 @@ mise run proxy:down
 use the same host. Wildcard hosts (`0.0.0.0`, `::`) are rejected; use a loopback
 address.
 The process-compose control API **uses a Unix socket, never TCP**: mise sets
-`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock` (override it with
-a shorter path if the checkout is deep; macOS/Linux limit socket paths to about
-100 bytes, which preflight enforces), and every task
-passes `-U`. One managed instance is supported per checkout. Bare status,
+`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock`. An ambient
+`PC_SOCKET_PATH` is intentionally ignored by mise and the helper scripts so an
+unrelated supervisor is never selected implicitly. For deep checkouts, set
+`COPILOT_PROXY_RS_PC_SOCKET` to a shorter, checkout-specific absolute path
+(macOS/Linux limit socket paths to about 100 bytes, which preflight enforces).
+Keep that override set for every lifecycle command, for example with
+`export COPILOT_PROXY_RS_PC_SOCKET=/tmp/copilot-proxy-rs-my-checkout.sock`.
+Every task passes `-U`. One managed instance is supported per checkout. Bare status,
 restart, logs, and down commands use that same socket without repeating the
 port variable. To change the port, run down and then up with the new variable.
 Supervisor and proxy logs live under the gitignored `.process-compose/`; the

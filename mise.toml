@@ -3,7 +3,7 @@ process-compose = "1.124.0"
 jq = "1.7.1"
 
 [env]
-PC_SOCKET_PATH = "{{ get_env(name='PC_SOCKET_PATH', default=config_root ~ '/.process-compose/pc.sock') }}"
+PC_SOCKET_PATH = "{{ get_env(name='COPILOT_PROXY_RS_PC_SOCKET', default=config_root ~ '/.process-compose/pc.sock') }}"
 PC_LOG_FILE = "{{config_root}}/.process-compose/process-compose.log"
 
 [tasks."proxy:up"]
