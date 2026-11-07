@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const TASKS: [&str; 5] = ["up", "down", "restart", "status", "logs"];
 
@@ -14,7 +15,12 @@ fn read(path: &str) -> String {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pc-contract-{name}-{}", std::process::id()));
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "pc-contract-{name}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("bin")).unwrap();
     dir
@@ -161,6 +167,17 @@ fn proxy_socket_defaults_to_a_per_port_path_under_run_dir() {
     assert!(
         calls.iter().all(|call| call.starts_with(&expected)),
         "{calls:?}"
+    );
+}
+
+#[test]
+fn proxy_status_lists_status_and_health_columns() {
+    let calls = proxy_calls("status", &[]);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains(" process list -o wide ")),
+        "status must show STATUS/HEALTH columns: {calls:?}"
     );
 }
 
