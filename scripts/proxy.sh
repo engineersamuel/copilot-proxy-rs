@@ -43,15 +43,31 @@ up() {
   mkdir -p .run
   rm -f "$sock"
   pc up -D -f process-compose.yaml -L ".run/pc-$COPILOT_PROXY_RS_PORT.log"
+  wait_ready
+  echo "proxy ready on 127.0.0.1:$COPILOT_PROXY_RS_PORT"
+}
+
+wait_ready() {
   for _ in $(seq 60); do
     if pc_bounded process list -o json 2>/dev/null | grep -q '"is_ready": "Ready"'; then
-      echo "proxy ready on 127.0.0.1:$COPILOT_PROXY_RS_PORT"
       return 0
     fi
     sleep 1
   done
-  echo "proxy not ready after 60s; see .run/proxy-$COPILOT_PROXY_RS_PORT.log" >&2
+  echo "proxy not ready after 60s; see .run/proxy-*.log" >&2
   return 1
+}
+
+# Restart the managed proxy in place, so it keeps the env (and port) given to up.
+restart() {
+  if ! is_running; then
+    up
+    return
+  fi
+  cargo build --locked
+  pc_bounded process restart proxy
+  wait_ready
+  echo "proxy restarted"
 }
 
 down() {
@@ -61,7 +77,7 @@ down() {
 case "${1:-}" in
   up) up ;;
   down) down ;;
-  restart) down && up ;;
+  restart) restart ;;
   status) pc process list -o wide ;;
   logs) pc process logs proxy ;;
   *)

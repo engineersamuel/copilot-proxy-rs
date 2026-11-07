@@ -10,7 +10,7 @@ description = "Stop the proxy and process-compose"
 run = "scripts/proxy.sh down"
 
 [tasks."proxy:restart"]
-description = "Stop, rebuild, and start the proxy"
+description = "Rebuild and restart the running proxy in place"
 run = "scripts/proxy.sh restart"
 
 [tasks."proxy:status"]

@@ -50,7 +50,7 @@ Operate the proxy with the mise tasks. Each task runs `scripts/proxy.sh <cmd>`:
 | --- | --- |
 | `mise run proxy:up` | `cargo build --locked`, start process-compose detached, wait until `/health` is Ready. Does nothing if already running. |
 | `mise run proxy:down` | Stop the proxy and process-compose. Safe to run when nothing runs. |
-| `mise run proxy:restart` | `proxy:down`, then `proxy:up`. |
+| `mise run proxy:restart` | `cargo build --locked`, restart the running proxy in place (it keeps its port), wait until Ready. Runs `proxy:up` if nothing runs. |
 | `mise run proxy:status` | Show the proxy STATUS (Running) and HEALTH (Ready). |
 | `mise run proxy:logs` | Show the proxy logs. |
 
