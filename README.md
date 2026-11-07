@@ -36,7 +36,7 @@ docker run -d --name copilot-proxy-rs \
 ### Option 3: process-compose via mise
 
 With Rust (`cargo`) installed (see `rust-toolchain.toml`), bootstrap mise and the pinned
-process-compose version:
+process-compose and jq versions:
 
 ```bash
 ./scripts/bootstrap.sh
@@ -50,8 +50,9 @@ mise run proxy:down
 
 `proxy:up` builds the release binary with `--locked`, starts it detached, and
 waits up to 120 seconds after the build for `/health` readiness. `proxy:restart`
-restarts that binary and waits for readiness; it does not rebuild. A timeout
-returns nonzero; inspect logs and use `proxy:down` to stop the supervisor.
+restarts that binary and waits for readiness; it does not rebuild. If
+`proxy:up` times out it stops the supervisor itself and exits nonzero; if
+`proxy:restart` times out, inspect `proxy:logs` and run `proxy:down`.
 Health checks do not require Copilot authentication; upstream API requests do.
 
 The proxy binds to `127.0.0.1:8080` by default. To avoid an existing instance:
