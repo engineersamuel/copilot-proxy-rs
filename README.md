@@ -33,6 +33,46 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: process-compose via mise
+
+With Rust installed (see `rust-toolchain.toml`), bootstrap mise and the pinned
+process-compose version:
+
+```bash
+./scripts/bootstrap.sh
+mise run proxy:up
+mise run proxy:status
+mise run proxy:restart
+mise run proxy:logs -- -n 20
+mise run proxy:logs -- -f
+mise run proxy:down
+```
+
+`proxy:up` builds the release binary with `--locked`, starts it detached, and
+waits up to 120 seconds after the build for `/health` readiness. `proxy:restart`
+restarts that binary and waits for readiness; it does not rebuild. A timeout
+returns nonzero; inspect logs and use `proxy:down` to stop the supervisor.
+Health checks do not require Copilot authentication; upstream API requests do.
+
+The proxy binds to `127.0.0.1:8080` by default. To avoid an existing instance:
+
+```bash
+COPILOT_PROXY_RS_PORT=18080 mise run proxy:up
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:status
+mise run proxy:down
+```
+
+`COPILOT_PROXY_RS_PORT` selects the proxy port (default `8080`).
+`COPILOT_PROXY_RS_HOST` can override the loopback bind; the readiness probe uses
+`127.0.0.1`, so the selected host must accept IPv4 loopback connections.
+The process-compose control API **uses a Unix socket, never TCP**: mise sets
+`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock`, and every task
+passes `-U`. One managed instance is supported per checkout. Bare status,
+restart, logs, and down commands use that same socket without repeating the
+port variable. To change the port, run down and then up with the new variable.
+Supervisor and proxy logs live under the gitignored `.process-compose/`.
+
 ### Verify
 Check health:
 ```bash

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add pinned process-compose lifecycle tasks via mise, with Unix-socket-only
+  control, health readiness checks, and a bootstrap script.
 - Prepare the repository for safe alpha publication.
 - Add public license, security, contribution, Docker, Compose, and CI guidance.
 - Fail closed for non-loopback binds unless explicitly opted in.
