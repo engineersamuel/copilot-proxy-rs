@@ -70,6 +70,20 @@ fn process_compose_probes_the_configured_proxy_port() {
 }
 
 #[test]
+fn process_compose_defaults_rust_log_to_info_with_an_override() {
+    let config = repo_file("process-compose.yaml");
+    let process = config.split("  copilot-proxy-rs:\n").nth(1).unwrap();
+    let environment = process
+        .split("    environment:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n    log_location:")
+        .next()
+        .unwrap();
+    assert!(environment.contains("      - \"RUST_LOG=${RUST_LOG:-info}\""));
+}
+
+#[test]
 fn bootstrap_reuses_mise_on_path_and_installs_from_repo_root() {
     let temp = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
     let mise = temp.path().join("mise");
