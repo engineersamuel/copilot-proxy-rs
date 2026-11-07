@@ -3,4 +3,5 @@
 /.env.*
 !.env.example
 /.DS_Store
+/.process-compose/
 *.log

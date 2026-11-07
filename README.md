@@ -33,6 +33,60 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: process-compose via mise
+
+With Rust (`cargo`) installed (see `rust-toolchain.toml`), bootstrap mise and the pinned
+process-compose and jq versions:
+
+```bash
+./scripts/bootstrap.sh
+mise run proxy:up
+mise run proxy:status
+mise run proxy:restart
+mise run proxy:logs -- -n 20
+mise run proxy:logs -- -f
+mise run proxy:down
+```
+
+`proxy:up` builds the release binary with `--locked`, starts it detached, and
+waits up to 120 seconds after the build for `/health` readiness. `proxy:restart`
+restarts that binary and waits for readiness; it does not rebuild. If
+`proxy:up` times out it stops the supervisor itself and exits nonzero; if
+`proxy:restart` times out, inspect `proxy:logs` and run `proxy:down`.
+Health checks do not require Copilot authentication; upstream API requests do.
+
+The proxy binds to `127.0.0.1:8080` by default. To avoid an existing instance:
+
+```bash
+COPILOT_PROXY_RS_PORT=18080 mise run proxy:up
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:status
+mise run proxy:down
+```
+
+`COPILOT_PROXY_RS_PORT` selects the proxy port (default `8080`).
+`RUST_LOG` defaults to `info`; override it with `RUST_LOG=debug mise run proxy:up`.
+`COPILOT_PROXY_RS_HOST` can override the bind; the readiness probe and preflight
+use the same host. Wildcard hosts (`0.0.0.0`, `::`) are rejected; use a loopback
+address.
+The process-compose control API **uses a Unix socket, never TCP**: mise sets
+`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock`. An ambient
+`PC_SOCKET_PATH` is intentionally ignored by mise and the helper scripts so an
+unrelated supervisor is never selected implicitly. For deep checkouts, set
+`COPILOT_PROXY_RS_PC_SOCKET` to a shorter, checkout-specific absolute path
+(macOS/Linux limit socket paths to about 100 bytes, which preflight enforces).
+Keep that override set for every lifecycle command, for example with
+`export COPILOT_PROXY_RS_PC_SOCKET=/tmp/copilot-proxy-rs-my-checkout.sock`.
+Every task passes `-U`. One managed instance is supported per checkout. Bare status,
+restart, logs, and down commands use that same socket without repeating the
+port variable. To change the port, run down and then up with the new variable.
+Supervisor and proxy logs live under the gitignored `.process-compose/`; the
+proxy log rotates at 10 MB (3 backups, 7 days). `proxy:up` refuses to start if a
+supervisor is already running (use `proxy:restart` or `proxy:down`) and clears a
+stale socket left by a crash. `proxy:status` and `proxy:logs` tell you to run
+`proxy:up` when no supervisor is running. Bootstrap installs mise `$MISE_VERSION`
+(default pinned) and needs `curl`.
+
 ### Verify
 Check health:
 ```bash
