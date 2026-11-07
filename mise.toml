@@ -1,0 +1,22 @@
+[tools]
+process-compose = "1.124.0"
+
+[tasks."proxy:up"]
+description = "Build and start the proxy under process-compose (detached)"
+run = "scripts/proxy.sh up"
+
+[tasks."proxy:down"]
+description = "Stop the proxy and process-compose"
+run = "scripts/proxy.sh down"
+
+[tasks."proxy:restart"]
+description = "Stop, rebuild, and start the proxy"
+run = "scripts/proxy.sh restart"
+
+[tasks."proxy:status"]
+description = "Show proxy process status"
+run = "scripts/proxy.sh status"
+
+[tasks."proxy:logs"]
+description = "Show proxy logs"
+run = "scripts/proxy.sh logs"
