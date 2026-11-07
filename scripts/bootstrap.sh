@@ -5,6 +5,9 @@ set -euo pipefail
 if ! command -v mise >/dev/null 2>&1; then
   curl -fsSL https://mise.run | sh
   export PATH="$HOME/.local/bin:$PATH"
+  # This script cannot change the caller's shell; tell the user how.
+  echo 'mise installed to ~/.local/bin. Before "mise run", run in your shell:'
+  echo '  export PATH="$HOME/.local/bin:$PATH"'
 fi
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."

@@ -39,6 +39,11 @@ Install mise (only if missing) and the pinned tools from `mise.toml`:
 scripts/bootstrap.sh
 ```
 
+If bootstrap installed mise, it is in `~/.local/bin`. Add it to your shell's PATH before you run a task (the script cannot change your shell):
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 Operate the proxy with the mise tasks. Each task runs `scripts/proxy.sh <cmd>`:
 
 | Task | Effect |

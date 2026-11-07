@@ -313,4 +313,10 @@ cat '{}'"#,
         "{calls}"
     );
     assert_eq!(lines.next(), Some("mise install"), "{calls}");
+    // The script cannot change the caller's PATH; it must say how.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#"export PATH="$HOME/.local/bin:$PATH""#),
+        "bootstrap must print the caller PATH step: {stdout}"
+    );
 }
