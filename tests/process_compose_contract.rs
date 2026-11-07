@@ -3,6 +3,7 @@
 use std::fs;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -38,7 +39,7 @@ fn proxy_has_loopback_readiness_and_safe_logging_defaults() {
     let compose = read("process-compose.yaml");
     for required in [
         "proxy:",
-        "cargo run --release --locked",
+        "cargo run --release --locked --bin copilot-proxy-rs",
         "readiness_probe:",
         "http_get:",
         "host: 127.0.0.1",
@@ -102,6 +103,7 @@ impl Scratch {
             )
             .env_remove("COPILOT_PROXY_RS_PC_SOCKET")
             .env_remove("COPILOT_PROXY_RS_PORT")
+            .env("TMPDIR", &self.0)
             .env("CALLS", self.0.join("calls"));
         cmd
     }
@@ -184,6 +186,31 @@ fn unresponsive_socket_client_is_bounded() {
             .to_lowercase()
             .contains("timed out")
     );
+}
+
+#[test]
+fn down_cleans_refused_sockets_but_preserves_unresponsive_ones() {
+    let scratch = Scratch::new();
+    let socket = scratch.0.join("stale.sock");
+    drop(UnixListener::bind(&socket).unwrap());
+    success(
+        scratch
+            .script("down")
+            .env("COPILOT_PROXY_RS_PC_SOCKET", &socket)
+            .output()
+            .unwrap(),
+    );
+    assert!(!socket.exists());
+
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let output = scratch
+        .script("down")
+        .env("COPILOT_PROXY_RS_PC_SOCKET", &socket)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(socket.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("leaving it intact"));
 }
 
 struct LiveProxy {

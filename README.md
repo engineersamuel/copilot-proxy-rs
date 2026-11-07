@@ -33,6 +33,56 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Native supervision with mise
+
+With Rust 1.85+ installed, bootstrap the pinned process-compose tool:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+The script uses mise from PATH or `~/.local/bin/mise`, installs it from
+`https://mise.run` only if missing, trusts this checkout, and runs `mise install`.
+To manage the native proxy:
+
+```bash
+mise run proxy:up       # detached; waits up to 10 minutes for readiness/build
+mise run proxy:status   # Running / Ready
+mise run proxy:restart # restart the existing managed process and wait for Ready
+mise run proxy:logs    # last 100 lines, without following
+mise run proxy:down    # stop this worktree's supervisor and proxy
+```
+
+`proxy:up` compiles with `cargo run --release --locked --bin copilot-proxy-rs`. It defaults to
+`COPILOT_PROXY_RS_HOST=127.0.0.1`, `COPILOT_PROXY_RS_PORT=8080`, and `RUST_LOG=info`.
+Choose an unused port if another proxy is already running:
+
+```bash
+COPILOT_PROXY_RS_PORT=18080 mise run proxy:up
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:down
+```
+
+Later tasks do not need the port variable: restart uses the existing supervisor's
+environment. The readiness probe always checks `127.0.0.1/health` on the selected
+port. Raw failed-request/body diagnostics are disabled in this configuration;
+do not enable sensitive logging when sharing logs. Authenticate interactively
+with `cargo run` first if needed; the detached process cannot prompt for login.
+
+The control API uses **only a Unix socket**, never a TCP control port. The default
+socket is `${TMPDIR:-/tmp}/cpr-<uid>-<worktree-root-hash>.sock`, stable across task
+invocations in the same worktree. `COPILOT_PROXY_RS_PC_SOCKET` overrides it with
+an absolute path shorter than 100 characters; set the same override for every
+task. Inherited `PC_SOCKET_PATH` is ignored. Supervisor/client logs are stored
+beside that socket. Unresponsive control requests are bounded to 10 seconds;
+an unreachable stale socket is cleaned, but a hung socket is left intact.
+`mise run proxy:logs -- --tail 20` changes the tail length; `--follow` opts in
+to following logs.
+
+Docker's `compose.yaml` remains separate and unchanged. Native startup always
+passes `-f process-compose.yaml`; process-compose 1.124.0 client commands do not
+accept `-f` and instead address the already-running supervisor by Unix socket.
+
 ### Verify
 Check health:
 ```bash

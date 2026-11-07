@@ -14,6 +14,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: jdx/mise-action@v3
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --locked
+        env:
+          REQUIRE_MISE: "1"
+          REQUIRE_PROCESS_COMPOSE: "1"
