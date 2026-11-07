@@ -34,7 +34,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 zstd = "0.13"
 
 [dev-dependencies]
+serde_yaml = "0.9.34"
 tempfile = "3"
+toml = "1.2.1"
 
 [profile.release]
 lto = true
