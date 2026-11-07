@@ -66,14 +66,22 @@ mise run proxy:down
 
 `COPILOT_PROXY_RS_PORT` selects the proxy port (default `8080`).
 `RUST_LOG` defaults to `info`; override it with `RUST_LOG=debug mise run proxy:up`.
-`COPILOT_PROXY_RS_HOST` can override the loopback bind; the readiness probe uses
-`127.0.0.1`, so the selected host must accept IPv4 loopback connections.
+`COPILOT_PROXY_RS_HOST` can override the bind; the readiness probe and preflight
+use the same host. Wildcard hosts (`0.0.0.0`, `::`) are rejected; use a loopback
+address.
 The process-compose control API **uses a Unix socket, never TCP**: mise sets
-`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock`, and every task
+`PC_SOCKET_PATH` to this checkout's `.process-compose/pc.sock` (override it with
+a shorter path if the checkout is deep; macOS/Linux limit socket paths to about
+100 bytes, which preflight enforces), and every task
 passes `-U`. One managed instance is supported per checkout. Bare status,
 restart, logs, and down commands use that same socket without repeating the
 port variable. To change the port, run down and then up with the new variable.
-Supervisor and proxy logs live under the gitignored `.process-compose/`.
+Supervisor and proxy logs live under the gitignored `.process-compose/`; the
+proxy log rotates at 10 MB (3 backups, 7 days). `proxy:up` refuses to start if a
+supervisor is already running (use `proxy:restart` or `proxy:down`) and clears a
+stale socket left by a crash. `proxy:status` and `proxy:logs` tell you to run
+`proxy:up` when no supervisor is running. Bootstrap installs mise `$MISE_VERSION`
+(default pinned) and needs `curl`.
 
 ### Verify
 Check health:

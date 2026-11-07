@@ -8,9 +8,15 @@ processes:
       - "COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}"
       - "RUST_LOG=${RUST_LOG:-info}"
     log_location: .process-compose/copilot-proxy-rs.log
+    log_configuration:
+      rotation:
+        max_size_mb: 10
+        max_backups: 3
+        max_age_days: 7
+        compress: true
     readiness_probe:
       http_get:
-        host: 127.0.0.1
+        host: "${COPILOT_PROXY_RS_HOST:-127.0.0.1}"
         port: "${COPILOT_PROXY_RS_PORT:-8080}"
         path: /health
       initial_delay_seconds: 1

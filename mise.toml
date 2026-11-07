@@ -3,7 +3,7 @@ process-compose = "1.124.0"
 jq = "1.7.1"
 
 [env]
-PC_SOCKET_PATH = "{{config_root}}/.process-compose/pc.sock"
+PC_SOCKET_PATH = "{{ get_env(name='PC_SOCKET_PATH', default=config_root ~ '/.process-compose/pc.sock') }}"
 PC_LOG_FILE = "{{config_root}}/.process-compose/process-compose.log"
 
 [tasks."proxy:up"]
@@ -11,7 +11,7 @@ description = "Build and start the proxy detached, then wait for readiness"
 dir = "{{config_root}}"
 run = """
 set -eu
-mkdir -p .process-compose
+mkdir -p "$(dirname "$PC_SOCKET_PATH")"
 ./scripts/proxy-preflight.sh
 cargo build --release --locked
 process-compose up -D -U -f process-compose.yaml
@@ -28,7 +28,7 @@ description = "Restart the managed proxy, then wait for readiness"
 dir = "{{config_root}}"
 run = """
 set -eu
-[ -S .process-compose/pc.sock ] || { echo "proxy supervisor is not running; use mise run proxy:up" >&2; exit 1; }
+./scripts/proxy-require-supervisor.sh
 old_pid="$(process-compose process list -U -o json | jq -r '.[] | select(.name == "copilot-proxy-rs") | .pid')"
 process-compose process restart copilot-proxy-rs -U
 ./scripts/proxy-wait-ready.sh "$old_pid"
@@ -37,9 +37,17 @@ process-compose process restart copilot-proxy-rs -U
 [tasks."proxy:status"]
 description = "Show the managed proxy's status and readiness"
 dir = "{{config_root}}"
-run = "process-compose process list -U --output wide"
+run = """
+set -eu
+./scripts/proxy-require-supervisor.sh
+process-compose process list -U --output wide
+"""
 
 [tasks."proxy:logs"]
 description = "Show proxy logs (accepts -f / -n N)"
 dir = "{{config_root}}"
-run = "process-compose process logs copilot-proxy-rs -U"
+run = """
+set -eu
+./scripts/proxy-require-supervisor.sh
+process-compose process logs copilot-proxy-rs -U
+"""
