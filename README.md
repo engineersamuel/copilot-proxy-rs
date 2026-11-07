@@ -33,6 +33,26 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: Run with process-compose (mise tasks)
+Install mise (only if missing) and the pinned tools from `mise.toml`:
+```bash
+scripts/bootstrap.sh
+```
+
+Operate the proxy with the mise tasks. Each task runs `scripts/proxy.sh <cmd>`:
+
+| Task | Effect |
+| --- | --- |
+| `mise run proxy:up` | `cargo build --locked`, start process-compose detached, wait until `/health` is Ready. Does nothing if already running. |
+| `mise run proxy:down` | Stop the proxy and process-compose. Safe to run when nothing runs. |
+| `mise run proxy:restart` | `proxy:down`, then `proxy:up`. |
+| `mise run proxy:status` | Show the proxy STATUS (Running) and HEALTH (Ready). |
+| `mise run proxy:logs` | Show the proxy logs. |
+
+Set the port with `COPILOT_PROXY_RS_PORT` (default `8080`), for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`.
+
+process-compose control uses only a unix socket, never TCP. The socket is `.run/pc-<port>.sock`; set `COPILOT_PROXY_RS_PC_SOCKET` to use a different path. The script ignores inherited `PC_*` variables. Logs go to `.run/`.
+
 ### Verify
 Check health:
 ```bash
