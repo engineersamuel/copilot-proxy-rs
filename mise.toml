@@ -11,6 +11,7 @@ dir = "{{config_root}}"
 run = """
 set -eu
 mkdir -p .process-compose
+./scripts/proxy-preflight.sh
 cargo build --release --locked
 process-compose up -D -U -f process-compose.yaml
 ./scripts/proxy-wait-ready.sh

@@ -102,3 +102,32 @@ fn bootstrap_reuses_mise_on_path_and_installs_from_repo_root() {
         format!("{root}:trust\n{root}:install\n")
     );
 }
+
+#[test]
+fn preflight_rejects_a_port_that_is_already_listening() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/proxy-preflight.sh");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let busy = Command::new("bash")
+        .arg(&script)
+        .env("COPILOT_PROXY_RS_PORT", &port)
+        .output()
+        .unwrap();
+    assert!(!busy.status.success());
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("already in use"));
+
+    drop(listener);
+    let free = Command::new("bash")
+        .arg(&script)
+        .env("COPILOT_PROXY_RS_PORT", &port)
+        .status()
+        .unwrap();
+    assert!(free.success());
+}
+
+#[test]
+fn proxy_up_runs_preflight_before_building() {
+    let mise = repo_file("mise.toml");
+    let preflight = mise.find("./scripts/proxy-preflight.sh").unwrap();
+    assert!(preflight < mise.find("cargo build --release").unwrap());
+}
