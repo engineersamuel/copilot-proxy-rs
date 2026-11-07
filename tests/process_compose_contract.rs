@@ -5,7 +5,7 @@ fn repo_file(path: &str) -> String {
 }
 
 #[test]
-fn mise_pins_process_compose_and_uses_only_unix_socket_commands() {
+fn mise_pins_process_compose_and_exposes_lifecycle_tasks() {
     let mise = repo_file("mise.toml");
     let tools = mise
         .split("[tools]")
@@ -16,22 +16,32 @@ fn mise_pins_process_compose_and_uses_only_unix_socket_commands() {
         .unwrap();
     assert!(tools.contains("process-compose = \"1.124.0\""));
     assert!(!tools.contains("rust"));
-    assert!(mise.contains("PC_SOCKET_PATH = \"{{config_root}}/.process-compose/pc.sock\""));
-    assert!(!mise.contains("PC_NO_SERVER"));
-
     for task in ["up", "down", "restart", "status", "logs"] {
         assert!(mise.contains(&format!("[tasks.\"proxy:{task}\"]")));
     }
+    assert!(mise.contains("-f process-compose.yaml"));
+    assert!(mise.contains("cargo build --release --locked"));
+}
 
+#[test]
+fn process_compose_tasks_use_only_unix_socket_commands() {
+    let mise = repo_file("mise.toml");
+    assert!(mise.contains("PC_SOCKET_PATH = \"{{config_root}}/.process-compose/pc.sock\""));
+    assert!(!mise.contains("PC_NO_SERVER"));
     let wait = repo_file("scripts/proxy-wait-ready.sh");
-    let commands = format!("{mise}\n{wait}");
+    let tasks = &mise[mise.find("[tasks.").unwrap()..];
+    let commands = format!("{tasks}\n{wait}");
     let invocations: Vec<_> = commands
         .lines()
+        .filter(|line| !line.starts_with("description ="))
         .filter_map(|line| line.split_once("process-compose ").map(|(_, args)| args))
         .collect();
     assert!(invocations.len() >= 6);
     for invocation in invocations {
-        let args: Vec<_> = invocation.split_whitespace().collect();
+        let args: Vec<_> = invocation
+            .split_whitespace()
+            .map(|arg| arg.trim_matches('"'))
+            .collect();
         assert!(args.contains(&"-U"), "missing -U: {invocation}");
         assert!(!args.contains(&"-p"), "TCP port flag: {invocation}");
         assert!(
@@ -40,8 +50,6 @@ fn mise_pins_process_compose_and_uses_only_unix_socket_commands() {
         );
         assert!(!invocation.contains("--no-server"));
     }
-    assert!(mise.contains("-f process-compose.yaml"));
-    assert!(mise.contains("cargo build --release --locked"));
 }
 
 #[test]

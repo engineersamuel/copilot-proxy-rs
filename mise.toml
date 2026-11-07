@@ -1,0 +1,41 @@
+[tools]
+process-compose = "1.124.0"
+
+[env]
+PC_SOCKET_PATH = "{{config_root}}/.process-compose/pc.sock"
+PC_LOG_FILE = "{{config_root}}/.process-compose/process-compose.log"
+
+[tasks."proxy:up"]
+description = "Build and start the proxy detached, then wait for readiness"
+dir = "{{config_root}}"
+run = """
+set -eu
+mkdir -p .process-compose
+cargo build --release --locked
+process-compose up -D -U -f process-compose.yaml
+./scripts/proxy-wait-ready.sh
+"""
+
+[tasks."proxy:down"]
+description = "Stop the proxy and its process-compose supervisor"
+dir = "{{config_root}}"
+run = "process-compose down -U"
+
+[tasks."proxy:restart"]
+description = "Restart the managed proxy, then wait for readiness"
+dir = "{{config_root}}"
+run = """
+set -eu
+process-compose process restart copilot-proxy-rs -U
+./scripts/proxy-wait-ready.sh
+"""
+
+[tasks."proxy:status"]
+description = "Show the managed proxy's status and readiness"
+dir = "{{config_root}}"
+run = "process-compose process list -U --output wide"
+
+[tasks."proxy:logs"]
+description = "Show proxy logs (accepts -f / -n N)"
+dir = "{{config_root}}"
+run = "process-compose process logs copilot-proxy-rs -U"
