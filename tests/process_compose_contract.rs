@@ -170,46 +170,69 @@ fn proxy_socket_defaults_to_one_stable_path_under_run_dir() {
     );
 }
 
-/// AC-3: the port is set only on `up`; `status` and `down` must reach the
-/// same process-compose instance. Runs a copy of the script in a scratch
-/// repo so `up` does not touch this repo's `.run/`.
-#[test]
-fn control_tasks_reach_the_instance_started_on_a_non_default_port() {
-    let dir = scratch_dir("ac3");
-    fs::create_dir_all(dir.join("scripts")).unwrap();
-    fs::copy(
-        repo().join("scripts/proxy.sh"),
-        dir.join("scripts/proxy.sh"),
-    )
-    .unwrap();
-    let log = dir.join("calls.log");
-    write_stub(
-        &dir.join("bin/process-compose"),
-        &format!(
-            r#"echo "$*" >> '{}'
+/// A copy of scripts/proxy.sh in a scratch repo, with recording
+/// process-compose and cargo stubs, so `up` does not touch this repo's `.run/`.
+struct ScratchRepo {
+    dir: PathBuf,
+}
+
+impl ScratchRepo {
+    fn new(name: &str) -> Self {
+        let dir = scratch_dir(name);
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::copy(
+            repo().join("scripts/proxy.sh"),
+            dir.join("scripts/proxy.sh"),
+        )
+        .unwrap();
+        write_stub(
+            &dir.join("bin/process-compose"),
+            &format!(
+                r#"echo "$*" >> '{}'
 case "$*" in *"process list -o json"*) echo '"is_ready": "Ready"' ;; esac"#,
-            log.display()
-        ),
-    );
-    write_stub(&dir.join("bin/cargo"), "exit 0");
-    let path = format!("{}:/usr/bin:/bin", dir.join("bin").display());
-    let run = |command: &str, port: Option<&str>| {
+                dir.join("calls.log").display()
+            ),
+        );
+        write_stub(&dir.join("bin/cargo"), "exit 0");
+        Self { dir }
+    }
+
+    fn run(&self, command: &str, port: Option<&str>) {
         let mut cmd = Command::new("bash");
-        cmd.arg(dir.join("scripts/proxy.sh"))
+        cmd.arg(self.dir.join("scripts/proxy.sh"))
             .arg(command)
-            .env("PATH", &path)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.dir.join("bin").display()),
+            )
             .env_remove("COPILOT_PROXY_RS_PORT")
             .env_remove("COPILOT_PROXY_RS_PC_SOCKET");
         if let Some(port) = port {
             cmd.env("COPILOT_PROXY_RS_PORT", port);
         }
         assert_success(&cmd.output().unwrap());
-    };
-    run("up", Some("18080"));
-    run("status", None);
-    run("down", None);
-    let calls = fs::read_to_string(&log).unwrap();
-    let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn calls(&self) -> String {
+        fs::read_to_string(self.dir.join("calls.log")).unwrap()
+    }
+}
+
+impl Drop for ScratchRepo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// AC-3: the port is set only on `up`; `status` and `down` must reach the
+/// same process-compose instance.
+#[test]
+fn control_tasks_reach_the_instance_started_on_a_non_default_port() {
+    let scratch = ScratchRepo::new("ac3");
+    scratch.run("up", Some("18080"));
+    scratch.run("status", None);
+    scratch.run("down", None);
+    let calls = scratch.calls();
     let sockets: Vec<&str> = calls
         .lines()
         .map(|call| call.split(' ').nth(2).unwrap())
@@ -219,6 +242,40 @@ case "$*" in *"process list -o json"*) echo '"is_ready": "Ready"' ;; esac"#,
         "up, status, and down must use one socket: {calls}"
     );
     assert!(calls.lines().any(|call| call.ends_with(" down")), "{calls}");
+}
+
+/// `restart` without the port must keep the instance started on 18080: it
+/// restarts the managed process in place over the same socket instead of
+/// starting a new process-compose on the default port 8080.
+#[test]
+fn restart_without_port_restarts_the_running_instance_in_place() {
+    let scratch = ScratchRepo::new("restart");
+    scratch.run("up", Some("18080"));
+    // The stub does not serve the socket; a bound listener makes it a live one.
+    let sock = scratch.dir.join(".run/pc.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let before = scratch.calls().lines().count();
+    scratch.run("restart", None);
+    let calls = scratch.calls();
+    let restart: Vec<&str> = calls.lines().skip(before).collect();
+    // The script resolves the repo with `pwd -P`.
+    let prefix = format!("-U -u {} ", fs::canonicalize(&sock).unwrap().display());
+    assert!(
+        restart.iter().all(|call| call.starts_with(&prefix)),
+        "restart must use the socket of up: {restart:?}"
+    );
+    assert!(
+        restart
+            .iter()
+            .any(|call| call.ends_with(" process restart proxy")),
+        "restart must restart the proxy in place: {restart:?}"
+    );
+    assert!(
+        !restart
+            .iter()
+            .any(|call| call.ends_with(" down") || call.contains(" up ")),
+        "restart must not stop process-compose or start a new one: {restart:?}"
+    );
 }
 
 #[test]
