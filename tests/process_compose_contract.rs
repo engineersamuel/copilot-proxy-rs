@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, MutexGuard};
 
 const TASKS: [&str; 5] = [
     "proxy:up",
@@ -182,12 +183,23 @@ impl Stubs {
     }
 }
 
+/// Tests that bind or pick a TCP port run one at a time, so a port from
+/// `free_port()` is not taken by a parallel test before the script checks it.
+static PORT_LOCK: Mutex<()> = Mutex::new(());
+
+fn port_lock() -> MutexGuard<'static, ()> {
+    PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Call only while holding `port_lock()`.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
+    let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
-        .port()
+        .port();
+    assert_ne!(port, 8080, "tests must never use port 8080");
+    port
 }
 
 /// Stubs for process-compose.sh. `pc_list` and `pc_down` set the exit codes of
@@ -225,6 +237,7 @@ fn stderr(out: &Output) -> String {
 
 #[test]
 fn up_refuses_when_port_is_in_use() {
+    let _port = port_lock();
     let stubs = pc_stubs(1, 0, 0);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -237,6 +250,7 @@ fn up_refuses_when_port_is_in_use() {
 
 #[test]
 fn up_refuses_when_live_supervisor_owns_socket() {
+    let _port = port_lock();
     let stubs = pc_stubs(0, 0, 0);
     let socket = stubs.dir.path().join("pc.sock");
     let _sock = UnixListener::bind(&socket).unwrap();
@@ -249,6 +263,7 @@ fn up_refuses_when_live_supervisor_owns_socket() {
 
 #[test]
 fn up_removes_stale_socket_and_starts() {
+    let _port = port_lock();
     let stubs = pc_stubs(1, 0, 0);
     let socket = stubs.dir.path().join("pc.sock");
     let sock = UnixListener::bind(&socket).unwrap();
@@ -263,6 +278,7 @@ fn up_removes_stale_socket_and_starts() {
 
 #[test]
 fn up_stops_supervisor_when_health_never_succeeds() {
+    let _port = port_lock();
     let stubs = pc_stubs(1, 0, 7);
     let socket = stubs.dir.path().join("pc.sock");
     let _sock = UnixListener::bind(&socket).unwrap();
@@ -282,6 +298,7 @@ fn up_stops_supervisor_when_health_never_succeeds() {
 
 #[test]
 fn restart_keeps_socket_when_down_fails() {
+    let _port = port_lock();
     let stubs = pc_stubs(0, 1, 0);
     let socket = stubs.dir.path().join("pc.sock");
     let _sock = UnixListener::bind(&socket).unwrap();
@@ -293,6 +310,7 @@ fn restart_keeps_socket_when_down_fails() {
 
 #[test]
 fn down_without_socket_succeeds() {
+    let _port = port_lock();
     let stubs = pc_stubs(1, 0, 0);
     let socket = stubs.dir.path().join("pc.sock");
     let out = run_pc(&stubs, free_port(), &socket, "down");
@@ -306,6 +324,7 @@ fn down_without_socket_succeeds() {
 
 #[test]
 fn unknown_subcommand_exits_2() {
+    let _port = port_lock();
     let stubs = pc_stubs(1, 0, 0);
     let socket = stubs.dir.path().join("pc.sock");
     let out = run_pc(&stubs, free_port(), &socket, "bogus");
