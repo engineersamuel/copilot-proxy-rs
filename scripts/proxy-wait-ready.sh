@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
+# Usage: proxy-wait-ready.sh [old_pid]; with old_pid, a Ready row with that PID is stale.
 set -euo pipefail
 
+old_pid="${1:-0}"
 deadline=$((SECONDS + 120))
 while ((SECONDS < deadline)); do
-  if status="$(process-compose process list -U --output wide)" &&
-    awk '$2 == "copilot-proxy-rs" && $4 == "Running" && $6 == "Ready" { ready = 1 }
-         END { exit !ready }' <<< "$status"; then
-    printf '%s\n' "$status"
+  if status="$(process-compose process list -U -o json)" &&
+    jq -e --argjson old "$old_pid" '.[] | select(.name == "copilot-proxy-rs" and .status == "Running" and .is_ready == "Ready" and .pid != $old)' <<< "$status" >/dev/null; then
+    process-compose process list -U --output wide
     exit 0
   fi
   sleep 1

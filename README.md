@@ -35,7 +35,7 @@ docker run -d --name copilot-proxy-rs \
 
 ### Option 3: process-compose via mise
 
-With Rust installed (see `rust-toolchain.toml`), bootstrap mise and the pinned
+With Rust (`cargo`) installed (see `rust-toolchain.toml`), bootstrap mise and the pinned
 process-compose version:
 
 ```bash

@@ -145,3 +145,34 @@ fn proxy_up_runs_preflight_before_building() {
     let preflight = mise.find("./scripts/proxy-preflight.sh").unwrap();
     assert!(preflight < mise.find("cargo build --release").unwrap());
 }
+
+#[test]
+fn failed_readiness_stops_supervisor_and_restarts_are_bounded() {
+    let mise = repo_file("mise.toml");
+    assert!(mise.contains("proxy-wait-ready.sh || { process-compose down -U; exit 1; }"));
+    assert!(repo_file("process-compose.yaml").contains("max_restarts:"));
+}
+
+#[test]
+fn wait_ready_parses_json_and_rejects_stale_pid() {
+    let dir = std::env::temp_dir().join(format!("pc-fake-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let fake = dir.join("process-compose");
+    fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$*\" in *json*) echo '[{\"name\":\"copilot-proxy-rs\",\"status\":\"Running\",\"is_ready\":\"Ready\",\"pid\":42}]';; *) echo table;; esac\n",
+    )
+    .unwrap();
+    Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+    let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/proxy-wait-ready.sh");
+    let ok = Command::new(&script).env("PATH", &path).output().unwrap();
+    assert!(ok.status.success());
+    let ok = Command::new(&script)
+        .arg("7")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(ok.status.success());
+    fs::remove_dir_all(&dir).ok();
+}

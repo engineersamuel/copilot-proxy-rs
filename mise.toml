@@ -1,5 +1,6 @@
 [tools]
 process-compose = "1.124.0"
+jq = "1.7.1"
 
 [env]
 PC_SOCKET_PATH = "{{config_root}}/.process-compose/pc.sock"
@@ -14,7 +15,7 @@ mkdir -p .process-compose
 ./scripts/proxy-preflight.sh
 cargo build --release --locked
 process-compose up -D -U -f process-compose.yaml
-./scripts/proxy-wait-ready.sh
+./scripts/proxy-wait-ready.sh || { process-compose down -U; exit 1; }
 """
 
 [tasks."proxy:down"]
@@ -27,8 +28,10 @@ description = "Restart the managed proxy, then wait for readiness"
 dir = "{{config_root}}"
 run = """
 set -eu
+[ -S .process-compose/pc.sock ] || { echo "proxy supervisor is not running; use mise run proxy:up" >&2; exit 1; }
+old_pid="$(process-compose process list -U -o json | jq -r '.[] | select(.name == "copilot-proxy-rs") | .pid')"
 process-compose process restart copilot-proxy-rs -U
-./scripts/proxy-wait-ready.sh
+./scripts/proxy-wait-ready.sh "$old_pid"
 """
 
 [tasks."proxy:status"]
