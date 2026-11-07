@@ -485,7 +485,7 @@ export PATH="$HOME/.local/bin:$PATH"
 scripts/bootstrap.sh   # installs mise only if missing, then runs `mise install`
 mise run proxy:up      # build --release, start detached, wait up to 120s for /health
 mise run proxy:status  # process list (status, health, PID)
-mise run proxy:logs    # follow proxy logs
+mise run proxy:logs    # follow proxy logs (Ctrl-C to stop)
 mise run proxy:restart # down, rebuild, up
 mise run proxy:down    # stop and remove the control socket
 ```
@@ -502,6 +502,19 @@ process-compose the proxy always binds `127.0.0.1`. The
 process-compose control API listens only on the unix socket (`-U -u`); it never
 opens a TCP port. An inherited `PC_SOCKET_PATH` is ignored. Run each instance
 with its own port, for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`.
+
+The control socket is per port. Run `proxy:status`, `proxy:logs`,
+`proxy:restart` and `proxy:down` with the same `COPILOT_PROXY_RS_PORT` (or
+`COPILOT_PROXY_RS_PC_SOCKET`) that you used for `proxy:up`. If not, they use
+the port 8080 socket and do not find your instance:
+
+```bash
+export COPILOT_PROXY_RS_PORT=18080
+mise run proxy:up
+mise run proxy:status
+mise run proxy:logs    # follows; Ctrl-C to stop
+mise run proxy:down
+```
 
 ## Live smoke test
 
