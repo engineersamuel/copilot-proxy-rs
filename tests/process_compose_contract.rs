@@ -94,15 +94,32 @@ fn yaml_block<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// `value` without its double quotes. Panics on a quote that is not closed.
+fn unquote(value: &str) -> &str {
+    let value = value.trim();
+    if !value.starts_with('"') && !value.ends_with('"') {
+        return value;
+    }
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("unclosed quote: {value}"))
+}
+
 /// Value of `key: value` at the top indent of `lines`, without quotes.
 fn yaml_scalar<'a>(lines: &[&'a str], key: &str) -> Option<&'a str> {
     let top = top_indent(lines);
     let head = format!("{key}:");
-    lines
+    let values: Vec<&str> = lines
         .iter()
         .filter(|l| indent(l) == top)
-        .find_map(|l| l.trim().strip_prefix(head.as_str()))
-        .map(|v| v.trim().trim_matches('"'))
+        .filter_map(|l| l.trim().strip_prefix(head.as_str()))
+        .collect();
+    assert!(
+        values.len() <= 1,
+        "need at most one {head} (duplicate key?)"
+    );
+    values.first().map(|v| unquote(v))
 }
 
 /// Check the copilot-proxy-rs process contract in process-compose.yaml text.
@@ -127,7 +144,7 @@ fn check_process_compose(text: &str) {
         .iter()
         .filter(|l| indent(l) == env_top)
         .filter_map(|l| l.trim().strip_prefix("- "))
-        .map(|v| v.trim().trim_matches('"'))
+        .map(unquote)
         .collect();
     assert!(
         env.contains(&format!("COPILOT_PROXY_RS_PORT={port}").as_str()),
@@ -180,13 +197,57 @@ fn process_compose_check_ignores_nested_env_entries() {
 }
 
 #[test]
+#[should_panic(expected = "unclosed quote")]
+fn process_compose_check_rejects_unclosed_env_quote() {
+    let text = read("process-compose.yaml");
+    let bad = text.replace(
+        "\"COPILOT_PROXY_RS_HOST=127.0.0.1\"",
+        "\"COPILOT_PROXY_RS_HOST=127.0.0.1",
+    );
+    assert_ne!(bad, text);
+    check_process_compose(&bad);
+}
+
+#[test]
+#[should_panic(expected = "unclosed quote")]
+fn process_compose_check_rejects_unclosed_scalar_quote() {
+    let text = read("process-compose.yaml");
+    let bad = text.replace(
+        "port: ${COPILOT_PROXY_RS_PORT:-8080}",
+        "port: \"${COPILOT_PROXY_RS_PORT:-8080}",
+    );
+    assert_ne!(bad, text);
+    check_process_compose(&bad);
+}
+
+#[test]
+#[should_panic(expected = "duplicate key")]
+fn process_compose_check_rejects_duplicate_probe_scalar() {
+    let text = read("process-compose.yaml");
+    let bad = text.replace(
+        "        path: /health\n",
+        "        path: /health\n        path: /other\n",
+    );
+    assert_ne!(bad, text);
+    check_process_compose(&bad);
+}
+
+/// True if `bin` is on PATH. If not, skip, or panic when `require_var=1`.
+fn tool_available(bin: &str, require_var: &str) -> bool {
+    if on_path(bin) {
+        return true;
+    }
+    assert!(
+        std::env::var(require_var).as_deref() != Ok("1"),
+        "{require_var}=1 but {bin} is not on PATH"
+    );
+    eprintln!("skip: {bin} not on PATH (set {require_var}=1 to require it)");
+    false
+}
+
+#[test]
 fn process_compose_validates_config_when_installed() {
-    if !on_path("process-compose") {
-        assert!(
-            std::env::var("REQUIRE_PROCESS_COMPOSE").as_deref() != Ok("1"),
-            "REQUIRE_PROCESS_COMPOSE=1 but process-compose is not on PATH"
-        );
-        eprintln!("skip: process-compose not on PATH");
+    if !tool_available("process-compose", "REQUIRE_PROCESS_COMPOSE") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
