@@ -161,13 +161,64 @@ fn proxy_control_uses_only_the_unix_socket_and_ignores_inherited_pc_env() {
 }
 
 #[test]
-fn proxy_socket_defaults_to_a_per_port_path_under_run_dir() {
+fn proxy_socket_defaults_to_one_stable_path_under_run_dir() {
     let calls = proxy_calls("status", &[("COPILOT_PROXY_RS_PORT", "18081")]);
-    let expected = format!("-U -u {}/.run/pc-18081.sock ", repo().display());
+    let expected = format!("-U -u {}/.run/pc.sock ", repo().display());
     assert!(
         calls.iter().all(|call| call.starts_with(&expected)),
         "{calls:?}"
     );
+}
+
+/// AC-3: the port is set only on `up`; `status` and `down` must reach the
+/// same process-compose instance. Runs a copy of the script in a scratch
+/// repo so `up` does not touch this repo's `.run/`.
+#[test]
+fn control_tasks_reach_the_instance_started_on_a_non_default_port() {
+    let dir = scratch_dir("ac3");
+    fs::create_dir_all(dir.join("scripts")).unwrap();
+    fs::copy(
+        repo().join("scripts/proxy.sh"),
+        dir.join("scripts/proxy.sh"),
+    )
+    .unwrap();
+    let log = dir.join("calls.log");
+    write_stub(
+        &dir.join("bin/process-compose"),
+        &format!(
+            r#"echo "$*" >> '{}'
+case "$*" in *"process list -o json"*) echo '"is_ready": "Ready"' ;; esac"#,
+            log.display()
+        ),
+    );
+    write_stub(&dir.join("bin/cargo"), "exit 0");
+    let path = format!("{}:/usr/bin:/bin", dir.join("bin").display());
+    let run = |command: &str, port: Option<&str>| {
+        let mut cmd = Command::new("bash");
+        cmd.arg(dir.join("scripts/proxy.sh"))
+            .arg(command)
+            .env("PATH", &path)
+            .env_remove("COPILOT_PROXY_RS_PORT")
+            .env_remove("COPILOT_PROXY_RS_PC_SOCKET");
+        if let Some(port) = port {
+            cmd.env("COPILOT_PROXY_RS_PORT", port);
+        }
+        assert_success(&cmd.output().unwrap());
+    };
+    run("up", Some("18080"));
+    run("status", None);
+    run("down", None);
+    let calls = fs::read_to_string(&log).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    let sockets: Vec<&str> = calls
+        .lines()
+        .map(|call| call.split(' ').nth(2).unwrap())
+        .collect();
+    assert!(
+        sockets.iter().all(|sock| *sock == sockets[0]),
+        "up, status, and down must use one socket: {calls}"
+    );
+    assert!(calls.lines().any(|call| call.ends_with(" down")), "{calls}");
 }
 
 #[test]

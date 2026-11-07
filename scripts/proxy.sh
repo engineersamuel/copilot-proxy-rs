@@ -10,7 +10,9 @@ done
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo"
 export COPILOT_PROXY_RS_PORT="${COPILOT_PROXY_RS_PORT:-8080}"
-sock="${COPILOT_PROXY_RS_PC_SOCKET:-$repo/.run/pc-$COPILOT_PROXY_RS_PORT.sock}"
+# One control socket per worktree, independent of the port: tasks run without
+# the port assignment given to `up` still reach the same instance.
+sock="${COPILOT_PROXY_RS_PC_SOCKET:-$repo/.run/pc.sock}"
 
 pc() {
   process-compose -U -u "$sock" "$@"

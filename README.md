@@ -49,9 +49,9 @@ Operate the proxy with the mise tasks. Each task runs `scripts/proxy.sh <cmd>`:
 | `mise run proxy:status` | Show the proxy STATUS (Running) and HEALTH (Ready). |
 | `mise run proxy:logs` | Show the proxy logs. |
 
-Set the port with `COPILOT_PROXY_RS_PORT` (default `8080`), for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`.
+Set the port with `COPILOT_PROXY_RS_PORT` (default `8080`), for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`. Set it only on `proxy:up`; the other tasks find the running instance without it.
 
-process-compose control uses only a unix socket, never TCP. The socket is `.run/pc-<port>.sock`; set `COPILOT_PROXY_RS_PC_SOCKET` to use a different path. The script ignores inherited `PC_*` variables. Logs go to `.run/`.
+process-compose control uses only a unix socket, never TCP. Each worktree has one socket, `.run/pc.sock`, so it runs one managed proxy at a time; set `COPILOT_PROXY_RS_PC_SOCKET` to use a different path. The script ignores inherited `PC_*` variables. Logs go to `.run/`.
 
 ### Verify
 Check health:
