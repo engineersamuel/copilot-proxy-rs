@@ -470,6 +470,17 @@ cargo clippy --all-targets -- -D warnings
 release build of the proxy. [mise](https://mise.jdx.dev) pins the
 process-compose version (`mise.toml`) and runs the tasks.
 
+Prerequisite: a Rust toolchain from [rustup](https://rustup.rs) (`cargo` on
+`PATH`); `rust-toolchain.toml` selects the channel. `scripts/bootstrap.sh`
+stops with an error when `cargo` is missing.
+
+If bootstrap installs mise, it goes to `~/.local/bin`. Put that directory on
+your `PATH` before you run the tasks:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 ```bash
 scripts/bootstrap.sh   # installs mise only if missing, then runs `mise install`
 mise run proxy:up      # build --release, start detached, wait up to 120s for /health
@@ -485,7 +496,9 @@ mise run proxy:down    # stop and remove the control socket
 | `COPILOT_PROXY_RS_PC_SOCKET` | `${TMPDIR:-/tmp}/copilot-proxy-rs-<port>.sock` | process-compose control socket |
 | `RUST_LOG` | `info` | Proxy log level under process-compose |
 
-`proxy:up` refuses to start when the port is already in use. The
+`proxy:up` refuses to start when the port is already in use. If `/health` is
+not OK after 120s, it stops process-compose and exits non-zero. Under
+process-compose the proxy always binds `127.0.0.1`. The
 process-compose control API listens only on the unix socket (`-U -u`); it never
 opens a TCP port. An inherited `PC_SOCKET_PATH` is ignored. Run each instance
 with its own port, for example `COPILOT_PROXY_RS_PORT=18080 mise run proxy:up`.
