@@ -48,7 +48,9 @@ up() {
     fi
     sleep 1
   done
-  echo "error: /health on port $port not OK after 120s; see: mise run proxy:logs" >&2
+  echo "error: /health on port $port not OK after 120s; stopping process-compose" >&2
+  bounded 30 pc down || true
+  rm -f "$socket"
   exit 1
 }
 
@@ -57,7 +59,7 @@ down() {
     echo "process-compose is not running on $socket"
     return 0
   fi
-  bounded 30 pc down
+  bounded 30 pc down || return 1
   rm -f "$socket"
 }
 
