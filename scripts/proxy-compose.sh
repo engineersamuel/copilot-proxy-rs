@@ -94,7 +94,15 @@ case "$command" in
         wait_ready
         ;;
     status) bounded "${pc[@]}" process list -o wide ;;
-    logs) exec "${pc[@]}" process logs proxy --tail 100 "$@" ;;
+    logs)
+        for arg in "$@"; do
+            # Only an explicit follow may stream indefinitely.
+            case "$arg" in
+                -f | --follow | --follow=true) exec "${pc[@]}" process logs proxy --tail 100 "$@" ;;
+            esac
+        done
+        bounded "${pc[@]}" process logs proxy --tail 100 "$@"
+        ;;
     *)
         echo "Usage: $0 {up|down|restart|status|logs [process-compose log options]}" >&2
         exit 2
