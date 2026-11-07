@@ -46,21 +46,60 @@ fn mise_pins_process_compose_and_defines_proxy_tasks() {
     }
 }
 
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// Lines nested under the first `key:` line found at the top level of `lines`.
+fn block<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
+    let header = format!("{key}:");
+    let base = lines.iter().map(|l| indent(l)).min().unwrap_or(0);
+    let start = lines
+        .iter()
+        .position(|l| indent(l) == base && l.trim() == header)
+        .unwrap_or_else(|| panic!("missing block {key}"));
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| l.trim().is_empty() || indent(l) > base)
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect()
+}
+
+/// Value of a top-level `key: value` line in `lines`, without quotes.
+fn scalar<'a>(lines: &[&'a str], key: &str) -> &'a str {
+    let base = lines.iter().map(|l| indent(l)).min().unwrap_or(0);
+    let prefix = format!("{key}:");
+    lines
+        .iter()
+        .filter(|l| indent(l) == base)
+        .find_map(|l| l.trim().strip_prefix(&prefix))
+        .map(|v| v.trim().trim_matches('"'))
+        .unwrap_or_else(|| panic!("missing {key}"))
+}
+
+/// Entries of a top-level `- item` list in `lines`, without quotes.
+fn items<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    lines
+        .iter()
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|v| v.trim().trim_matches('"'))
+        .collect()
+}
+
 #[test]
 fn process_compose_config_probes_health_on_configured_port() {
-    let config: serde_yaml::Value =
-        serde_yaml::from_str(&read("process-compose.yaml")).expect("yaml parses");
-    let proxy = &config["processes"]["copilot-proxy-rs"];
-    let probe = &proxy["readiness_probe"]["http_get"];
-    assert_eq!(probe["path"].as_str(), Some("/health"));
-    assert_eq!(probe["host"].as_str(), Some("127.0.0.1"));
-    let env: Vec<&str> = proxy["environment"]
-        .as_sequence()
-        .expect("environment list")
-        .iter()
-        .map(|v| v.as_str().expect("environment entry is a string"))
+    let text = read("process-compose.yaml");
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
         .collect();
-    let port = probe["port"].as_str().expect("probe port is a string");
+    let proxy = block(&block(&lines, "processes"), "copilot-proxy-rs");
+    let probe = block(&block(&proxy, "readiness_probe"), "http_get");
+    assert_eq!(scalar(&probe, "path"), "/health");
+    assert_eq!(scalar(&probe, "host"), "127.0.0.1");
+    let env = items(&block(&proxy, "environment"));
+    let port = scalar(&probe, "port");
     assert_eq!(port, "${COPILOT_PROXY_RS_PORT:-8080}");
     assert!(
         env.contains(&format!("COPILOT_PROXY_RS_PORT={port}").as_str()),
@@ -71,8 +110,8 @@ fn process_compose_config_probes_health_on_configured_port() {
         "bind host must match the 127.0.0.1 probe: {env:?}"
     );
     assert_eq!(
-        proxy["availability"]["restart"].as_str(),
-        Some("on_failure")
+        scalar(&block(&proxy, "availability"), "restart"),
+        "on_failure"
     );
 }
 
