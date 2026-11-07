@@ -7,14 +7,7 @@ COPILOT_PROXY_RS_PC_SOCKET = "{{ env.COPILOT_PROXY_RS_PC_SOCKET | default(value=
 [tasks."proxy:up"]
 description = "Build and start the proxy, waiting for readiness"
 shell = "bash -c"
-run = '''
-set -euo pipefail
-for name in $(compgen -v PC_); do unset "$name"; done
-cargo build --release --locked
-mkdir -p .process-compose "$(dirname "$COPILOT_PROXY_RS_PC_SOCKET")"
-process-compose -U -u "$COPILOT_PROXY_RS_PC_SOCKET" -L .process-compose/process-compose.log -f process-compose.yaml up -D --tui=false --disable-dotenv
-process-compose -U -u "$COPILOT_PROXY_RS_PC_SOCKET" -L .process-compose/process-compose.log project is-ready --wait
-'''
+run = 'bash scripts/proxy-up.sh'
 
 [tasks."proxy:down"]
 description = "Stop the proxy and its supervisor"

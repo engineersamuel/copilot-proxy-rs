@@ -34,7 +34,6 @@ fn mise_tasks_use_an_isolated_unix_socket() {
     assert!(!config.contains("env.PC_SOCKET_PATH"));
 
     for (task, operation) in [
-        ("up", "up -D"),
         ("down", "down"),
         ("restart", "process restart proxy"),
         ("status", "process list --output wide"),
@@ -61,7 +60,84 @@ fn mise_tasks_use_an_isolated_unix_socket() {
             );
         }
     }
-    assert!(config.contains("cargo build --release --locked"));
-    assert!(config.contains("--disable-dotenv"));
-    assert!(config.contains("project is-ready --wait"));
+    assert!(config.contains("run = 'bash scripts/proxy-up.sh'"));
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn run_script(
+    script: &str,
+    dir: &Path,
+    port: u16,
+    config: &Path,
+    timeout: &str,
+) -> std::process::Output {
+    std::process::Command::new("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(script))
+        .env("COPILOT_PROXY_RS_PC_SOCKET", dir.join("pc.sock"))
+        .env("COPILOT_PROXY_RS_PC_CONFIG", config)
+        .env("COPILOT_PROXY_RS_PORT", port.to_string())
+        .env("COPILOT_PROXY_RS_SKIP_BUILD", "1")
+        .env("COPILOT_PROXY_RS_UP_TIMEOUT", timeout)
+        .output()
+        .unwrap()
+}
+
+// Runs the real script against process-compose on a private port and socket.
+#[test]
+fn proxy_up_is_idempotent_recovers_stale_socket_and_bounds_failure() {
+    if std::process::Command::new("process-compose")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("process-compose not installed; skipping");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cprs-pc-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let bin = env!("CARGO_BIN_EXE_copilot-proxy-rs");
+    let good = dir.join("good.yaml");
+    fs::write(
+        &good,
+        config_file("process-compose.yaml").replace("./target/release/copilot-proxy-rs", bin),
+    )
+    .unwrap();
+    let port = free_port();
+    let socket = dir.join("pc.sock");
+
+    // A stale socket file with no process behind it must not block startup.
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    assert!(socket.exists());
+    let up = run_script("scripts/proxy-up.sh", &dir, port, &good, "30");
+    assert!(
+        up.status.success(),
+        "{}",
+        String::from_utf8_lossy(&up.stderr)
+    );
+    let again = run_script("scripts/proxy-up.sh", &dir, port, &good, "30");
+    assert!(again.status.success());
+    assert!(String::from_utf8_lossy(&again.stdout).contains("already running"));
+
+    let down = std::process::Command::new("process-compose")
+        .args(["-U", "-u"])
+        .arg(&socket)
+        .arg("down")
+        .output()
+        .unwrap();
+    assert!(down.status.success());
+
+    // A proxy that never becomes ready fails within the timeout and leaves nothing running.
+    let bad = dir.join("bad.yaml");
+    fs::write(&bad, "version: \"0.5\"\nprocesses:\n  proxy:\n    command: sleep 300\n    readiness_probe:\n      exec:\n        command: \"false\"\n      period_seconds: 1\n").unwrap();
+    let failed = run_script("scripts/proxy-up.sh", &dir, port, &bad, "3");
+    assert!(!failed.status.success());
+    assert!(!socket.exists());
+    fs::remove_dir_all(&dir).ok();
 }
