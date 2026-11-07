@@ -6,7 +6,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -76,11 +77,11 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let path = PathBuf::from(format!(
             "/tmp/cpr-{}-{}",
             std::process::id(),
-            nonce.as_nanos()
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         Self(path)
@@ -175,17 +176,19 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
 
 #[test]
 fn unresponsive_socket_client_is_bounded() {
-    let scratch = Scratch::new();
-    scratch.executable("process-compose", "#!/bin/bash\nexec sleep 30\n");
-    let start = Instant::now();
-    let output = scratch.script("status").output().unwrap();
-    assert!(!output.status.success());
-    assert!(start.elapsed() < Duration::from_secs(15));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .to_lowercase()
-            .contains("timed out")
-    );
+    for command in ["status", "logs"] {
+        let scratch = Scratch::new();
+        scratch.executable("process-compose", "#!/bin/bash\nexec sleep 30\n");
+        let start = Instant::now();
+        let output = scratch.script(command).output().unwrap();
+        assert!(!output.status.success());
+        assert!(start.elapsed() < Duration::from_secs(15));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .to_lowercase()
+                .contains("timed out")
+        );
+    }
 }
 
 #[test]
