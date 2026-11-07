@@ -11,7 +11,7 @@ description = "Build and start the proxy detached, then wait for readiness"
 dir = "{{config_root}}"
 run = """
 set -eu
-mkdir -p "$(dirname "$PC_SOCKET_PATH")"
+mkdir -p "$(dirname "$PC_SOCKET_PATH")" "{{config_root}}/.process-compose"
 ./scripts/proxy-preflight.sh
 cargo build --release --locked
 process-compose up -D -U -f process-compose.yaml
@@ -21,7 +21,7 @@ process-compose up -D -U -f process-compose.yaml
 [tasks."proxy:down"]
 description = "Stop the proxy and its process-compose supervisor"
 dir = "{{config_root}}"
-run = "process-compose down -U"
+run = "./scripts/proxy-down.sh"
 
 [tasks."proxy:restart"]
 description = "Restart the managed proxy, then wait for readiness"

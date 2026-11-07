@@ -214,6 +214,37 @@ fn proxy_up_runs_preflight_before_building() {
 }
 
 #[test]
+fn proxy_up_creates_the_log_directory_independent_of_the_socket_path() {
+    assert!(
+        repo_file("mise.toml")
+            .contains("\"{{config_root}}/.process-compose\"\n./scripts/proxy-preflight.sh")
+    );
+}
+
+#[test]
+fn proxy_down_is_idempotent_and_clears_a_stale_socket() {
+    assert!(repo_file("mise.toml").contains("run = \"./scripts/proxy-down.sh\""));
+    let dir = std::env::temp_dir().join(format!("pc-down-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("s.sock");
+    fs::write(&sock, "").unwrap();
+    let run = |body: &str| {
+        Command::new(script("proxy-down.sh"))
+            .env("PATH", fake_pc(&dir.join("bin"), body))
+            .env("COPILOT_PROXY_RS_PC_SOCKET", &sock)
+            .output()
+            .unwrap()
+    };
+    let out = run("exit 1");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("not running"));
+    assert!(!sock.exists());
+    let live = run("[ \"$1\" = down ] && echo stopped; exit 0");
+    assert!(String::from_utf8_lossy(&live.stdout).contains("stopped"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn failed_readiness_stops_supervisor_and_restarts_are_bounded() {
     let mise = repo_file("mise.toml");
     assert!(mise.contains("proxy-wait-ready.sh || { process-compose down -U ; exit 1; }"));
