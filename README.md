@@ -43,6 +43,13 @@ With Rust 1.85+ installed, bootstrap the pinned process-compose tool:
 
 The script uses mise from PATH or `~/.local/bin/mise`, installs it from
 `https://mise.run` only if missing, trusts this checkout, and runs `mise install`.
+If mise was just installed to `~/.local/bin`, which may not be on your PATH, add it to the
+current shell (the script cannot do this for its caller):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 To manage the native proxy:
 
 ```bash
