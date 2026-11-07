@@ -5,7 +5,6 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, MutexGuard};
-use yaml_rust2::{Yaml, YamlLoader};
 
 const TASKS: [&str; 5] = [
     "proxy:up",
@@ -24,12 +23,25 @@ fn read(path: &str) -> String {
     fs::read_to_string(&full).unwrap_or_else(|err| panic!("read {}: {err}", full.display()))
 }
 
+/// String value of `key = "..."` in the TOML section `[header]`.
+fn toml_value<'a>(text: &'a str, header: &str, key: &str) -> Option<&'a str> {
+    let header = format!("[{header}]");
+    text.lines()
+        .map(str::trim)
+        .skip_while(|l| *l != header)
+        .skip(1)
+        .take_while(|l| !l.starts_with('['))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim().strip_prefix('"')?.strip_suffix('"'))?
+        })
+}
+
 #[test]
 fn mise_pins_process_compose_and_defines_proxy_tasks() {
-    let mise: toml::Table = toml::from_str(&read("mise.toml")).expect("mise.toml parses");
-    let version = mise["tools"]["process-compose"]
-        .as_str()
-        .expect("process-compose pin is a string");
+    let mise = read("mise.toml");
+    let version =
+        toml_value(&mise, "tools", "process-compose").expect("process-compose pin is a string");
     let parts: Vec<&str> = version.split('.').collect();
     assert!(
         parts.len() == 3
@@ -40,27 +52,82 @@ fn mise_pins_process_compose_and_defines_proxy_tasks() {
     );
     for task in TASKS {
         let verb = task.trim_start_matches("proxy:");
-        let run = mise["tasks"][task]["run"]
-            .as_str()
+        let run = toml_value(&mise, &format!("tasks.\"{task}\""), "run")
             .unwrap_or_else(|| panic!("task {task} needs a run string"));
         assert_eq!(run, format!("scripts/process-compose.sh {verb}"), "{task}");
     }
+    if on_path("mise") {
+        let out = Command::new("mise")
+            .current_dir(root())
+            .args(["tasks", "ls"])
+            .env("MISE_TRUSTED_CONFIG_PATHS", root())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let listed = String::from_utf8_lossy(&out.stdout);
+        for task in TASKS {
+            assert!(listed.contains(task), "mise tasks ls misses {task}");
+        }
+    }
 }
 
-/// Parse `text` as YAML and check the copilot-proxy-rs process contract.
-fn check_process_compose(text: &str) {
-    let docs = YamlLoader::load_from_str(text).expect("process-compose.yaml is valid YAML");
-    let proxy = &docs[0]["processes"]["copilot-proxy-rs"];
-    let probe = &proxy["readiness_probe"]["http_get"];
-    assert_eq!(probe["path"].as_str(), Some("/health"));
-    assert_eq!(probe["host"].as_str(), Some("127.0.0.1"));
-    let port = probe["port"].as_str().expect("probe port is a string");
-    assert_eq!(port, "${COPILOT_PROXY_RS_PORT:-8080}");
-    let env: Vec<&str> = proxy["environment"]
-        .as_vec()
-        .expect("environment is a list")
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+fn top_indent(lines: &[&str]) -> usize {
+    lines.iter().map(|l| indent(l)).min().unwrap_or(0)
+}
+
+/// Lines nested under the one `key:` line at the top indent of `lines`.
+fn yaml_block<'a>(lines: &[&'a str], key: &str) -> Vec<&'a str> {
+    let top = top_indent(lines);
+    let head = format!("{key}:");
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| indent(lines[i]) == top && lines[i].trim() == head)
+        .collect();
+    assert_eq!(starts.len(), 1, "need exactly one {head} (duplicate key?)");
+    lines[starts[0] + 1..]
         .iter()
-        .filter_map(Yaml::as_str)
+        .take_while(|l| indent(l) > top)
+        .copied()
+        .collect()
+}
+
+/// Value of `key: value` at the top indent of `lines`, without quotes.
+fn yaml_scalar<'a>(lines: &[&'a str], key: &str) -> Option<&'a str> {
+    let top = top_indent(lines);
+    let head = format!("{key}:");
+    lines
+        .iter()
+        .filter(|l| indent(l) == top)
+        .find_map(|l| l.trim().strip_prefix(head.as_str()))
+        .map(|v| v.trim().trim_matches('"'))
+}
+
+/// Check the copilot-proxy-rs process contract in process-compose.yaml text.
+fn check_process_compose(text: &str) {
+    assert!(
+        !text.contains('\t'),
+        "tab characters are not valid YAML indentation"
+    );
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .collect();
+    let proxy = yaml_block(&yaml_block(&lines, "processes"), "copilot-proxy-rs");
+    let probe = yaml_block(&yaml_block(&proxy, "readiness_probe"), "http_get");
+    assert_eq!(yaml_scalar(&probe, "path"), Some("/health"));
+    assert_eq!(yaml_scalar(&probe, "host"), Some("127.0.0.1"));
+    let port = yaml_scalar(&probe, "port").expect("probe port is set");
+    assert_eq!(port, "${COPILOT_PROXY_RS_PORT:-8080}");
+    let env_lines = yaml_block(&proxy, "environment");
+    let env_top = top_indent(&env_lines);
+    let env: Vec<&str> = env_lines
+        .iter()
+        .filter(|l| indent(l) == env_top)
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|v| v.trim().trim_matches('"'))
         .collect();
     assert!(
         env.contains(&format!("COPILOT_PROXY_RS_PORT={port}").as_str()),
@@ -71,7 +138,7 @@ fn check_process_compose(text: &str) {
         "bind host must match the 127.0.0.1 probe: {env:?}"
     );
     assert_eq!(
-        proxy["availability"]["restart"].as_str(),
+        yaml_scalar(&yaml_block(&proxy, "availability"), "restart"),
         Some("on_failure")
     );
 }
@@ -82,14 +149,14 @@ fn process_compose_config_probes_health_on_configured_port() {
 }
 
 #[test]
-#[should_panic(expected = "valid YAML")]
+#[should_panic(expected = "tab characters")]
 fn process_compose_check_rejects_tab_indentation() {
     let text = read("process-compose.yaml").replace("    command:", "\tcommand:");
     check_process_compose(&text);
 }
 
 #[test]
-#[should_panic(expected = "valid YAML")]
+#[should_panic(expected = "duplicate key")]
 fn process_compose_check_rejects_duplicate_process_key() {
     let text = read("process-compose.yaml");
     let dup = text.replace(
@@ -115,6 +182,10 @@ fn process_compose_check_ignores_nested_env_entries() {
 #[test]
 fn process_compose_validates_config_when_installed() {
     if !on_path("process-compose") {
+        assert!(
+            std::env::var("REQUIRE_PROCESS_COMPOSE").as_deref() != Ok("1"),
+            "REQUIRE_PROCESS_COMPOSE=1 but process-compose is not on PATH"
+        );
         eprintln!("skip: process-compose not on PATH");
         return;
     }
