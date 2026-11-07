@@ -33,6 +33,63 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: Manage a native proxy with mise
+
+Install Rust 1.85+ and `curl`, then bootstrap the pinned process-compose tool:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+The script uses an existing `mise`, or installs it with the official
+<https://mise.run> installer, then runs `mise install`. If freshly installed,
+add `$HOME/.local/bin` to your shell's `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Run these tasks from this worktree:
+
+```bash
+mise run proxy:up       # detached; first release build can take several minutes
+mise run proxy:status   # wait for Ready before sending requests
+mise run proxy:logs     # follow logs; Ctrl-C exits without stopping the proxy
+mise run proxy:restart  # restart the managed proxy, not the supervisor
+mise run proxy:down     # stop the managed proxy and supervisor
+```
+
+The proxy defaults to `127.0.0.1:8080`. These tasks set
+`COPILOT_PROXY_RS_HOST` and `COPILOT_PROXY_RS_PORT` explicitly, overriding any
+host/port in `config.json`; exported values override the task defaults.
+Readiness probes use the same host and port at `/health`.
+For detached authentication, save a token with an interactive
+`cargo run --bin copilot-proxy-rs` first
+(see [Copilot authentication](#copilot-authentication)). Failed-request body
+logging is disabled for this managed process to keep sensitive payloads out of
+its logs.
+
+**If port 8080 is already occupied, leave that instance alone.** Select another
+port and use it for every task, including status and shutdown:
+
+```bash
+export COPILOT_PROXY_RS_PORT=18080
+mise run proxy:up
+mise exec -- process-compose project is-ready -U --wait
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:status
+mise run proxy:down
+```
+
+All tasks use `-U` and the same worktree-relative Unix socket,
+`.process-compose/<port>.sock`; process-compose never opens a TCP control
+listener or takes port 8080. The gitignored `.process-compose/` directory also
+holds per-port supervisor logs. Tasks run from the mise configuration directory,
+so the socket remains the same when invoked from a subdirectory. Automatic
+`.env` loading by process-compose is disabled; export overrides in your shell.
+Only one managed instance per worktree/port should run at a time.
+`compose.yaml` and the Docker workflow are independent and unchanged.
+
 ### Verify
 Check health:
 ```bash

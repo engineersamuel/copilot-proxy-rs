@@ -1,0 +1,36 @@
+[tools]
+process-compose = "1.124.0"
+
+[vars]
+proxy_port = "{{ env.COPILOT_PROXY_RS_PORT | default(value='8080') }}"
+
+[env]
+COPILOT_PROXY_RS_PORT = "{{ vars.proxy_port }}"
+COPILOT_PROXY_RS_HOST = "{{ env.COPILOT_PROXY_RS_HOST | default(value='127.0.0.1') }}"
+PC_SOCKET_PATH = ".process-compose/{{ vars.proxy_port }}.sock"
+PC_LOG_FILE = ".process-compose/{{ vars.proxy_port }}.log"
+PC_DISABLE_DOTENV = "1"
+
+[tasks."proxy:up"]
+description = "Start the proxy detached with a Unix control socket"
+run = """
+umask 077
+mkdir -p .process-compose
+process-compose up -D -U -f process-compose.yaml
+"""
+
+[tasks."proxy:down"]
+description = "Stop the managed proxy and its process-compose instance"
+run = "process-compose down -U"
+
+[tasks."proxy:restart"]
+description = "Restart only the managed proxy"
+run = "process-compose process restart proxy -U"
+
+[tasks."proxy:status"]
+description = "Show the managed proxy's status and readiness"
+run = "process-compose process get proxy -U"
+
+[tasks."proxy:logs"]
+description = "Follow the managed proxy's logs"
+run = "process-compose process logs proxy --follow -U"

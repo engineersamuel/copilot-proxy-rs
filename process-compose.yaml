@@ -1,0 +1,19 @@
+version: "0.5"
+is_strict: true
+
+processes:
+  proxy:
+    command: "exec cargo run --locked --release --bin copilot-proxy-rs"
+    environment:
+      - "COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false"
+    readiness_probe:
+      http_get:
+        host: "${COPILOT_PROXY_RS_HOST}"
+        port: "${COPILOT_PROXY_RS_PORT}"
+        path: "/health"
+      period_seconds: 2
+      timeout_seconds: 2
+      failure_threshold: 300
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
