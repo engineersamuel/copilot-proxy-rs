@@ -78,15 +78,43 @@ fn run_script(
     config: &Path,
     timeout: &str,
 ) -> std::process::Output {
-    std::process::Command::new("bash")
+    let child = std::process::Command::new("bash")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(script))
         .env("COPILOT_PROXY_RS_PC_SOCKET", dir.join("pc.sock"))
         .env("COPILOT_PROXY_RS_PC_CONFIG", config)
         .env("COPILOT_PROXY_RS_PORT", port.to_string())
         .env("COPILOT_PROXY_RS_SKIP_BUILD", "1")
         .env("COPILOT_PROXY_RS_UP_TIMEOUT", timeout)
-        .output()
-        .unwrap()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    within_deadline(child)
+}
+
+// Fails the test instead of hanging when the script never returns.
+fn within_deadline(mut child: std::process::Child) -> std::process::Output {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().ok();
+            panic!("script did not finish within 60s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    child.wait_with_output().unwrap()
+}
+
+fn pc_client(socket: &Path, args: &[&str]) -> std::process::Output {
+    let child = std::process::Command::new("process-compose")
+        .args(["-U", "-u"])
+        .arg(socket)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    within_deadline(child)
 }
 
 // Runs the real script against process-compose on a private port and socket.
@@ -121,17 +149,23 @@ fn proxy_up_is_idempotent_recovers_stale_socket_and_bounds_failure() {
         "{}",
         String::from_utf8_lossy(&up.stderr)
     );
+    let list = pc_client(&socket, &["process", "list", "--output", "wide"]);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("Running"));
     let again = run_script("scripts/proxy-up.sh", &dir, port, &good, "30");
     assert!(again.status.success());
     assert!(String::from_utf8_lossy(&again.stdout).contains("already running"));
 
-    let down = std::process::Command::new("process-compose")
-        .args(["-U", "-u"])
-        .arg(&socket)
-        .arg("down")
-        .output()
-        .unwrap();
-    assert!(down.status.success());
+    assert!(pc_client(&socket, &["down"]).status.success());
+
+    // A socket that accepts but never answers may belong to a live supervisor:
+    // proxy:up must give up promptly and leave the socket alone.
+    let hung = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let blocked = run_script("scripts/proxy-up.sh", &dir, port, &good, "30");
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("unresponsive"));
+    assert!(socket.exists());
+    drop(hung);
+    fs::remove_file(&socket).unwrap();
 
     // A proxy that never becomes ready fails within the timeout and leaves nothing running.
     let bad = dir.join("bad.yaml");
