@@ -37,7 +37,7 @@ fn mise_tasks_use_an_isolated_unix_socket() {
         ("up", "up -D"),
         ("down", "down"),
         ("restart", "process restart proxy"),
-        ("status", "process list"),
+        ("status", "process list --output wide"),
         ("logs", "process logs proxy"),
     ] {
         let header = format!("[tasks.\"proxy:{task}\"]");

@@ -33,6 +33,48 @@ docker run -d --name copilot-proxy-rs \
 ```
 *(Or simply run `docker compose up -d`)*
 
+### Option 3: Run with mise and process-compose
+
+With Rust 1.85+ installed, bootstrap the pinned process-compose tool:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+The script installs mise only if it is missing, trusts this repository's
+`mise.toml`, and runs `mise install`. If mise was just installed, add
+`$HOME/.local/bin` to your shell's `PATH` before running the tasks.
+
+| Task | Purpose |
+| --- | --- |
+| `mise run proxy:up` | Build the release binary, start detached, and wait for `/health` readiness. |
+| `mise run proxy:down` | Stop the proxy and its process-compose supervisor. |
+| `mise run proxy:restart` | Restart the proxy process without rebuilding. |
+| `mise run proxy:status` | List the supervised process and its readiness. |
+| `mise run proxy:logs` | Print the last 50 proxy log lines. |
+
+The proxy defaults to port `8080` and `RUST_LOG=info`; caller environment
+overrides are respected. To run alongside an existing proxy on 8080:
+
+```bash
+COPILOT_PROXY_RS_PORT=18080 mise run proxy:up
+curl -fsS http://127.0.0.1:18080/health
+mise run proxy:status
+mise run proxy:logs
+mise run proxy:restart
+mise run proxy:down
+```
+
+The control API uses only a Unix socket, never a TCP listener. Tasks clear
+inherited `PC_*` variables and disable process-compose's `.env` loading on
+startup, so they cannot accidentally control a parent supervisor. The socket
+defaults to `.process-compose/pc.sock` in this repository; override it with
+`COPILOT_PROXY_RS_PC_SOCKET` (use the same value for every task).
+Logs live under `.process-compose/`, which is ignored by Git.
+Control tasks need no port override: they address the socket, and restart
+retains the environment from `proxy:up`. Only run `proxy:up` with a free proxy
+port; these tasks do not manage an existing standalone or Docker instance.
+
 ### Verify
 Check health:
 ```bash

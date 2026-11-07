@@ -1,0 +1,18 @@
+version: "0.5"
+
+processes:
+  proxy:
+    command: ./target/release/copilot-proxy-rs
+    environment:
+      - COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}
+      - RUST_LOG=${RUST_LOG:-info}
+    log_location: .process-compose/proxy.log
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        path: /health
+        port: ${COPILOT_PROXY_RS_PORT:-8080}
+      period_seconds: 1
+      timeout_seconds: 1
+    availability:
+      restart: on_failure
