@@ -6,6 +6,7 @@ processes:
     environment:
       - "COPILOT_PROXY_RS_HOST=${COPILOT_PROXY_RS_HOST:-127.0.0.1}"
       - "COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}"
+      - "RUST_LOG=${RUST_LOG:-info}"
     log_location: .process-compose/copilot-proxy-rs.log
     readiness_probe:
       http_get:

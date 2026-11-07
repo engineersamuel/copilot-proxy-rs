@@ -64,6 +64,7 @@ mise run proxy:down
 ```
 
 `COPILOT_PROXY_RS_PORT` selects the proxy port (default `8080`).
+`RUST_LOG` defaults to `info`; override it with `RUST_LOG=debug mise run proxy:up`.
 `COPILOT_PROXY_RS_HOST` can override the loopback bind; the readiness probe uses
 `127.0.0.1`, so the selected host must accept IPv4 loopback connections.
 The process-compose control API **uses a Unix socket, never TCP**: mise sets
