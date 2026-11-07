@@ -15,7 +15,7 @@ mkdir -p .process-compose
 ./scripts/proxy-preflight.sh
 cargo build --release --locked
 process-compose up -D -U -f process-compose.yaml
-./scripts/proxy-wait-ready.sh || { process-compose down -U; exit 1; }
+./scripts/proxy-wait-ready.sh || { process-compose down -U ; exit 1; }
 """
 
 [tasks."proxy:down"]

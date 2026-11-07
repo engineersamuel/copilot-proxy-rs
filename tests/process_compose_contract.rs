@@ -149,12 +149,12 @@ fn proxy_up_runs_preflight_before_building() {
 #[test]
 fn failed_readiness_stops_supervisor_and_restarts_are_bounded() {
     let mise = repo_file("mise.toml");
-    assert!(mise.contains("proxy-wait-ready.sh || { process-compose down -U; exit 1; }"));
+    assert!(mise.contains("proxy-wait-ready.sh || { process-compose down -U ; exit 1; }"));
     assert!(repo_file("process-compose.yaml").contains("max_restarts:"));
 }
 
 #[test]
-fn wait_ready_parses_json_and_rejects_stale_pid() {
+fn wait_ready_parses_json_status() {
     let dir = std::env::temp_dir().join(format!("pc-fake-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let fake = dir.join("process-compose");
