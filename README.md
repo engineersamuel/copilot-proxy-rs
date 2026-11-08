@@ -108,7 +108,7 @@ curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applica
 
 ## Features
 
-- Config defaults and loading from `~/.config/copilot-proxy-rs/config.json`.
+- Config defaults and loading from `~/.config/copilot-proxy-rs/config.toml`.
 - Environment overrides with `COPILOT_PROXY_RS_*` variables.
 - Static `/health`, `/version`, and `/v1/messages/count_tokens` routes.
 - Copilot-backed `/v1/models` sourced from live upstream model discovery.
@@ -191,15 +191,20 @@ Compose runs can reuse the same file without setting `GITHUB_TOKEN`.
 
 ## Configuration
 
-Copy `config.example.json` to `~/.config/copilot-proxy-rs/config.json` and edit
+Copy `config.example.toml` to `~/.config/copilot-proxy-rs/config.toml` and edit
 as needed. Environment variables override file values.
+
+Legacy `config.json` is still read, with a `WARN` asking you to move to
+`config.toml`, when `config.toml` is absent. If both files exist, `config.toml`
+wins and a `WARN` says `config.json` is ignored. The warning is visible with
+`RUST_LOG=warn` or a more verbose level.
 
 Important variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `GITHUB_TOKEN` | GitHub token used to request Copilot tokens. |
-| `COPILOT_PROXY_RS_CONFIG_DIR` | Directory containing `config.json` and `github_token`. |
+| `COPILOT_PROXY_RS_CONFIG_DIR` | Directory containing `config.toml` and `github_token`. |
 | `COPILOT_PROXY_RS_HOST` | Bind host. Defaults to `127.0.0.1`. |
 | `COPILOT_PROXY_RS_PORT` | Bind port. Defaults to `8080`. |
 | `COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK` | Required for `0.0.0.0`, `::`, or other non-loopback binds. |
@@ -212,7 +217,7 @@ Important variables:
 | `COPILOT_TIMEOUT` | Total upstream request timeout in seconds (also used for stream read idle timeout and Linux `TCP_USER_TIMEOUT`). Defaults to `300`. |
 | `COPILOT_CONNECT_TIMEOUT` | Upstream connect/TLS handshake timeout in seconds. Defaults to `60`. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
-| `COPILOT_MAX_RATE` | Upstream Copilot HTTP requests per minute (`copilot_max_rate` in `config.json`). Defaults to `120`; `0` disables the limiter. |
+| `COPILOT_MAX_RATE` | Upstream Copilot HTTP requests per minute (`copilot_max_rate` in `config.toml`). Defaults to `120`; `0` disables the limiter. |
 | `COPILOT_PROXY_RS_WEB_SEARCH_MODEL` | Responses-capable model used to translate Anthropic hosted web-search requests. Defaults to `gpt-5.6-sol`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
 
@@ -317,17 +322,12 @@ These aliases also accept the `[1m]` suffix, such as `opusplan[1m]`. The proxy
 uses the selected model's native context limit; this suffix does not add
 context capacity or bypass upstream limits.
 
-Configured local models are declared in `config.json`, for example:
+Configured local models are declared in `config.toml`, for example:
 
-```json
-{
-  "local_models": {
-    "qwen3-coder-30b-local": {
-      "base_url": "http://100.98.223.125:8080/v1",
-      "upstream_model": "models\\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
-    }
-  }
-}
+```toml
+[local_models.qwen3-coder-30b-local]
+base_url = "http://100.98.223.125:8080/v1"
+upstream_model = 'models\Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf'
 ```
 
 Configured definitions appear in `/v1/models` without health probing. Their
@@ -337,17 +337,12 @@ cancellation, automatic discovery, and outbound API keys are unsupported.
 Local failures never fall back to Copilot. Use plain HTTP only over trusted
 private transport such as Tailscale.
 
-You can define local request aliases in `config.json` with
+You can define local request aliases in `config.toml` with
 `model_overrides.copilot`, for example:
 
-```json
-{
-  "model_overrides": {
-    "copilot": {
-      "sonnet-latest": "claude-sonnet-5"
-    }
-  }
-}
+```toml
+[model_overrides.copilot]
+sonnet-latest = "claude-sonnet-5"
 ```
 
 ### Model stats (optional)

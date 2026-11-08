@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Configuration moves to `config.toml` (same keys and validation); see
+  `config.example.toml`. A legacy `config.json` is still loaded when
+  `config.toml` is absent, with a `WARN` (visible at `RUST_LOG=warn`); if both
+  exist, `config.toml` wins and `config.json` is ignored with a `WARN`.
+- Concurrent requests on a stale model cache now share one upstream Copilot
+  `/models` request instead of each fetching it.
 - Raise the default `copilot_max_rate` from 15 to 120 requests per minute;
   environment/file overrides and `0` to disable rate limiting are unchanged.
 - Decision models answer prompts that name options (`Option A: ...`, numbered
