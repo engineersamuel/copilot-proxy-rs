@@ -159,6 +159,36 @@ pub struct ModelEntry {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: String,
+    #[serde(rename = "type")]
+    pub model_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_endpoints: Option<Vec<String>>,
+}
+
+/// How a Copilot model is served, from cached upstream `capabilities.type`
+/// and `supported_endpoints`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopilotModelKind {
+    Chat,
+    /// Classifier served by `POST /v1/decisions`.
+    Decisions,
+    /// Classifier served by `POST /v1/systemone`.
+    SystemOne,
+    Image,
+    Other(String),
+}
+
+impl CopilotModelKind {
+    fn from_metadata(model_type: &str, endpoints: &[String]) -> Self {
+        let has = |path: &str| endpoints.iter().any(|endpoint| endpoint == path);
+        match model_type {
+            "chat" => Self::Chat,
+            "image" => Self::Image,
+            "decisions" if has("/v1/systemone") => Self::SystemOne,
+            "decisions" if has("/v1/decisions") => Self::Decisions,
+            other => Self::Other(other.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -370,7 +400,21 @@ fn static_model_entry(model: &StaticCopilotModel) -> ModelEntry {
         object: "model",
         created: model.created,
         owned_by: model.owned_by.to_string(),
+        model_type: "chat".to_string(),
+        supported_endpoints: non_empty(static_supported_endpoints(model)),
     }
+}
+
+fn non_empty(endpoints: Vec<String>) -> Option<Vec<String>> {
+    (!endpoints.is_empty()).then_some(endpoints)
+}
+
+fn dynamic_model_type(value: &serde_json::Value) -> String {
+    value
+        .pointer("/capabilities/type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("chat")
+        .to_string()
 }
 
 fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
@@ -386,6 +430,10 @@ fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_else(|| infer_owned_by(id))
             .to_string(),
+        model_type: dynamic_model_type(value),
+        supported_endpoints: dynamic_supported_endpoints(value)
+            .and_then(non_empty)
+            .or_else(|| static_copilot_model(id).map(static_supported_endpoints)),
     })
 }
 
@@ -497,6 +545,8 @@ fn local_model_entry(model_id: &str) -> ModelEntry {
         object: "model",
         created: 1_700_000_000,
         owned_by: "local".to_string(),
+        model_type: "chat".to_string(),
+        supported_endpoints: Some(local_supported_endpoints()),
     }
 }
 
@@ -850,6 +900,27 @@ impl ModelRegistry {
             .and_then(dynamic_supported_efforts);
         drop(inner);
         dynamic.or_else(|| static_supported_efforts(model))
+    }
+
+    /// Kind of a Copilot model from cached metadata; `None` for local targets
+    /// and models missing from (or without a type in) the cached catalog.
+    pub async fn copilot_model_kind(&self, model: &str) -> Option<CopilotModelKind> {
+        if self.configured_local_target(model).is_some() {
+            return None;
+        }
+        let model_type = {
+            let id = canonical_model_id(model);
+            let inner = self.inner.read().await;
+            inner
+                .models
+                .iter()
+                .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(id))?
+                .pointer("/capabilities/type")?
+                .as_str()?
+                .to_string()
+        };
+        let endpoints = self.supported_endpoints(model).await;
+        Some(CopilotModelKind::from_metadata(&model_type, &endpoints))
     }
 
     async fn supported_endpoints(&self, model: &str) -> Vec<String> {
