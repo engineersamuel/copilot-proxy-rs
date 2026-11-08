@@ -720,3 +720,31 @@ fn env_copilot_max_rate_overrides_toml_value() {
         );
     }
 }
+
+#[path = "support/log_capture.rs"]
+mod log_capture;
+
+#[tokio::test]
+async fn config_load_logs_source_and_one_value_free_warn_per_notice() {
+    let (temp, env) = load_dir(&[(
+        "config.json",
+        r#"{"api_key": "sk-json-secret", "port": 9393}"#,
+    )]);
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+
+    let events = log_capture::with_event_capture(|| async { load.log() }).await;
+
+    let warns: Vec<_> = events
+        .iter()
+        .filter(|event| event.level == Some(tracing::Level::WARN))
+        .collect();
+    assert_eq!(warns.len(), 1);
+    assert!(warns[0].message.contains("config.toml"));
+    assert_eq!(
+        log_capture::field(&events, "loaded config file", "config.path"),
+        Some(temp.path().join("config.json").display().to_string())
+    );
+    let rendered = format!("{events:?}");
+    assert!(!rendered.contains("sk-json-secret"));
+    assert!(!rendered.contains("9393"));
+}
