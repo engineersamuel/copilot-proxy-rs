@@ -1962,6 +1962,53 @@ async fn messages_systemone_options_stream() {
     assert_messages_decision_options("microsoft-decision-1", true).await;
 }
 
+async fn messages_option_answers(upstream: Value) -> (StatusCode, Value) {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/decisions", 200, upstream)
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/messages",
+        decision_messages_request("gpt-6-luna-decisions", support::OPTIONS_QUESTION, false),
+    )
+    .await;
+    (status, serde_json::from_str(&body).unwrap())
+}
+
+#[tokio::test]
+async fn messages_decisions_equal_options_are_reported_as_a_tie() {
+    let (status, body) =
+        messages_option_answers(serde_json::json!({"model": "gpt-6-luna", "answers": [
+            {"type": "predicate", "name": "option_a", "probability": 0.4},
+            {"type": "predicate", "name": "option_b", "probability": 0.4}
+        ]}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["content"][0]["text"],
+        "Option A (0.50); Option B 0.50\nReason: Option A and Option B are tied (0.50 each); defaulting to the first listed."
+    );
+}
+
+#[tokio::test]
+async fn messages_decisions_all_zero_options_are_rejected_like_a_refusal() {
+    let (status, body) =
+        messages_option_answers(serde_json::json!({"model": "gpt-6-luna", "answers": [
+            {"type": "predicate", "name": "option_a", "probability": 0.0},
+            {"type": "predicate", "name": "option_b", "probability": 0.0}
+        ]}))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot decisions model declined to answer; ask a yes/no question or name options such as 'Option A: ...' and 'Option B: ...'"
+    );
+}
+
 async fn assert_messages_decision_answer(model: &str, input_tokens: u64, output_tokens: u64) {
     let fixture = support::AppFixture::with_decision_models().await;
     let (status, _, body) = support::send_json(

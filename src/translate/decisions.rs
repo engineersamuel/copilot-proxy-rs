@@ -667,14 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_scales_to_one_clamps_and_splits_evenly_without_signal() {
-        assert_eq!(normalize(&[0.125, 0.375]), [0.25, 0.75]);
-        assert_eq!(normalize(&[-1.0, 2.0]), [0.0, 1.0]);
-        assert_eq!(normalize(&[0.0, 0.0]), [0.5, 0.5]);
-        assert_eq!(normalize(&[f64::NAN, 0.3]), [0.5, 0.5]);
-    }
-
-    #[test]
     fn render_options_leads_with_the_favorite_then_others_descending() {
         assert_eq!(
             render_options(
@@ -683,9 +675,36 @@ mod tests {
             ),
             "Option B (0.50); Option C 0.30; Option A 0.20\nReason: Option B is favored over Option C (0.50 vs 0.30)."
         );
+    }
+
+    #[test]
+    fn render_options_names_two_tied_options_and_defaults_to_the_first_listed() {
         assert_eq!(
             render_options(&options(&["Option A", "Option B"]), &[0.5, 0.5]),
-            "Option A (0.50); Option B 0.50\nReason: Option A is favored over Option B (0.50 vs 0.50)."
+            "Option A (0.50); Option B 0.50\nReason: Option A and Option B are tied (0.50 each); defaulting to the first listed."
+        );
+        assert_eq!(
+            render_options(&options(&["Option A", "Option B"]), &[0.499, 0.501]),
+            "Option A (0.50); Option B 0.50\nReason: Option A and Option B are tied (0.50 each); defaulting to the first listed."
+        );
+    }
+
+    #[test]
+    fn render_options_lists_every_tied_option() {
+        let third = 1.0 / 3.0;
+        assert_eq!(
+            render_options(
+                &options(&["Option A", "Option B", "Option C"]),
+                &[third, third, third]
+            ),
+            "Option A (0.33); Option B 0.33; Option C 0.33\nReason: Option A, Option B and Option C are tied (0.33 each); defaulting to the first listed."
+        );
+        assert_eq!(
+            render_options(
+                &options(&["Option A", "Option B", "Option C"]),
+                &[0.2, 0.4, 0.4]
+            ),
+            "Option B (0.40); Option C 0.40; Option A 0.20\nReason: Option B and Option C are tied (0.40 each); defaulting to the first listed."
         );
     }
 
@@ -762,6 +781,14 @@ mod tests {
         let refusal = json!({"answers": [{"type": "refusal", "name": "answer"}]});
         assert_eq!(
             answer(DecisionsEndpoint::Decisions, &sky, refusal),
+            Err(DecisionsError::Refused)
+        );
+        let all_zero = json!({"answers": {
+            "option_a": {"noul": 0.0, "type": "noul"},
+            "option_b": {"noul": -0.2, "type": "noul"}
+        }});
+        assert_eq!(
+            answer(DecisionsEndpoint::SystemOne, &options_turns(), all_zero),
             Err(DecisionsError::Refused)
         );
         let missing_option = json!({"answers": {"option_a": {"noul": 0.4, "type": "noul"}}});
