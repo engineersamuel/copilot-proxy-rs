@@ -135,7 +135,7 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
             .output()
             .unwrap(),
     );
-    for command in ["status", "restart", "logs", "down"] {
+    for command in ["status", "restart", "logs", "tui", "down"] {
         success(scratch.script(command).output().unwrap());
     }
     let calls = fs::read_to_string(scratch.0.join("calls")).unwrap();
@@ -157,12 +157,13 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
         "process list",
         "process restart proxy",
         "process logs proxy",
+        "attach",
     ] {
         assert!(calls.contains(required), "missing {required}: {calls}");
     }
     success(
         scratch
-            .script("status")
+            .script("tui")
             .env(
                 "COPILOT_PROXY_RS_PC_SOCKET",
                 scratch.0.join("override.sock"),
@@ -172,6 +173,26 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
     );
     let calls = fs::read_to_string(scratch.0.join("calls")).unwrap();
     assert!(calls.lines().last().unwrap().contains("override.sock"));
+}
+
+#[test]
+fn tui_preserves_attach_failure_and_filters_only_config_notice() {
+    let scratch = Scratch::new();
+    scratch.executable(
+        "process-compose",
+        r#"#!/bin/bash
+set -eu
+[[ $* == *" attach" ]]
+printf '%s\n' 'process compose config home: test' 'cannot attach to proxy' >&2
+exit 42
+"#,
+    );
+    let output = scratch.script("tui").output().unwrap();
+    assert_eq!(output.status.code(), Some(42));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "cannot attach to proxy\n"
+    );
 }
 
 #[test]
