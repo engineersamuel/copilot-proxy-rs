@@ -1375,6 +1375,33 @@ async fn refresh_models_retries_503_then_caches_models() {
 }
 
 #[tokio::test]
+async fn concurrent_stale_model_refreshes_send_one_upstream_models_request() {
+    let mock = support::MockServer::start().await;
+    mock.respond_json(
+        "GET",
+        "/copilot/token",
+        200,
+        serde_json::json!({"token": "copilot-token", "expires_at": 4_102_444_800u64}),
+    )
+    .await;
+    mock.respond_json_delayed(
+        "GET",
+        "/models",
+        100,
+        200,
+        serde_json::json!({"data": [{"id": "gpt-single-flight", "owned_by": "openai"}]}),
+    )
+    .await;
+    let fixture = support::backend_fixture(mock).await;
+
+    let calls = (0..20).map(|_| fixture.backend.refresh_models_if_stale_result());
+    let results = futures_util::future::join_all(calls).await;
+
+    assert!(results.iter().all(Result::is_ok));
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+}
+
+#[tokio::test]
 async fn stream_chat_keeps_gpt55_and_downgrades_effort_on_unsupported_api() {
     let fixture = support::AppFixture::with_mock_copilot().await;
     fixture
