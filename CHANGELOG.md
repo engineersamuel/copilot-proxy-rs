@@ -6,6 +6,9 @@
   lists) with the favored option, normalized per-option probabilities and a
   reason line; a `gpt-6-luna-decisions` refusal now returns 400 with guidance
   instead of a 502 "malformed" error.
+- Decision options tied at two decimals are reported as a tie that defaults to
+  the first listed option; an answer scoring every option 0 returns the same
+  400 as a refusal instead of an equal split.
 - Prepare the repository for safe alpha publication.
 - Add public license, security, contribution, Docker, Compose, and CI guidance.
 - Fail closed for non-loopback binds unless explicitly opted in.
