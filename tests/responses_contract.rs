@@ -3592,6 +3592,57 @@ async fn responses_systemone_model_stream() {
 }
 
 #[tokio::test]
+async fn responses_decisions_follow_up_carries_previous_response_context() {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let model = "gpt-6-luna-decisions";
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        sky_responses_request(model, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let first: Value = serde_json::from_str(&body).unwrap();
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        serde_json::json!({
+            "model": model,
+            "previous_response_id": first["id"],
+            "input": "Are you sure?"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let upstream = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/decisions")
+        .await
+        .unwrap()
+        .to_string();
+    assert!(upstream.contains(support::SKY_QUESTION), "{upstream}");
+    assert!(upstream.contains("Yes (probability 0.99)"), "{upstream}");
+    assert!(upstream.contains("Are you sure?"), "{upstream}");
+}
+
+#[tokio::test]
+async fn responses_decisions_reject_unknown_previous_response_id() {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        serde_json::json!({
+            "model": "gpt-6-luna-decisions",
+            "previous_response_id": "resp_missing",
+            "input": "hi"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(fixture.mock.hits("POST", "/v1/decisions").await, 0);
+}
+
+#[tokio::test]
 async fn responses_image_model_returns_400() {
     let fixture = support::AppFixture::with_nonchat_models().await;
     let (status, _, body) = support::send_json(

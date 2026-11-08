@@ -14,6 +14,10 @@ use crate::errors::{anthropic_error, openai_error};
 use crate::http::errors::{anthropic_copilot_error, openai_copilot_error};
 use crate::http::responses::completed_response_events;
 use crate::models::CopilotModelKind;
+use crate::responses::request::{
+    PreviousResponseCacheStatus, expand_previous_response, normalize_input_items,
+};
+use crate::responses::state::ResponsesTurnIdentity;
 use crate::state::AppState;
 use crate::translate::decisions::{
     DecisionTurn, DecisionsEndpoint, build_upstream_request, decision_to_responses,
@@ -139,7 +143,11 @@ pub(crate) async fn handle_copilot_decisions(
     public_model: &str,
     stream: bool,
 ) -> Response {
-    let Ok(request) = build_upstream_request(endpoint, copilot_model, &api.turns(body)) else {
+    let (body, previous_identity) = match expand_previous(state, api, body).await {
+        Ok(expanded) => expanded,
+        Err(response) => return response,
+    };
+    let Ok(request) = build_upstream_request(endpoint, copilot_model, &api.turns(&body)) else {
         return api.error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -159,14 +167,69 @@ pub(crate) async fn handle_copilot_decisions(
         Err(error) => return api.copilot_error(error),
     };
     match decision_to_responses(endpoint, &upstream, public_model) {
-        Ok(response) if stream => sse_response(render_stream(api, &response)),
-        Ok(response) => Json(render_json(api, &response, public_model)).into_response(),
+        Ok(response) => {
+            if api == ClientApi::Responses {
+                cache_decision_response(state, &body, &response, previous_identity).await;
+            }
+            if stream {
+                sse_response(render_stream(api, &response))
+            } else {
+                Json(render_json(api, &response, public_model)).into_response()
+            }
+        }
         Err(_) => api.error(
             StatusCode::BAD_GATEWAY,
             "server_error",
             "Copilot decisions response was malformed".to_string(),
         ),
     }
+}
+
+/// Resolves `previous_response_id` for Responses requests; an unknown ID is
+/// rejected rather than answered as a standalone turn.
+async fn expand_previous(
+    state: &AppState,
+    api: ClientApi,
+    body: &Map<String, Value>,
+) -> Result<(Map<String, Value>, Option<ResponsesTurnIdentity>), Response> {
+    if api != ClientApi::Responses {
+        return Ok((body.clone(), None));
+    }
+    let expanded = expand_previous_response(&state.responses, body.clone()).await;
+    if expanded.cache_status == PreviousResponseCacheStatus::Miss {
+        return Err(api.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "previous_response_id was not found".to_string(),
+        ));
+    }
+    Ok((expanded.body, expanded.previous_identity))
+}
+
+async fn cache_decision_response(
+    state: &AppState,
+    body: &Map<String, Value>,
+    response: &Value,
+    previous_identity: Option<ResponsesTurnIdentity>,
+) {
+    let (Some(id), Some(input), Some(output)) = (
+        response.get("id").and_then(Value::as_str),
+        normalize_input_items(body.get("input")),
+        response.get("output").and_then(Value::as_array).cloned(),
+    ) else {
+        return;
+    };
+    let identity = previous_identity.unwrap_or_else(|| {
+        let id = uuid::Uuid::new_v4().to_string();
+        ResponsesTurnIdentity {
+            interaction_id: id.clone(),
+            agent_task_id: id,
+        }
+    });
+    state
+        .responses
+        .cache_response_state(id, input, output, identity, false)
+        .await;
 }
 
 async fn post_decision(
