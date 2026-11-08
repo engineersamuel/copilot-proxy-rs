@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use reqwest::{Client, StatusCode};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
@@ -22,6 +23,10 @@ pub struct CopilotEndpoints {
     pub responses_url: String,
     pub responses_ws_url: String,
     pub models_url: String,
+    pub decisions_url: String,
+    pub systemone_url: String,
+    pub images_generations_url: String,
+    pub images_edits_url: String,
 }
 
 impl Default for CopilotEndpoints {
@@ -32,6 +37,11 @@ impl Default for CopilotEndpoints {
             responses_url: "https://api.githubcopilot.com/responses".to_string(),
             responses_ws_url: "wss://api.githubcopilot.com/responses".to_string(),
             models_url: "https://api.githubcopilot.com/models".to_string(),
+            decisions_url: "https://api.githubcopilot.com/v1/decisions".to_string(),
+            systemone_url: "https://api.githubcopilot.com/v1/systemone".to_string(),
+            images_generations_url: "https://api.githubcopilot.com/v1/images/generations"
+                .to_string(),
+            images_edits_url: "https://api.githubcopilot.com/v1/images/edits".to_string(),
         }
     }
 }
@@ -363,14 +373,85 @@ impl CopilotBackend {
         Ok(())
     }
 
+    pub async fn post_decisions(&self, body: Map<String, Value>) -> Result<Value, CopilotError> {
+        self.post_json(&self.endpoints.decisions_url, body, None)
+            .await
+    }
+
+    pub async fn post_systemone(&self, body: Map<String, Value>) -> Result<Value, CopilotError> {
+        self.post_json(&self.endpoints.systemone_url, body, None)
+            .await
+    }
+
+    pub async fn post_images_generations(
+        &self,
+        body: Map<String, Value>,
+    ) -> Result<Value, CopilotError> {
+        self.post_json(&self.endpoints.images_generations_url, body, None)
+            .await
+    }
+
+    pub async fn post_images_edits(&self, body: Map<String, Value>) -> Result<Value, CopilotError> {
+        self.post_json(&self.endpoints.images_edits_url, body, None)
+            .await
+    }
+
+    /// Forwards an already-encoded body (multipart image edits) unmodified.
+    pub async fn post_images_edits_raw(
+        &self,
+        content_type: String,
+        bytes: Bytes,
+        model: Option<String>,
+    ) -> Result<Value, CopilotError> {
+        let body = OutboundBody::Raw {
+            content_type,
+            bytes,
+            model,
+        };
+        self.post_body(&self.endpoints.images_edits_url, body, None)
+            .await
+    }
+
     async fn post_json(
         &self,
         url: &str,
         body: Map<String, Value>,
+        metadata: Option<CopilotRequestMetadata>,
+    ) -> Result<Value, CopilotError> {
+        self.post_body(url, OutboundBody::Json(body), metadata)
+            .await
+    }
+
+    fn outbound_request(
+        &self,
+        url: &str,
+        token: &str,
+        outbound: &OutboundBody,
+        metadata: Option<&CopilotRequestMetadata>,
+    ) -> reqwest::RequestBuilder {
+        let no_fields = Map::new();
+        let fields = outbound.fields().unwrap_or(&no_fields);
+        let mut request = self.client.post(url);
+        for (key, value) in self.headers(token, fields, metadata) {
+            let value = outbound.header_value(&key, value);
+            request = request.header(key, value);
+        }
+        match outbound {
+            OutboundBody::Json(body) => request.json(body),
+            OutboundBody::Raw { bytes, .. } => request.body(bytes.clone()),
+        }
+    }
+
+    async fn post_body(
+        &self,
+        url: &str,
+        outbound: OutboundBody,
         mut metadata: Option<CopilotRequestMetadata>,
     ) -> Result<Value, CopilotError> {
         let family = endpoint_family(url);
-        let model = body.get("model").and_then(Value::as_str);
+        let model = outbound.model();
+        let no_fields = Map::new();
+        let body = outbound.fields().unwrap_or(&no_fields);
         let mut attempt = 0;
         loop {
             if let Some(rate_limiter) = &self.rate_limiter {
@@ -392,11 +473,8 @@ impl CopilotBackend {
                 "copilot request started"
             );
             let token = self.auth.copilot_token().await?;
-            let mut request = self.client.post(url);
-            for (key, value) in self.headers(&token, &body, metadata.as_ref()) {
-                request = request.header(key, value);
-            }
-            let response = match request.json(&body).send().await {
+            let request = self.outbound_request(url, &token, &outbound, metadata.as_ref());
+            let response = match request.send().await {
                 Ok(response) => response,
                 Err(error) => match map_reqwest_error(error) {
                     CopilotError::Transient(transient)
@@ -499,7 +577,7 @@ impl CopilotBackend {
                     family,
                     status,
                     false,
-                    &body,
+                    body,
                     &last_response_text,
                 );
             }
@@ -859,8 +937,48 @@ impl CopilotBackend {
     }
 }
 
+/// Upstream request body: JSON fields, or pre-encoded bytes sent as-is.
+enum OutboundBody {
+    Json(Map<String, Value>),
+    Raw {
+        content_type: String,
+        bytes: Bytes,
+        model: Option<String>,
+    },
+}
+
+impl OutboundBody {
+    fn model(&self) -> Option<&str> {
+        match self {
+            Self::Json(body) => body.get("model").and_then(Value::as_str),
+            Self::Raw { model, .. } => model.as_deref(),
+        }
+    }
+
+    /// Raw bodies keep the caller's Content-Type (e.g. the multipart boundary).
+    fn header_value(&self, key: &str, value: String) -> String {
+        match (self, key) {
+            (Self::Raw { content_type, .. }, "Content-Type") => content_type.clone(),
+            _ => value,
+        }
+    }
+
+    fn fields(&self) -> Option<&Map<String, Value>> {
+        match self {
+            Self::Json(body) => Some(body),
+            Self::Raw { .. } => None,
+        }
+    }
+}
+
 fn endpoint_family(url: &str) -> &'static str {
-    if url.contains("/chat/completions") {
+    if url.contains("/v1/decisions") {
+        "decisions"
+    } else if url.contains("/v1/systemone") {
+        "systemone"
+    } else if url.contains("/v1/images/") {
+        "images"
+    } else if url.contains("/chat/completions") {
         "chat_completions"
     } else if url.contains("/v1/messages") {
         "messages"
@@ -1032,6 +1150,11 @@ fn sanitize_upstream_error(status: u16, raw: &str) -> String {
         "requested model is not supported",
         "unsupported_api_for_model",
         ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR,
+        "no_available_model_endpoints",
+        "missing_required_parameter",
+        "invalid_value",
+        "invalid_image_file",
+        "image_generation_user_error",
     ]
     .into_iter()
     .find(|needle| normalized.contains(needle));
