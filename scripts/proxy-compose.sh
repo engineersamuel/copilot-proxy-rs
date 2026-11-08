@@ -94,6 +94,7 @@ case "$command" in
         wait_ready
         ;;
     status) bounded "${pc[@]}" process list -o wide ;;
+    tui) exec "${pc[@]}" attach 2> >(grep -v 'process compose config home' >&2) ;;
     logs)
         for arg in "$@"; do
             # Only an explicit follow may stream indefinitely.
@@ -104,7 +105,7 @@ case "$command" in
         bounded "${pc[@]}" process logs proxy --tail 100 "$@"
         ;;
     *)
-        echo "Usage: $0 {up|down|restart|status|logs [process-compose log options]}" >&2
+        echo "Usage: $0 {up|down|restart|status|tui|logs [process-compose log options]}" >&2
         exit 2
         ;;
 esac

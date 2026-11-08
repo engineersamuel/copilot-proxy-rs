@@ -20,3 +20,9 @@ run = "scripts/proxy-compose.sh status"
 [tasks."proxy:logs"]
 description = "Show the last 100 proxy log lines"
 run = "scripts/proxy-compose.sh logs"
+
+[tasks."proxy:tui"]
+description = "Open the proxy status and live logs TUI; q exits without stopping services"
+quiet = true
+raw = true
+run = "scripts/proxy-compose.sh tui"
