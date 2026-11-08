@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Raise the default `copilot_max_rate` from 15 to 120 requests per minute;
+  environment/file overrides and `0` to disable rate limiting are unchanged.
 - Decision models answer prompts that name options (`Option A: ...`, numbered
   lists) with the favored option, normalized per-option probabilities and a
   reason line; a `gpt-6-luna-decisions` refusal now returns 400 with guidance

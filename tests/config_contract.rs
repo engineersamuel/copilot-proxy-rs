@@ -144,7 +144,7 @@ fn loads_default_json_config_from_copilot_proxy_rs_home_dir() {
 }
 
 #[test]
-fn copilot_max_rate_defaults_to_120_without_env_or_file_value() {
+fn copilot_max_rate_defaults_to_120_unless_file_sets_it() {
     let temp = repo_tempdir("config-rate-default-");
     let env =
         EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
@@ -154,25 +154,13 @@ fn copilot_max_rate_defaults_to_120_without_env_or_file_value() {
         AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
         120
     );
-    fs::write(temp.path().join("config.json"), "{}").unwrap();
-    assert_eq!(
-        AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
-        120
-    );
-}
-
-#[test]
-fn copilot_max_rate_file_value_overrides_default() {
-    let temp = repo_tempdir("config-rate-file-");
-    fs::write(
-        temp.path().join("config.json"),
-        r#"{"copilot_max_rate":42}"#,
-    )
-    .unwrap();
-    let env =
-        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
-
-    assert_eq!(AppConfig::load_from_env(&env).unwrap().copilot_max_rate, 42);
+    for (contents, expected) in [("{}", 120), (r#"{"copilot_max_rate":42}"#, 42)] {
+        fs::write(temp.path().join("config.json"), contents).unwrap();
+        assert_eq!(
+            AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+            expected
+        );
+    }
 }
 
 #[test]

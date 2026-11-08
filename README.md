@@ -212,8 +212,16 @@ Important variables:
 | `COPILOT_TIMEOUT` | Total upstream request timeout in seconds (also used for stream read idle timeout and Linux `TCP_USER_TIMEOUT`). Defaults to `300`. |
 | `COPILOT_CONNECT_TIMEOUT` | Upstream connect/TLS handshake timeout in seconds. Defaults to `60`. |
 | `COPILOT_MODELS_TTL` | Seconds to cache GitHub Copilot `/models` metadata. Defaults to `300`. |
+| `COPILOT_MAX_RATE` | Upstream Copilot HTTP requests per minute (`copilot_max_rate` in `config.json`). Defaults to `120`; `0` disables the limiter. |
 | `COPILOT_PROXY_RS_WEB_SEARCH_MODEL` | Responses-capable model used to translate Anthropic hosted web-search requests. Defaults to `gpt-5.6-sol`. |
 | `RUST_LOG` | Rust logging filter. Docker defaults to `info`. |
+
+One token bucket is shared by all upstream Copilot HTTP requests: chat,
+messages, responses, decisions/systemone, images, `/models`, and retries.
+Its burst size equals `copilot_max_rate`, and it refills at that many requests
+per minute. WebSocket traffic and token refresh are not rate limited by this
+bucket. Upstream HTTP 429 responses are retried up to `copilot_retry_max`
+(`COPILOT_RETRY_MAX`, default `3`), honoring numeric `Retry-After` seconds.
 
 ### Large Codex conversations
 

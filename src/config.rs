@@ -195,7 +195,7 @@ impl Default for AppConfig {
             copilot_models_ttl: 300,
             copilot_retry_max: 3,
             copilot_retry_base_delay: 1.0,
-            copilot_max_rate: 15,
+            copilot_max_rate: 120,
             web_search_model: "gpt-5.6-sol".to_string(),
             context_guard_threshold: 0.90,
             bedrock_region_prefix: "us".to_string(),
