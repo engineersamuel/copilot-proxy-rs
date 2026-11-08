@@ -203,42 +203,51 @@ fn first_sentence(segment: &str) -> &str {
         .trim_end()
 }
 
-/// Clamps to [0, 1] and scales to sum 1; splits evenly when there is no signal.
-pub fn normalize(probabilities: &[f64]) -> Vec<f64> {
-    let clamped = probabilities
-        .iter()
-        .map(|probability| probability.clamp(0.0, 1.0))
-        .collect::<Vec<_>>();
-    let sum = clamped.iter().sum::<f64>();
-    if sum > 0.0 && sum.is_finite() {
-        clamped
+/// Scales clamped probabilities to sum 1; `None` when there is no signal.
+fn normalize(probabilities: &[f64]) -> Option<Vec<f64>> {
+    let sum = probabilities.iter().sum::<f64>();
+    (sum > 0.0).then(|| {
+        probabilities
             .iter()
             .map(|probability| probability / sum)
             .collect()
-    } else {
-        vec![1.0 / clamped.len() as f64; clamped.len()]
-    }
+    })
 }
 
-/// `Option B (0.72); Option A 0.28` plus a reason line; ties keep listed order.
+/// `Option B (0.72); Option A 0.28` plus a reason line. Options are ranked by
+/// their displayed value, so options tied at display precision keep listed order.
 pub fn render_options(options: &[DecisionOption], probabilities: &[f64]) -> String {
     let mut ranked = options
         .iter()
         .map(|option| option.label.as_str())
-        .zip(probabilities.iter().copied())
+        .zip(
+            probabilities
+                .iter()
+                .map(|probability| format!("{probability:.2}")),
+        )
         .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    ranked.sort_by(|left, right| right.1.cmp(&left.1));
     let Some(((top, top_probability), others)) = ranked.split_first() else {
         return String::new();
     };
-    let mut line = format!("{top} ({top_probability:.2})");
+    let mut line = format!("{top} ({top_probability})");
     for (label, probability) in others {
-        line.push_str(&format!("; {label} {probability:.2}"));
+        line.push_str(&format!("; {label} {probability}"));
     }
-    if let Some((runner_up, probability)) = others.first() {
-        line.push_str(&format!(
-            "\nReason: {top} is favored over {runner_up} ({top_probability:.2} vs {probability:.2})."
-        ));
+    let tied = ranked
+        .iter()
+        .take_while(|(_, probability)| probability == top_probability)
+        .map(|(label, _)| *label)
+        .collect::<Vec<_>>();
+    match (tied.split_last(), others.first()) {
+        (Some((last, first)), _) if !first.is_empty() => line.push_str(&format!(
+            "\nReason: {} and {last} are tied ({top_probability} each); defaulting to the first listed.",
+            first.join(", ")
+        )),
+        (_, Some((runner_up, probability))) => line.push_str(&format!(
+            "\nReason: {top} is favored over {runner_up} ({top_probability} vs {probability})."
+        )),
+        _ => {}
     }
     line
 }
@@ -423,7 +432,8 @@ fn decision_text(
                 .iter()
                 .map(|option| answer_probability(endpoint, upstream, &option.key()))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(render_options(&found.options, &normalize(&probabilities)))
+            let normalized = normalize(&probabilities).ok_or(DecisionsError::Refused)?;
+            Ok(render_options(&found.options, &normalized))
         }
     }
 }
