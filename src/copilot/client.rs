@@ -99,6 +99,8 @@ pub struct CopilotBackend {
     client: Client,
     rate_limiter: Option<Arc<TokenBucket>>,
     models_refresh_lock: tokio::sync::Mutex<()>,
+    /// Count of finished /models fetch attempts; only incremented while holding `models_refresh_lock`.
+    models_refresh_attempts: std::sync::atomic::AtomicU64,
 }
 
 impl CopilotBackend {
@@ -123,6 +125,7 @@ impl CopilotBackend {
             client,
             rate_limiter,
             models_refresh_lock: tokio::sync::Mutex::new(()),
+            models_refresh_attempts: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -364,11 +367,18 @@ impl CopilotBackend {
         if !self.models_refresh_needed().await {
             return Ok(());
         }
+        use std::sync::atomic::Ordering;
+        let seen = self.models_refresh_attempts.load(Ordering::Acquire);
         let _guard = self.models_refresh_lock.lock().await;
-        if !self.models_refresh_needed().await {
+        // Another caller attempted a refresh while we waited; share its outcome.
+        if self.models_refresh_attempts.load(Ordering::Acquire) != seen
+            || !self.models_refresh_needed().await
+        {
             return Ok(());
         }
-        let value = self.get_json(&self.endpoints.models_url, None).await?;
+        let fetched = self.get_json(&self.endpoints.models_url, None).await;
+        self.models_refresh_attempts.fetch_add(1, Ordering::Release);
+        let value = fetched?;
         if let Some(models) = value.get("data").and_then(Value::as_array) {
             self.models.set_copilot_models(models.clone()).await;
         }
