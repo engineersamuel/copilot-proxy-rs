@@ -2358,7 +2358,7 @@ async fn model_registry_entries_carry_type_for_static_local_and_legacy_models() 
     };
     let legacy = entry("gpt-4o");
     assert_eq!(legacy["type"], "chat");
-    assert!(legacy.get("supported_endpoints").is_none());
+    assert_eq!(legacy["supported_endpoints"], serde_json::json!([]));
     assert_eq!(entry("text-embedding-3-small")["type"], "embeddings");
     assert_eq!(entry("no-capabilities-model")["type"], "chat");
     let static_model = entry("gpt-5.6-sol");

@@ -161,8 +161,7 @@ pub struct ModelEntry {
     pub owned_by: String,
     #[serde(rename = "type")]
     pub model_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supported_endpoints: Option<Vec<String>>,
+    pub supported_endpoints: Vec<String>,
 }
 
 /// How a Copilot model is served, from cached upstream `capabilities.type`
@@ -401,7 +400,7 @@ fn static_model_entry(model: &StaticCopilotModel) -> ModelEntry {
         created: model.created,
         owned_by: model.owned_by.to_string(),
         model_type: "chat".to_string(),
-        supported_endpoints: non_empty(static_supported_endpoints(model)),
+        supported_endpoints: static_supported_endpoints(model),
     }
 }
 
@@ -433,7 +432,8 @@ fn dynamic_model_entry(value: &serde_json::Value) -> Option<ModelEntry> {
         model_type: dynamic_model_type(value),
         supported_endpoints: dynamic_supported_endpoints(value)
             .and_then(non_empty)
-            .or_else(|| static_copilot_model(id).map(static_supported_endpoints)),
+            .or_else(|| static_copilot_model(id).map(static_supported_endpoints))
+            .unwrap_or_default(),
     })
 }
 
@@ -546,7 +546,7 @@ fn local_model_entry(model_id: &str) -> ModelEntry {
         created: 1_700_000_000,
         owned_by: "local".to_string(),
         model_type: "chat".to_string(),
-        supported_endpoints: Some(local_supported_endpoints()),
+        supported_endpoints: local_supported_endpoints(),
     }
 }
 
