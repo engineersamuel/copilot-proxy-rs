@@ -1899,3 +1899,114 @@ async fn messages_non_adaptive_models_convert_adaptive_thinking_to_enabled_and_s
     assert_eq!(outbound["thinking"]["budget_tokens"], 10000);
     assert!(outbound.get("output_config").is_none());
 }
+
+// ─── Decisions and image models ──────────────────────────────────────────────
+
+fn sky_messages_request(model: &str, stream: bool) -> Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": 64,
+        "stream": stream,
+        "system": "You are helpful",
+        "messages": [{"role": "user", "content": support::SKY_QUESTION}]
+    })
+}
+
+async fn assert_messages_decision_answer(model: &str, input_tokens: u64, output_tokens: u64) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/messages",
+        sky_messages_request(model, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["type"], "message");
+    assert_eq!(body["role"], "assistant");
+    assert_eq!(body["model"], model);
+    assert_eq!(body["content"][0]["type"], "text");
+    assert_eq!(body["content"][0]["text"], "Yes (probability 0.99)");
+    assert_eq!(body["stop_reason"], "end_turn");
+    assert_eq!(body["usage"]["input_tokens"], input_tokens);
+    assert_eq!(body["usage"]["output_tokens"], output_tokens);
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+async fn assert_messages_decision_stream(model: &str) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, content_type, body) = support::send_json(
+        &fixture.state,
+        "/v1/messages",
+        sky_messages_request(model, true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "{content_type}"
+    );
+    let events = support::sse_data(&body);
+    let types: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect();
+    assert_eq!(types.first(), Some(&"message_start"), "{body}");
+    assert_eq!(types.last(), Some(&"message_stop"), "{body}");
+    for expected in [
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+    ] {
+        assert!(types.contains(&expected), "missing {expected}: {body}");
+    }
+    assert_eq!(events[0]["message"]["model"], model);
+    let text: String = events
+        .iter()
+        .filter(|event| event["type"] == "content_block_delta")
+        .filter_map(|event| event["delta"]["text"].as_str())
+        .collect();
+    assert_eq!(text, "Yes (probability 0.99)");
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+#[tokio::test]
+async fn messages_decisions_model_non_stream() {
+    assert_messages_decision_answer("gpt-6-luna-decisions", 173, 0).await;
+}
+
+#[tokio::test]
+async fn messages_decisions_model_stream() {
+    assert_messages_decision_stream("gpt-6-luna-decisions").await;
+}
+
+#[tokio::test]
+async fn messages_systemone_model_non_stream() {
+    assert_messages_decision_answer("microsoft-decision-1", 51, 1).await;
+}
+
+#[tokio::test]
+async fn messages_systemone_model_stream() {
+    assert_messages_decision_stream("microsoft-decision-1").await;
+}
+
+#[tokio::test]
+async fn messages_image_model_returns_anthropic_400() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/messages",
+        sky_messages_request("gpt-image-2.5-flare", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        support::image_model_message("/v1/messages")
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}

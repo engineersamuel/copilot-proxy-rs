@@ -1332,3 +1332,236 @@ async fn chat_completions_logs_safe_request_metadata() {
     assert!(!rendered.contains("private answer"));
     assert!(!rendered.contains("secret_tool"));
 }
+
+// ─── Decisions and image models ──────────────────────────────────────────────
+
+fn sky_chat_request(model: &str, stream: bool) -> Value {
+    serde_json::json!({
+        "model": model,
+        "stream": stream,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": support::SKY_QUESTION}
+        ]
+    })
+}
+
+async fn assert_chat_decision_answer(model: &str, expected_usage: Value) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        sky_chat_request(model, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["model"], model);
+    assert_eq!(body["choices"][0]["message"]["role"], "assistant");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "Yes (probability 0.99)"
+    );
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+    assert_eq!(body["usage"], expected_usage);
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+async fn assert_chat_decision_stream(model: &str) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, content_type, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        sky_chat_request(model, true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "{content_type}"
+    );
+    assert!(body.trim_end().ends_with("data: [DONE]"), "{body}");
+    let chunks = support::sse_data(&body);
+    assert!(chunks.iter().all(|chunk| chunk["model"] == model), "{body}");
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk["object"] == "chat.completion.chunk")
+    );
+    assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+    let text: String = chunks
+        .iter()
+        .filter_map(|chunk| chunk["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert_eq!(text, "Yes (probability 0.99)");
+    let finish = chunks
+        .iter()
+        .find_map(|chunk| chunk["choices"][0]["finish_reason"].as_str());
+    assert_eq!(finish, Some("stop"));
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+#[tokio::test]
+async fn chat_decisions_model_non_stream_answers_from_decisions_endpoint() {
+    assert_chat_decision_answer(
+        "gpt-6-luna-decisions",
+        serde_json::json!({"prompt_tokens": 173, "completion_tokens": 0, "total_tokens": 173}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chat_decisions_model_stream_single_chunk_sse() {
+    assert_chat_decision_stream("gpt-6-luna-decisions").await;
+}
+
+#[tokio::test]
+async fn chat_systemone_model_non_stream_answers_from_systemone_endpoint() {
+    assert_chat_decision_answer(
+        "microsoft-decision-1",
+        serde_json::json!({"prompt_tokens": 51, "completion_tokens": 1, "total_tokens": 52}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chat_systemone_model_stream_single_chunk_sse() {
+    assert_chat_decision_stream("microsoft-decision-1").await;
+}
+
+#[tokio::test]
+async fn chat_decisions_no_answer_probability_is_502() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/decisions",
+            200,
+            serde_json::json!({"model": "gpt-6-luna", "answers": []}),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        sky_chat_request("gpt-6-luna-decisions", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "server_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot decisions response was malformed"
+    );
+}
+
+#[tokio::test]
+async fn chat_decisions_upstream_400_is_sanitized() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let recorded = support::fixture_json("copilot_decisions_predicate.json");
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/decisions",
+            400,
+            recorded["error_wrong_decision_model"]["response"].clone(),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        sky_chat_request("gpt-6-luna-decisions", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!body.contains("user constraints"), "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot request failed with HTTP 400: no_available_model_endpoints"
+    );
+}
+
+#[tokio::test]
+async fn chat_decisions_requires_user_message() {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        serde_json::json!({
+            "model": "gpt-6-luna-decisions",
+            "messages": [{"role": "system", "content": "You are helpful"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        "decisions models require a user message"
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+#[tokio::test]
+async fn chat_image_model_returns_400_naming_images_endpoints() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    for stream in [false, true] {
+        let (status, _, body) = support::send_json(
+            &fixture.state,
+            "/v1/chat/completions",
+            sky_chat_request("gpt-image-2.5-flare", stream),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            support::image_model_message("/v1/chat/completions")
+        );
+    }
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+#[tokio::test]
+async fn chat_existing_model_unchanged_with_nonchat_catalog() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "claude-sonnet-5.5",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]
+            }),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        sky_chat_request("claude-sonnet-5.5", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "hi");
+    assert_eq!(fixture.mock.hits("POST", "/chat/completions").await, 1);
+    assert_eq!(fixture.mock.hits("POST", "/v1/decisions").await, 0);
+    let upstream = fixture
+        .mock
+        .last_request_body_json("POST", "/chat/completions")
+        .await
+        .unwrap();
+    assert_eq!(upstream["temperature"], 0.2);
+    assert!(upstream.get("questions").is_none());
+}

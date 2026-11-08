@@ -253,6 +253,10 @@ async fn post_chat_retries_timeout_then_returns_json() {
             responses_url: format!("http://{addr}/responses"),
             responses_ws_url: format!("ws://{addr}/responses"),
             models_url: format!("http://{addr}/models"),
+            decisions_url: format!("http://{addr}/v1/decisions"),
+            systemone_url: format!("http://{addr}/v1/systemone"),
+            images_generations_url: format!("http://{addr}/v1/images/generations"),
+            images_edits_url: format!("http://{addr}/v1/images/edits"),
         },
     ));
 
@@ -347,6 +351,10 @@ async fn get_response_retries_timeout_then_returns_json() {
             responses_url: format!("http://{addr}/responses"),
             responses_ws_url: format!("ws://{addr}/responses"),
             models_url: format!("http://{addr}/models"),
+            decisions_url: format!("http://{addr}/v1/decisions"),
+            systemone_url: format!("http://{addr}/v1/systemone"),
+            images_generations_url: format!("http://{addr}/v1/images/generations"),
+            images_edits_url: format!("http://{addr}/v1/images/edits"),
         },
     ));
 
@@ -502,6 +510,10 @@ async fn stream_messages_retries_timeout_then_returns_response() {
             responses_url: format!("http://{addr}/responses"),
             responses_ws_url: format!("ws://{addr}/responses"),
             models_url: format!("http://{addr}/models"),
+            decisions_url: format!("http://{addr}/v1/decisions"),
+            systemone_url: format!("http://{addr}/v1/systemone"),
+            images_generations_url: format!("http://{addr}/v1/images/generations"),
+            images_edits_url: format!("http://{addr}/v1/images/edits"),
         },
     ));
 

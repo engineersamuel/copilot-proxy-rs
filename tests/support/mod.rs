@@ -264,8 +264,87 @@ impl MockServer {
                 self.base_url.trim_start_matches("http://")
             ),
             models_url: format!("{}/models", self.base_url),
+            decisions_url: format!("{}/v1/decisions", self.base_url),
+            systemone_url: format!("{}/v1/systemone", self.base_url),
+            images_generations_url: format!("{}/v1/images/generations", self.base_url),
+            images_edits_url: format!("{}/v1/images/edits", self.base_url),
         }
     }
+
+    #[allow(dead_code)]
+    pub async fn last_request_body_bytes(&self, method: &str, path: &str) -> Option<Vec<u8>> {
+        self.state
+            .last_request_body
+            .lock()
+            .await
+            .get(&(method.to_string(), path.to_string()))
+            .cloned()
+    }
+
+    /// Asserts no chat/messages/responses generation endpoint was called.
+    #[allow(dead_code)]
+    pub async fn assert_no_generation_calls(&self) {
+        for path in ["/chat/completions", "/responses", "/v1/messages"] {
+            assert_eq!(self.hits("POST", path).await, 0, "unexpected POST {path}");
+        }
+    }
+}
+
+/// Loads `tests/fixtures/<name>` (recorded upstream cases).
+#[allow(dead_code)]
+pub fn fixture_json(name: &str) -> Value {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Sends one request through the proxy router; returns status, content type and body text.
+#[allow(dead_code)]
+pub async fn send(
+    state: &AppState,
+    uri: &str,
+    content_type: &str,
+    body: impl Into<axum::body::Body>,
+) -> (StatusCode, String, String) {
+    use tower::ServiceExt as _;
+    let response = copilot_proxy_rs::http::router(state.clone())
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", content_type)
+                .body(body.into())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        content_type,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
+#[allow(dead_code)]
+pub async fn send_json(state: &AppState, uri: &str, body: Value) -> (StatusCode, String, String) {
+    send(state, uri, "application/json", body.to_string()).await
+}
+
+/// `data:` payloads of an SSE body, parsed as JSON (skips `[DONE]`).
+#[allow(dead_code)]
+pub fn sse_data(body: &str) -> Vec<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|payload| *payload != "[DONE]")
+        .map(|payload| serde_json::from_str(payload).unwrap())
+        .collect()
 }
 
 async fn handle_mock(
@@ -486,6 +565,106 @@ impl AppFixture {
             _config_dir: temp,
         }
     }
+
+    /// Copilot fixture whose `/models` catalog is the recorded non-chat sample.
+    pub async fn with_nonchat_models() -> Self {
+        let fixture = Self::with_mock_copilot().await;
+        fixture
+            .mock
+            .respond_json(
+                "GET",
+                "/models",
+                200,
+                fixture_json("copilot_models_nonchat.json"),
+            )
+            .await;
+        fixture
+    }
+
+    /// Non-chat catalog plus recorded `/v1/decisions` and `/v1/systemone` answers.
+    pub async fn with_decision_models() -> Self {
+        let fixture = Self::with_nonchat_models().await;
+        let decisions = fixture_json("copilot_decisions_predicate.json");
+        let systemone = fixture_json("copilot_systemone_noul.json");
+        fixture
+            .mock
+            .respond_json(
+                "POST",
+                "/v1/decisions",
+                200,
+                decisions["predicate_messages_input"]["response"].clone(),
+            )
+            .await;
+        fixture
+            .mock
+            .respond_json(
+                "POST",
+                "/v1/systemone",
+                200,
+                systemone["noul_messages_state"]["response"].clone(),
+            )
+            .await;
+        fixture
+    }
+}
+
+/// Recorded upstream request for a decision model's synthesized sky question.
+#[allow(dead_code)]
+pub fn recorded_decision_request(model: &str) -> (&'static str, Value) {
+    match model {
+        "gpt-6-luna-decisions" => (
+            "/v1/decisions",
+            fixture_json("copilot_decisions_predicate.json")["predicate_messages_input"]["request"]
+                .clone(),
+        ),
+        _ => (
+            "/v1/systemone",
+            fixture_json("copilot_systemone_noul.json")["noul_messages_state"]["request"].clone(),
+        ),
+    }
+}
+
+#[allow(dead_code)]
+pub const SKY_QUESTION: &str = "Is the sky blue on a clear day?";
+
+/// Asserts the decision model hit only its own endpoint, with the recorded request body.
+#[allow(dead_code)]
+pub async fn assert_decision_upstream(mock: &MockServer, model: &str, calls: usize) {
+    let (path, expected) = recorded_decision_request(model);
+    let other = if path == "/v1/decisions" {
+        "/v1/systemone"
+    } else {
+        "/v1/decisions"
+    };
+    assert_eq!(mock.hits("POST", path).await, calls);
+    assert_eq!(mock.hits("POST", other).await, 0);
+    assert_eq!(
+        mock.last_request_body_json("POST", path).await.unwrap(),
+        expected
+    );
+    mock.assert_no_generation_calls().await;
+}
+
+/// Asserts an image-model rejection made no upstream POST at all.
+#[allow(dead_code)]
+pub async fn assert_no_upstream_posts(mock: &MockServer) {
+    for path in [
+        "/v1/decisions",
+        "/v1/systemone",
+        "/v1/images/generations",
+        "/v1/images/edits",
+    ] {
+        assert_eq!(mock.hits("POST", path).await, 0, "unexpected POST {path}");
+    }
+    mock.assert_no_generation_calls().await;
+}
+
+#[allow(dead_code)]
+pub fn image_model_message(route: &str) -> String {
+    format!(
+        "model 'gpt-image-2.5-flare' is an image model and does not support {route}; \
+         use POST /v1/images/generations or POST /v1/images/edits"
+    )
 }
 
 #[allow(dead_code)]

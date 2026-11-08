@@ -1,0 +1,38 @@
+{
+  "noul_messages_state": {
+    "request": {
+      "model": "microsoft-decision-1",
+      "state": [
+        {
+          "role": "system",
+          "content": "You are helpful"
+        },
+        {
+          "role": "user",
+          "content": "Is the sky blue on a clear day?"
+        }
+      ],
+      "questions": {
+        "answer": {
+          "type": "noul",
+          "instructions": "Is the sky blue on a clear day?"
+        }
+      }
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "microsoft-decision-1",
+      "answers": {
+        "answer": {
+          "noul": 0.9947798745330428,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "input_tokens": 51,
+        "output_tokens": 1
+      }
+    }
+  }
+}

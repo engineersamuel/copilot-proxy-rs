@@ -3491,3 +3491,121 @@ async fn responses_http_preserves_codex_146_flat_top_level_tools() {
         }])
     );
 }
+
+// ─── Decisions and image models ──────────────────────────────────────────────
+
+fn sky_responses_request(model: &str, stream: bool) -> Value {
+    serde_json::json!({
+        "model": model,
+        "stream": stream,
+        "instructions": "You are helpful",
+        "input": support::SKY_QUESTION
+    })
+}
+
+async fn assert_responses_decision_answer(model: &str, usage: Value) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        sky_responses_request(model, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["object"], "response");
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["model"], model);
+    assert!(body["id"].as_str().unwrap().starts_with("resp_"));
+    assert_eq!(body["output"][0]["type"], "message");
+    assert_eq!(body["output"][0]["role"], "assistant");
+    assert_eq!(body["output"][0]["content"][0]["type"], "output_text");
+    assert_eq!(
+        body["output"][0]["content"][0]["text"],
+        "Yes (probability 0.99)"
+    );
+    assert_eq!(body["usage"], usage);
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+async fn assert_responses_decision_stream(model: &str) {
+    let fixture = support::AppFixture::with_decision_models().await;
+    let (status, content_type, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        sky_responses_request(model, true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "{content_type}"
+    );
+    assert!(body.trim_end().ends_with("data: [DONE]"), "{body}");
+    let events = support::sse_data(&body);
+    let types: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect();
+    assert_eq!(types.first(), Some(&"response.created"), "{body}");
+    assert_eq!(types.last(), Some(&"response.completed"), "{body}");
+    assert!(types.contains(&"response.output_item.added"), "{body}");
+    let text: String = events
+        .iter()
+        .filter(|event| event["type"] == "response.output_text.delta")
+        .filter_map(|event| event["delta"].as_str())
+        .collect();
+    assert_eq!(text, "Yes (probability 0.99)");
+    let completed = &events.last().unwrap()["response"];
+    assert_eq!(completed["model"], model);
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(events[0]["response"]["model"], model);
+    support::assert_decision_upstream(&fixture.mock, model, 1).await;
+}
+
+#[tokio::test]
+async fn responses_decisions_model_non_stream() {
+    assert_responses_decision_answer(
+        "gpt-6-luna-decisions",
+        serde_json::json!({"input_tokens": 173, "output_tokens": 0, "total_tokens": 173}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn responses_decisions_model_stream() {
+    assert_responses_decision_stream("gpt-6-luna-decisions").await;
+}
+
+#[tokio::test]
+async fn responses_systemone_model_non_stream() {
+    assert_responses_decision_answer(
+        "microsoft-decision-1",
+        serde_json::json!({"input_tokens": 51, "output_tokens": 1, "total_tokens": 52}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn responses_systemone_model_stream() {
+    assert_responses_decision_stream("microsoft-decision-1").await;
+}
+
+#[tokio::test]
+async fn responses_image_model_returns_400() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/responses",
+        sky_responses_request("gpt-image-2.5-flare", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        support::image_model_message("/v1/responses")
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
