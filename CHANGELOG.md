@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Decision models answer prompts that name options (`Option A: ...`, numbered
+  lists) with the favored option, normalized per-option probabilities and a
+  reason line; a `gpt-6-luna-decisions` refusal now returns 400 with guidance
+  instead of a 502 "malformed" error.
 - Prepare the repository for safe alpha publication.
 - Add public license, security, contribution, Docker, Compose, and CI guidance.
 - Fail closed for non-loopback binds unless explicitly opted in.
