@@ -21,7 +21,8 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let mut config = AppConfig::load()?;
+    let load = AppConfig::load_with_notices()?;
+    let mut config = load.config;
 
     if let Some(host) = cli.host {
         config.host = host;
@@ -32,6 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.validate_bind_safety()?;
 
     copilot_proxy_rs::telemetry::init_logging()?;
+    if let Some(path) = &load.path {
+        tracing::info!(config.path = %path.display(), "loaded config file");
+    }
+    for notice in &load.notices {
+        tracing::warn!("{notice}");
+    }
 
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;

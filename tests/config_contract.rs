@@ -567,7 +567,7 @@ port = 9191
 copilot_retry_base_delay = 2
 update_check = "false"
 auto_update = true
-model_excludes = ["gpt-4*"]
+allowed_origins = ["http://localhost:3000"]
 
 [local_models.qwen-local]
 base_url = "http://127.0.0.1:8081/v1"
@@ -582,7 +582,10 @@ upstream_model = 'models\Qwen.gguf'
     assert_eq!(config.copilot_retry_base_delay, 2.0);
     assert!(!config.update_check);
     assert!(config.auto_update);
-    assert_eq!(config.model_excludes, vec!["gpt-4*".to_string()]);
+    assert_eq!(
+        config.allowed_origins,
+        vec!["http://localhost:3000".to_string()]
+    );
     let local = config.local_models.get("qwen-local").unwrap();
     assert_eq!(local.base_url, "http://127.0.0.1:8081/v1");
     assert_eq!(local.upstream_model, r"models\Qwen.gguf");
