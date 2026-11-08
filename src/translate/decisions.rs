@@ -18,7 +18,229 @@ pub struct DecisionTurn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionsError {
     MissingUserMessage,
-    MalformedUpstream,
+    /// The upstream answered with a `refusal` instead of a probability.
+    Refused,
+    /// Carries a low-cardinality reason that is safe to log.
+    MalformedUpstream(&'static str),
+}
+
+/// One labeled choice found in the user's question, e.g. `Option B`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionOption {
+    pub label: String,
+    pub text: String,
+}
+
+impl DecisionOption {
+    /// Upstream question name, e.g. `option_b`.
+    pub fn key(&self) -> String {
+        self.label.to_lowercase().replace(' ', "_")
+    }
+}
+
+/// Two or more distinct options plus the text that precedes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionOptions {
+    pub context: String,
+    pub options: Vec<DecisionOption>,
+}
+
+impl DecisionOptions {
+    fn instructions(&self, option: &DecisionOption) -> String {
+        format!(
+            "{} Should we pick {}: {}?",
+            self.context, option.label, option.text
+        )
+        .trim_start()
+        .to_string()
+    }
+}
+
+/// What the last user message asks: a yes/no question or a pick among options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionQuestion {
+    YesNo(String),
+    Options(DecisionOptions),
+}
+
+impl DecisionQuestion {
+    fn parse(text: &str) -> Self {
+        extract_options(text).map_or_else(|| Self::YesNo(text.to_string()), Self::Options)
+    }
+
+    /// `(name, instructions)` for each upstream question.
+    fn upstream_questions(&self) -> Vec<(String, String)> {
+        match self {
+            Self::YesNo(text) => vec![("answer".to_string(), text.clone())],
+            Self::Options(found) => found
+                .options
+                .iter()
+                .map(|option| (option.key(), found.instructions(option)))
+                .collect(),
+        }
+    }
+}
+
+/// Finds `Option X: ..` / `Option X - ..` labels, else a numbered list.
+pub fn extract_options(text: &str) -> Option<DecisionOptions> {
+    let found = labeled_options(text).or_else(|| numbered_options(text))?;
+    let mut keys = found
+        .options
+        .iter()
+        .map(DecisionOption::key)
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    let usable = keys.len() == found.options.len()
+        && found.options.len() >= 2
+        && found.options.iter().all(|option| !option.text.is_empty());
+    usable.then_some(found)
+}
+
+struct LabelMarker {
+    start: usize,
+    body: usize,
+    label: String,
+}
+
+/// Parses `option <letter|number> [:|-]` at `start`, which must begin a word.
+fn label_marker(text: &str, start: usize) -> Option<LabelMarker> {
+    let word_start = text[..start]
+        .chars()
+        .next_back()
+        .is_none_or(|before| !before.is_alphanumeric());
+    let rest = text.get(start..start + 6)?;
+    if !word_start || !rest.eq_ignore_ascii_case("option") {
+        return None;
+    }
+    let after = &text[start + 6..];
+    let token_text = after.trim_start_matches(' ');
+    if token_text.len() == after.len() {
+        return None;
+    }
+    let token_len = token_text
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(token_text.len());
+    let token = &token_text[..token_len];
+    let single_letter = token.len() == 1 && token.chars().all(|c| c.is_ascii_alphabetic());
+    let number = !token.is_empty() && token.chars().all(|c| c.is_ascii_digit());
+    let separator = token_text[token_len..].trim_start_matches(' ');
+    let body = separator.strip_prefix([':', '-'])?;
+    (single_letter || number).then(|| LabelMarker {
+        start,
+        body: text.len() - body.len(),
+        label: format!("Option {}", token.to_uppercase()),
+    })
+}
+
+fn labeled_options(text: &str) -> Option<DecisionOptions> {
+    let markers = text
+        .char_indices()
+        .filter_map(|(start, _)| label_marker(text, start))
+        .collect::<Vec<_>>();
+    let first = markers.first()?;
+    let ends = markers.iter().skip(1).map(|marker| marker.start);
+    let options = markers
+        .iter()
+        .zip(ends.chain([text.len()]))
+        .map(|(marker, end)| DecisionOption {
+            label: marker.label.clone(),
+            text: first_sentence(&text[marker.body..end]).to_string(),
+        })
+        .collect();
+    Some(DecisionOptions {
+        context: text[..first.start].trim().to_string(),
+        options,
+    })
+}
+
+/// Parses `12. text` or `12) text` into its number and text.
+fn numbered_item(line: &str) -> Option<(u64, &str)> {
+    let line = line.trim_start();
+    let digits = line.find(|c: char| !c.is_ascii_digit())?;
+    let number = line[..digits].parse().ok()?;
+    let item = line[digits..].strip_prefix(['.', ')'])?;
+    item.starts_with(char::is_whitespace)
+        .then(|| (number, first_sentence(item)))
+}
+
+fn numbered_options(text: &str) -> Option<DecisionOptions> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let first = lines
+        .iter()
+        .position(|line| numbered_item(line).is_some())?;
+    let (start, _) = numbered_item(lines[first])?;
+    let options = lines[first..]
+        .iter()
+        .zip(start..)
+        .map_while(|(line, expected)| {
+            numbered_item(line)
+                .filter(|(number, _)| *number == expected)
+                .map(|(number, item)| DecisionOption {
+                    label: format!("Option {number}"),
+                    text: item.to_string(),
+                })
+        })
+        .collect();
+    Some(DecisionOptions {
+        context: lines[..first].join("\n").trim().to_string(),
+        options,
+    })
+}
+
+/// The first line's first sentence, without its closing punctuation.
+fn first_sentence(segment: &str) -> &str {
+    let line = segment.trim().lines().next().unwrap_or_default();
+    let end = line
+        .char_indices()
+        .find(|&(index, c)| {
+            matches!(c, '.' | '?' | '!') && line[index + 1..].starts_with(char::is_whitespace)
+        })
+        .map_or(line.len(), |(index, _)| index);
+    line[..end]
+        .trim()
+        .trim_end_matches(['.', '?', '!'])
+        .trim_end()
+}
+
+/// Clamps to [0, 1] and scales to sum 1; splits evenly when there is no signal.
+pub fn normalize(probabilities: &[f64]) -> Vec<f64> {
+    let clamped = probabilities
+        .iter()
+        .map(|probability| probability.clamp(0.0, 1.0))
+        .collect::<Vec<_>>();
+    let sum = clamped.iter().sum::<f64>();
+    if sum > 0.0 && sum.is_finite() {
+        clamped
+            .iter()
+            .map(|probability| probability / sum)
+            .collect()
+    } else {
+        vec![1.0 / clamped.len() as f64; clamped.len()]
+    }
+}
+
+/// `Option B (0.72); Option A 0.28` plus a reason line; ties keep listed order.
+pub fn render_options(options: &[DecisionOption], probabilities: &[f64]) -> String {
+    let mut ranked = options
+        .iter()
+        .map(|option| option.label.as_str())
+        .zip(probabilities.iter().copied())
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let Some(((top, top_probability), others)) = ranked.split_first() else {
+        return String::new();
+    };
+    let mut line = format!("{top} ({top_probability:.2})");
+    for (label, probability) in others {
+        line.push_str(&format!("; {label} {probability:.2}"));
+    }
+    if let Some((runner_up, probability)) = others.first() {
+        line.push_str(&format!(
+            "\nReason: {top} is favored over {runner_up} ({top_probability:.2} vs {probability:.2})."
+        ));
+    }
+    line
 }
 
 fn turn(role: &'static str, text: String) -> DecisionTurn {
@@ -103,57 +325,107 @@ pub fn build_upstream_request(
     endpoint: DecisionsEndpoint,
     copilot_model: &str,
     turns: &[DecisionTurn],
-) -> Result<Map<String, Value>, DecisionsError> {
+) -> Result<(Map<String, Value>, DecisionQuestion), DecisionsError> {
     let question = turns
         .iter()
         .rev()
         .find(|turn| turn.role == "user")
         .map(|turn| turn.text.trim())
         .filter(|text| !text.is_empty())
+        .map(DecisionQuestion::parse)
         .ok_or(DecisionsError::MissingUserMessage)?;
     let history = turns
         .iter()
         .filter(|turn| !turn.text.trim().is_empty())
         .map(|turn| json!({"role": turn.role, "content": turn.text}))
         .collect::<Vec<_>>();
+    let named = question.upstream_questions().into_iter();
     let (history_key, questions) = match endpoint {
         DecisionsEndpoint::Decisions => (
             "input",
-            json!([{"type": "predicate", "name": "answer", "instructions": question}]),
+            named
+                .map(|(name, instructions)| {
+                    json!({"type": "predicate", "name": name, "instructions": instructions})
+                })
+                .collect::<Value>(),
         ),
         DecisionsEndpoint::SystemOne => (
             "state",
-            json!({"answer": {"type": "noul", "instructions": question}}),
+            Value::Object(
+                named
+                    .map(|(name, instructions)| {
+                        (name, json!({"type": "noul", "instructions": instructions}))
+                    })
+                    .collect(),
+            ),
         ),
     };
     let mut body = Map::new();
     body.insert("model".into(), json!(copilot_model));
     body.insert(history_key.into(), Value::Array(history));
     body.insert("questions".into(), questions);
-    Ok(body)
+    Ok((body, question))
 }
 
-pub fn answer_probability(endpoint: DecisionsEndpoint, upstream: &Value) -> Option<f64> {
-    let value = match endpoint {
-        DecisionsEndpoint::Decisions => {
-            let answers = upstream.get("answers")?.as_array()?;
-            answers
-                .iter()
-                .find(|answer| answer.get("name").and_then(Value::as_str) == Some("answer"))
-                .or_else(|| answers.first())?
-                .get("probability")
-        }
-        DecisionsEndpoint::SystemOne => upstream.pointer("/answers/answer/noul"),
+/// Finds the named answer in an array or a name-keyed object.
+fn named_answer<'a>(upstream: &'a Value, name: &str) -> Result<&'a Value, DecisionsError> {
+    match upstream.get("answers") {
+        Some(Value::Array(answers)) => answers
+            .iter()
+            .find(|answer| answer.get("name").and_then(Value::as_str) == Some(name)),
+        Some(Value::Object(answers)) => answers.get(name),
+        _ => return Err(DecisionsError::MalformedUpstream("no_answers")),
+    }
+    .ok_or(DecisionsError::MalformedUpstream("no_answer"))
+}
+
+/// Reads the named answer's probability, accepting a number or numeric string.
+fn answer_probability(
+    endpoint: DecisionsEndpoint,
+    upstream: &Value,
+    name: &str,
+) -> Result<f64, DecisionsError> {
+    let answer = named_answer(upstream, name)?;
+    if answer.get("type").and_then(Value::as_str) == Some("refusal") {
+        return Err(DecisionsError::Refused);
+    }
+    let key = match endpoint {
+        DecisionsEndpoint::Decisions => "probability",
+        DecisionsEndpoint::SystemOne => "noul",
     };
-    value
-        .and_then(Value::as_f64)
-        .filter(|probability| probability.is_finite())
-        .map(|probability| probability.clamp(0.0, 1.0))
+    match answer.get(key) {
+        Some(Value::Number(number)) => number.as_f64(),
+        Some(Value::String(text)) => text.trim().parse().ok(),
+        _ => None,
+    }
+    .filter(|probability| probability.is_finite())
+    .map(|probability| probability.clamp(0.0, 1.0))
+    .ok_or(DecisionsError::MalformedUpstream("no_probability"))
 }
 
 pub fn answer_text(probability: f64) -> String {
     let verdict = if probability >= 0.5 { "Yes" } else { "No" };
     format!("{verdict} (probability {probability:.2})")
+}
+
+fn decision_text(
+    endpoint: DecisionsEndpoint,
+    upstream: &Value,
+    question: &DecisionQuestion,
+) -> Result<String, DecisionsError> {
+    match question {
+        DecisionQuestion::YesNo(_) => {
+            answer_probability(endpoint, upstream, "answer").map(answer_text)
+        }
+        DecisionQuestion::Options(found) => {
+            let probabilities = found
+                .options
+                .iter()
+                .map(|option| answer_probability(endpoint, upstream, &option.key()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(render_options(&found.options, &normalize(&probabilities)))
+        }
+    }
 }
 
 fn usage(upstream: &Value) -> Value {
@@ -172,10 +444,10 @@ fn usage(upstream: &Value) -> Value {
 pub fn decision_to_responses(
     endpoint: DecisionsEndpoint,
     upstream: &Value,
+    question: &DecisionQuestion,
     public_model: &str,
 ) -> Result<Value, DecisionsError> {
-    let probability =
-        answer_probability(endpoint, upstream).ok_or(DecisionsError::MalformedUpstream)?;
+    let text = decision_text(endpoint, upstream, question)?;
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
@@ -191,7 +463,7 @@ pub fn decision_to_responses(
             "id": format!("msg_{}", uuid::Uuid::new_v4().simple()),
             "status": "completed",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": answer_text(probability), "annotations": []}],
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
         }],
         "usage": usage(upstream),
     }))
@@ -375,7 +647,7 @@ mod tests {
 
     #[test]
     fn normalize_scales_to_one_clamps_and_splits_evenly_without_signal() {
-        assert_eq!(normalize(&[0.2, 0.6]), [0.25, 0.75]);
+        assert_eq!(normalize(&[0.125, 0.375]), [0.25, 0.75]);
         assert_eq!(normalize(&[-1.0, 2.0]), [0.0, 1.0]);
         assert_eq!(normalize(&[0.0, 0.0]), [0.5, 0.5]);
         assert_eq!(normalize(&[f64::NAN, 0.3]), [0.5, 0.5]);

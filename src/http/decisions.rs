@@ -20,7 +20,7 @@ use crate::responses::request::{
 use crate::responses::state::ResponsesTurnIdentity;
 use crate::state::AppState;
 use crate::translate::decisions::{
-    DecisionTurn, DecisionsEndpoint, build_upstream_request, decision_to_responses,
+    DecisionTurn, DecisionsEndpoint, DecisionsError, build_upstream_request, decision_to_responses,
     turns_from_anthropic, turns_from_openai_chat, turns_from_responses,
 };
 use crate::translate::responses_formats::{
@@ -147,7 +147,9 @@ pub(crate) async fn handle_copilot_decisions(
         Ok(expanded) => expanded,
         Err(response) => return *response,
     };
-    let Ok(request) = build_upstream_request(endpoint, copilot_model, &api.turns(&body)) else {
+    let Ok((request, question)) =
+        build_upstream_request(endpoint, copilot_model, &api.turns(&body))
+    else {
         return api.error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -166,7 +168,7 @@ pub(crate) async fn handle_copilot_decisions(
         Ok(upstream) => upstream,
         Err(error) => return api.copilot_error(error),
     };
-    match decision_to_responses(endpoint, &upstream, public_model) {
+    match decision_to_responses(endpoint, &upstream, &question, public_model) {
         Ok(response) => {
             if api == ClientApi::Responses {
                 cache_decision_response(state, &body, &response, previous_identity).await;
@@ -177,12 +179,29 @@ pub(crate) async fn handle_copilot_decisions(
                 Json(render_json(api, &response, public_model)).into_response()
             }
         }
-        Err(_) => api.error(
-            StatusCode::BAD_GATEWAY,
-            "server_error",
-            "Copilot decisions response was malformed".to_string(),
-        ),
+        Err(error) => decision_error(api, error),
     }
+}
+
+fn decision_error(api: ClientApi, error: DecisionsError) -> Response {
+    let reason = match error {
+        DecisionsError::Refused => "refusal",
+        DecisionsError::MalformedUpstream(reason) => reason,
+        DecisionsError::MissingUserMessage => "missing_user_message",
+    };
+    tracing::warn!(decisions.reject = reason, "decisions answer rejected");
+    if error == DecisionsError::Refused {
+        return api.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "Copilot decisions model declined to answer; ask a yes/no question or name options such as 'Option A: ...' and 'Option B: ...'".to_string(),
+        );
+    }
+    api.error(
+        StatusCode::BAD_GATEWAY,
+        "server_error",
+        "Copilot decisions response was malformed".to_string(),
+    )
 }
 
 /// Resolves `previous_response_id` for Responses requests; an unknown ID is
