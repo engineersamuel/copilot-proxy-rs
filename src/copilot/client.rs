@@ -1217,6 +1217,27 @@ mod tests {
     use super::*;
     use http::HeaderMap;
 
+    #[tokio::test]
+    async fn token_bucket_burst_and_refill_match_rate() {
+        for rate in [120, 240] {
+            let bucket = TokenBucket::new(rate);
+            let started = std::time::Instant::now();
+            for _ in 0..rate {
+                assert_eq!(bucket.acquire().await, 0.0);
+            }
+            assert!(started.elapsed() < Duration::from_millis(50));
+
+            let interval = 60.0 / f64::from(rate);
+            let waited = bucket.acquire().await;
+            assert!((waited - interval).abs() < 0.05, "waited {waited}s");
+            let elapsed = started.elapsed().as_secs_f64();
+            assert!(
+                (interval..interval + 0.25).contains(&elapsed),
+                "elapsed {elapsed}s, expected approximately {interval}s"
+            );
+        }
+    }
+
     #[test]
     fn retry_delay_honors_zero_retry_after_without_jitter() {
         let mut headers = HeaderMap::new();
