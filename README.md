@@ -113,6 +113,8 @@ curl -fsS -N http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: applica
 - Static `/health`, `/version`, and `/v1/messages/count_tokens` routes.
 - Copilot-backed `/v1/models` sourced from live upstream model discovery.
 - Live Copilot-backed routes for `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, response retrieval/cancellation, and Responses WebSocket.
+- Decisions models (`capabilities.type` `decisions`, e.g. `gpt-6-luna-decisions`, `microsoft-decision-1`) answer the last user message as `Yes (probability 0.99)` / `No (probability 0.03)` through chat, messages, and responses (streaming returns a single-chunk SSE stream). `/v1/models` entries include `type` and `supported_endpoints`.
+- Image models are served by pass-through `POST /v1/images/generations` and `POST /v1/images/edits` (JSON, or multipart forwarded unmodified; multipart model aliases are not rewritten). Chat, messages, and responses reject image models with HTTP 400.
 - Safe metadata logging that avoids raw prompt/body/token logging.
 - Fail-closed startup for non-loopback binds unless explicitly opted in.
 
