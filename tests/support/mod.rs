@@ -606,6 +606,57 @@ impl AppFixture {
             .await;
         fixture
     }
+
+    /// Non-chat catalog plus recorded per-option `/v1/decisions` and `/v1/systemone` answers.
+    pub async fn with_decision_option_answers() -> Self {
+        let fixture = Self::with_nonchat_models().await;
+        for model in ["gpt-6-luna-decisions", "microsoft-decision-1"] {
+            let (path, recorded) = recorded_options_exchange(model);
+            fixture
+                .mock
+                .respond_json("POST", path, 200, recorded["response"].clone())
+                .await;
+        }
+        fixture
+    }
+}
+
+#[allow(dead_code)]
+pub const OPTIONS_QUESTION: &str = "Pick a lunch spot. Option A: tacos by the park. Option B: noodles downtown. Which option should we pick?";
+
+/// Answer text expected for [`OPTIONS_QUESTION`] given the recorded option answers.
+#[allow(dead_code)]
+pub fn expected_options_answer(model: &str) -> &'static str {
+    match model {
+        "gpt-6-luna-decisions" => {
+            "Option B (0.75); Option A 0.25\nReason: Option B is favored over Option A (0.75 vs 0.25)."
+        }
+        _ => {
+            "Option A (0.75); Option B 0.25\nReason: Option A is favored over Option B (0.75 vs 0.25)."
+        }
+    }
+}
+
+/// Recorded per-option exchange (request and response) for a decision model.
+#[allow(dead_code)]
+pub fn recorded_options_exchange(model: &str) -> (&'static str, Value) {
+    match model {
+        "gpt-6-luna-decisions" => (
+            "/v1/decisions",
+            fixture_json("copilot_decisions_options.json")["options_messages_input"].clone(),
+        ),
+        _ => (
+            "/v1/systemone",
+            fixture_json("copilot_systemone_options.json")["options_messages_state"].clone(),
+        ),
+    }
+}
+
+/// Asserts the per-option question went upstream once, as recorded.
+#[allow(dead_code)]
+pub async fn assert_decision_options_upstream(mock: &MockServer, model: &str) {
+    let (path, recorded) = recorded_options_exchange(model);
+    assert_upstream_request(mock, path, &recorded["request"], 1).await;
 }
 
 /// Recorded upstream request for a decision model's synthesized sky question.
@@ -631,6 +682,10 @@ pub const SKY_QUESTION: &str = "Is the sky blue on a clear day?";
 #[allow(dead_code)]
 pub async fn assert_decision_upstream(mock: &MockServer, model: &str, calls: usize) {
     let (path, expected) = recorded_decision_request(model);
+    assert_upstream_request(mock, path, &expected, calls).await;
+}
+
+async fn assert_upstream_request(mock: &MockServer, path: &str, expected: &Value, calls: usize) {
     let other = if path == "/v1/decisions" {
         "/v1/systemone"
     } else {
@@ -639,7 +694,7 @@ pub async fn assert_decision_upstream(mock: &MockServer, model: &str, calls: usi
     assert_eq!(mock.hits("POST", path).await, calls);
     assert_eq!(mock.hits("POST", other).await, 0);
     assert_eq!(
-        mock.last_request_body_json("POST", path).await.unwrap(),
+        &mock.last_request_body_json("POST", path).await.unwrap(),
         expected
     );
     mock.assert_no_generation_calls().await;

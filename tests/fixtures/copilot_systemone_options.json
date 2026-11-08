@@ -1,0 +1,46 @@
+{
+  "options_messages_state": {
+    "request": {
+      "model": "microsoft-decision-1",
+      "state": [
+        {
+          "role": "system",
+          "content": "You are helpful"
+        },
+        {
+          "role": "user",
+          "content": "Pick a lunch spot. Option A: tacos by the park. Option B: noodles downtown. Which option should we pick?"
+        }
+      ],
+      "questions": {
+        "option_a": {
+          "type": "noul",
+          "instructions": "Pick a lunch spot. Should we pick Option A: tacos by the park?"
+        },
+        "option_b": {
+          "type": "noul",
+          "instructions": "Pick a lunch spot. Should we pick Option B: noodles downtown?"
+        }
+      }
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "microsoft-decision-1",
+      "answers": {
+        "option_a": {
+          "noul": 0.9,
+          "type": "noul"
+        },
+        "option_b": {
+          "noul": 0.3,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "input_tokens": 60,
+        "output_tokens": 2
+      }
+    }
+  }
+}

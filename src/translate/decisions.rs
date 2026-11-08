@@ -275,7 +275,9 @@ mod tests {
             turn("assistant", "ok".into()),
             turn("user", "  last  ".into()),
         ];
-        let body = build_upstream_request(DecisionsEndpoint::SystemOne, "m", &turns).unwrap();
+        let (body, question) =
+            build_upstream_request(DecisionsEndpoint::SystemOne, "m", &turns).unwrap();
+        assert_eq!(question, DecisionQuestion::YesNo("last".into()));
         assert_eq!(
             Value::Object(body),
             json!({
@@ -298,25 +300,198 @@ mod tests {
         );
     }
 
+    fn option_pairs(options: &DecisionOptions) -> Vec<(&str, &str)> {
+        options
+            .options
+            .iter()
+            .map(|option| (option.label.as_str(), option.text.as_str()))
+            .collect()
+    }
+
+    fn options(labels: &[&str]) -> Vec<DecisionOption> {
+        labels
+            .iter()
+            .map(|label| DecisionOption {
+                label: (*label).to_string(),
+                text: String::new(),
+            })
+            .collect()
+    }
+
     #[test]
-    fn answer_probability_prefers_named_answer_and_clamps() {
-        let upstream = json!({"answers": [
+    fn extract_options_reads_colon_and_dash_labels_and_cuts_the_trailing_question() {
+        let found = extract_options(
+            "Ship by Friday? Option A: ship now. Option B - wait a week. Which option and why?",
+        )
+        .unwrap();
+        assert_eq!(found.context, "Ship by Friday?");
+        assert_eq!(
+            option_pairs(&found),
+            [("Option A", "ship now"), ("Option B", "wait a week")]
+        );
+    }
+
+    #[test]
+    fn extract_options_accepts_lowercase_and_numeric_labels() {
+        let lower = extract_options("option a: tea\noption b: coffee").unwrap();
+        assert_eq!(lower.context, "");
+        assert_eq!(
+            option_pairs(&lower),
+            [("Option A", "tea"), ("Option B", "coffee")]
+        );
+        let numeric = extract_options("Pick. Option 1: red. Option 2: blue.").unwrap();
+        assert_eq!(
+            option_pairs(&numeric),
+            [("Option 1", "red"), ("Option 2", "blue")]
+        );
+        assert_eq!(numeric.options[1].key(), "option_2");
+        assert_eq!(lower.options[0].key(), "option_a");
+    }
+
+    #[test]
+    fn extract_options_reads_a_numbered_list() {
+        let found = extract_options("Where should we eat?\n1. tacos\n2) noodles\nThanks").unwrap();
+        assert_eq!(found.context, "Where should we eat?");
+        assert_eq!(
+            option_pairs(&found),
+            [("Option 1", "tacos"), ("Option 2", "noodles")]
+        );
+    }
+
+    #[test]
+    fn extract_options_needs_two_distinct_options() {
+        assert_eq!(extract_options("Is the sky blue on a clear day?"), None);
+        assert_eq!(
+            extract_options("Option A: go. Which option should we pick?"),
+            None
+        );
+        assert_eq!(extract_options("Option A: go. Option A: stay."), None);
+        assert_eq!(extract_options("Steps:\n1. only one"), None);
+        assert_eq!(
+            extract_options("Our options are many. Adoption is high."),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_scales_to_one_clamps_and_splits_evenly_without_signal() {
+        assert_eq!(normalize(&[0.2, 0.6]), [0.25, 0.75]);
+        assert_eq!(normalize(&[-1.0, 2.0]), [0.0, 1.0]);
+        assert_eq!(normalize(&[0.0, 0.0]), [0.5, 0.5]);
+        assert_eq!(normalize(&[f64::NAN, 0.3]), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn render_options_leads_with_the_favorite_then_others_descending() {
+        assert_eq!(
+            render_options(
+                &options(&["Option A", "Option B", "Option C"]),
+                &[0.2, 0.5, 0.3]
+            ),
+            "Option B (0.50); Option C 0.30; Option A 0.20\nReason: Option B is favored over Option C (0.50 vs 0.30)."
+        );
+        assert_eq!(
+            render_options(&options(&["Option A", "Option B"]), &[0.5, 0.5]),
+            "Option A (0.50); Option B 0.50\nReason: Option A is favored over Option B (0.50 vs 0.50)."
+        );
+    }
+
+    fn options_turns() -> [DecisionTurn; 1] {
+        [turn(
+            "user",
+            "Lunch? Option A: tacos. Option B: noodles. Which one?".into(),
+        )]
+    }
+
+    #[test]
+    fn options_request_asks_one_question_per_option_on_both_endpoints() {
+        let (luna, _) =
+            build_upstream_request(DecisionsEndpoint::Decisions, "m", &options_turns()).unwrap();
+        assert_eq!(
+            luna["questions"],
+            json!([
+                {"type": "predicate", "name": "option_a", "instructions": "Lunch? Should we pick Option A: tacos?"},
+                {"type": "predicate", "name": "option_b", "instructions": "Lunch? Should we pick Option B: noodles?"}
+            ])
+        );
+        let (systemone, _) =
+            build_upstream_request(DecisionsEndpoint::SystemOne, "m", &options_turns()).unwrap();
+        assert_eq!(
+            systemone["questions"],
+            json!({
+                "option_a": {"type": "noul", "instructions": "Lunch? Should we pick Option A: tacos?"},
+                "option_b": {"type": "noul", "instructions": "Lunch? Should we pick Option B: noodles?"}
+            })
+        );
+    }
+
+    fn answer(
+        endpoint: DecisionsEndpoint,
+        turns: &[DecisionTurn],
+        upstream: Value,
+    ) -> Result<Value, DecisionsError> {
+        let (_, question) = build_upstream_request(endpoint, "m", turns).unwrap();
+        decision_to_responses(endpoint, &upstream, &question, "public")
+            .map(|response| response["output"][0]["content"][0]["text"].clone())
+    }
+
+    #[test]
+    fn decisions_answers_match_by_name_and_tolerate_keyed_objects_and_string_numbers() {
+        let sky = [turn("user", "Is it blue?".into())];
+        let keyed = json!({"answers": {"answer": {"probability": "0.8"}}});
+        assert_eq!(
+            answer(DecisionsEndpoint::Decisions, &sky, keyed),
+            Ok(json!("Yes (probability 0.80)"))
+        );
+        let clamped = json!({"answers": [
             {"name": "other", "probability": 0.1},
             {"name": "answer", "probability": 1.7}
         ]});
         assert_eq!(
-            answer_probability(DecisionsEndpoint::Decisions, &upstream),
-            Some(1.0)
+            answer(DecisionsEndpoint::Decisions, &sky, clamped),
+            Ok(json!("Yes (probability 1.00)"))
         );
-        let unnamed = json!({"answers": [{"probability": -2.0}]});
+        let options = json!({"answers": [
+            {"name": "option_b", "probability": 0.6},
+            {"name": "option_a", "probability": 0.2}
+        ]});
         assert_eq!(
-            answer_probability(DecisionsEndpoint::Decisions, &unnamed),
-            Some(0.0)
+            answer(DecisionsEndpoint::Decisions, &options_turns(), options),
+            Ok(json!(
+                "Option B (0.75); Option A 0.25\nReason: Option B is favored over Option A (0.75 vs 0.25)."
+            ))
+        );
+    }
+
+    #[test]
+    fn refusals_and_missing_answers_are_distinct_errors() {
+        let sky = [turn("user", "Which is best?".into())];
+        let refusal = json!({"answers": [{"type": "refusal", "name": "answer"}]});
+        assert_eq!(
+            answer(DecisionsEndpoint::Decisions, &sky, refusal),
+            Err(DecisionsError::Refused)
+        );
+        let missing_option = json!({"answers": {"option_a": {"noul": 0.4, "type": "noul"}}});
+        assert_eq!(
+            answer(
+                DecisionsEndpoint::SystemOne,
+                &options_turns(),
+                missing_option
+            ),
+            Err(DecisionsError::MalformedUpstream("no_answer"))
         );
         let text = json!({"answers": {"answer": {"noul": "high"}}});
         assert_eq!(
-            answer_probability(DecisionsEndpoint::SystemOne, &text),
-            None
+            answer(DecisionsEndpoint::SystemOne, &sky, text),
+            Err(DecisionsError::MalformedUpstream("no_probability"))
+        );
+        assert_eq!(
+            answer(DecisionsEndpoint::Decisions, &sky, json!({"answers": []})),
+            Err(DecisionsError::MalformedUpstream("no_answer"))
+        );
+        assert_eq!(
+            answer(DecisionsEndpoint::Decisions, &sky, json!({})),
+            Err(DecisionsError::MalformedUpstream("no_answers"))
         );
     }
 
@@ -326,8 +501,10 @@ mod tests {
             "answers": {"answer": {"noul": 0.2}},
             "usage": {"input_tokens": 41, "output_tokens": 1}
         });
+        let question = DecisionQuestion::YesNo("q".into());
         let response =
-            decision_to_responses(DecisionsEndpoint::SystemOne, &upstream, "public").unwrap();
+            decision_to_responses(DecisionsEndpoint::SystemOne, &upstream, &question, "public")
+                .unwrap();
         assert_eq!(
             response["usage"],
             json!({"input_tokens": 41, "output_tokens": 1, "total_tokens": 42})
@@ -335,8 +512,13 @@ mod tests {
         assert_eq!(response["model"], "public");
         let without_usage = json!({"answers": {"answer": {"noul": 0.2}}});
         assert_eq!(
-            decision_to_responses(DecisionsEndpoint::SystemOne, &without_usage, "public").unwrap()
-                ["usage"],
+            decision_to_responses(
+                DecisionsEndpoint::SystemOne,
+                &without_usage,
+                &question,
+                "public"
+            )
+            .unwrap()["usage"],
             json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
         );
         assert_eq!(

@@ -65,5 +65,46 @@
         "code": "no_available_model_endpoints"
       }
     }
+  },
+  "refusal_messages_input": {
+    "request": {
+      "model": "gpt-6-luna-decisions",
+      "input": [
+        {
+          "role": "user",
+          "content": "Which lunch spot is best?"
+        }
+      ],
+      "questions": [
+        {
+          "type": "predicate",
+          "name": "answer",
+          "instructions": "Which lunch spot is best?"
+        }
+      ]
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "gpt-6-luna",
+      "answers": [
+        {
+          "type": "refusal",
+          "name": "answer"
+        }
+      ],
+      "usage": {
+        "input_tokens": 190,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 190
+      }
+    }
   }
 }

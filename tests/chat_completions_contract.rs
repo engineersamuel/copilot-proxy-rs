@@ -1336,15 +1336,120 @@ async fn chat_completions_logs_safe_request_metadata() {
 // ─── Decisions and image models ──────────────────────────────────────────────
 
 fn sky_chat_request(model: &str, stream: bool) -> Value {
+    decision_chat_request(model, support::SKY_QUESTION, stream)
+}
+
+fn decision_chat_request(model: &str, question: &str, stream: bool) -> Value {
     serde_json::json!({
         "model": model,
         "stream": stream,
         "temperature": 0.2,
         "messages": [
             {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": support::SKY_QUESTION}
+            {"role": "user", "content": question}
         ]
     })
+}
+
+async fn assert_chat_decision_options(model: &str, stream: bool) {
+    let fixture = support::AppFixture::with_decision_option_answers().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        decision_chat_request(model, support::OPTIONS_QUESTION, stream),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = if stream {
+        support::sse_data(&body)
+            .iter()
+            .filter_map(|chunk| chunk["choices"][0]["delta"]["content"].as_str())
+            .collect::<String>()
+    } else {
+        let body: Value = serde_json::from_str(&body).unwrap();
+        body["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(text, support::expected_options_answer(model));
+    support::assert_decision_options_upstream(&fixture.mock, model).await;
+}
+
+#[tokio::test]
+async fn chat_decisions_options_non_stream_asks_one_question_per_option() {
+    assert_chat_decision_options("gpt-6-luna-decisions", false).await;
+}
+
+#[tokio::test]
+async fn chat_decisions_options_stream_asks_one_question_per_option() {
+    assert_chat_decision_options("gpt-6-luna-decisions", true).await;
+}
+
+#[tokio::test]
+async fn chat_systemone_options_non_stream_asks_one_question_per_option() {
+    assert_chat_decision_options("microsoft-decision-1", false).await;
+}
+
+#[tokio::test]
+async fn chat_systemone_options_stream_asks_one_question_per_option() {
+    assert_chat_decision_options("microsoft-decision-1", true).await;
+}
+
+#[tokio::test]
+async fn chat_decisions_options_missing_option_answer_is_502() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/decisions",
+            200,
+            serde_json::json!({"model": "gpt-6-luna", "answers": [
+                {"type": "predicate", "name": "option_a", "probability": 0.4}
+            ]}),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        decision_chat_request("gpt-6-luna-decisions", support::OPTIONS_QUESTION, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot decisions response was malformed"
+    );
+}
+
+#[tokio::test]
+async fn chat_decisions_refusal_is_explained_as_bad_request() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let recorded = support::fixture_json("copilot_decisions_predicate.json");
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/decisions",
+            200,
+            recorded["refusal_messages_input"]["response"].clone(),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/chat/completions",
+        decision_chat_request("gpt-6-luna-decisions", "Which lunch spot is best?", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot decisions model declined to answer; ask a yes/no question or name options such as 'Option A: ...' and 'Option B: ...'"
+    );
 }
 
 async fn assert_chat_decision_answer(model: &str, expected_usage: Value) {

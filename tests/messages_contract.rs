@@ -1903,13 +1903,63 @@ async fn messages_non_adaptive_models_convert_adaptive_thinking_to_enabled_and_s
 // ─── Decisions and image models ──────────────────────────────────────────────
 
 fn sky_messages_request(model: &str, stream: bool) -> Value {
+    decision_messages_request(model, support::SKY_QUESTION, stream)
+}
+
+fn decision_messages_request(model: &str, question: &str, stream: bool) -> Value {
     serde_json::json!({
         "model": model,
         "max_tokens": 64,
         "stream": stream,
         "system": "You are helpful",
-        "messages": [{"role": "user", "content": support::SKY_QUESTION}]
+        "messages": [{"role": "user", "content": question}]
     })
+}
+
+async fn assert_messages_decision_options(model: &str, stream: bool) {
+    let fixture = support::AppFixture::with_decision_option_answers().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/messages",
+        decision_messages_request(model, support::OPTIONS_QUESTION, stream),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = if stream {
+        support::sse_data(&body)
+            .iter()
+            .filter(|event| event["type"] == "content_block_delta")
+            .filter_map(|event| event["delta"]["text"].as_str())
+            .collect::<String>()
+    } else {
+        let body: Value = serde_json::from_str(&body).unwrap();
+        body["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(text, support::expected_options_answer(model));
+    support::assert_decision_options_upstream(&fixture.mock, model).await;
+}
+
+#[tokio::test]
+async fn messages_decisions_options_non_stream() {
+    assert_messages_decision_options("gpt-6-luna-decisions", false).await;
+}
+
+#[tokio::test]
+async fn messages_decisions_options_stream() {
+    assert_messages_decision_options("gpt-6-luna-decisions", true).await;
+}
+
+#[tokio::test]
+async fn messages_systemone_options_non_stream() {
+    assert_messages_decision_options("microsoft-decision-1", false).await;
+}
+
+#[tokio::test]
+async fn messages_systemone_options_stream() {
+    assert_messages_decision_options("microsoft-decision-1", true).await;
 }
 
 async fn assert_messages_decision_answer(model: &str, input_tokens: u64, output_tokens: u64) {
