@@ -1,0 +1,21 @@
+version: "0.5"
+
+processes:
+  proxy:
+    command: cargo run --release --locked --bin copilot-proxy-rs
+    environment:
+      - COPILOT_PROXY_RS_HOST=${COPILOT_PROXY_RS_HOST:-127.0.0.1}
+      - COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}
+      - RUST_LOG=${RUST_LOG:-info}
+      - COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        path: /health
+        port: ${COPILOT_PROXY_RS_PORT:-8080}
+      initial_delay_seconds: 10
+      period_seconds: 5
+      timeout_seconds: 2
+      failure_threshold: 120
+    availability:
+      restart: on_failure
