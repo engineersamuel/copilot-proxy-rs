@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 
 use crate::http::chat::chat_completions;
 use crate::http::health::{count_tokens, debug_copilot_models, health, list_models, version};
+use crate::http::images::{images_edits, images_generations};
 use crate::http::messages::messages;
 use crate::http::responses::{
     responses, responses_cancel, responses_compact, responses_retrieve, responses_ws,
@@ -29,6 +30,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", post(messages))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/images/generations", post(images_generations))
+        .route("/v1/images/edits", post(images_edits))
         .route("/v1/responses", post(responses).get(responses_ws))
         .route("/v1/responses/compact", post(responses_compact))
         .route("/v1/responses/{response_id}", get(responses_retrieve))
