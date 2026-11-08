@@ -1,0 +1,1 @@
+{:version 1 :tested-at "2026-11-08T08:28:55-05:00" :source "src/models.rs" :namespace "copilot_proxy_rs::models::LocalModelTarget" :outcomes {} :forms [{:id "defn/chat_completions_url" :kind "defn" :file "src/models.rs" :line 266 :end-line 268 :hash "3c21f2cbefdd205612193c494f704de00c34be0c9905c4716ead79316b6cabf1" :killed 0 :survived 0 :uncovered 0 :sites 0}]}

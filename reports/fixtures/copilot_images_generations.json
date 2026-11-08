@@ -1,0 +1,174 @@
+{
+  "endpoint": "POST /v1/images/generations",
+  "upstream_base": "https://api.githubcopilot.com",
+  "required_headers": {
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
+    "User-Agent": "GithubCopilot/1.155.0",
+    "Accept": "application/json",
+    "X-GitHub-Api-Version": "2026-06-01",
+    "X-Initiator": "user",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer <redacted copilot token>"
+  },
+  "captured_at": "2026-11-08T03:38:55Z",
+  "cases": [
+    {
+      "name": "success_b64_json",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "a red circle on white",
+        "n": 1,
+        "size": "1024x1024"
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "created": 1794109009,
+        "background": "opaque",
+        "data": [
+          {
+            "b64_json": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAADw...<truncated 956464 chars>"
+          }
+        ],
+        "output_format": "png",
+        "quality": "low",
+        "size": "1024x1024",
+        "usage": {
+          "input_tokens": 11,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 11
+          },
+          "output_tokens": 196,
+          "output_tokens_details": {
+            "image_tokens": 196,
+            "text_tokens": 0
+          },
+          "total_tokens": 207
+        },
+        "copilot_usage": {
+          "token_details": [
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 500000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 11,
+              "token_type": "input"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_read"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_write"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "output"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 3000000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 196,
+              "token_type": "image_output"
+            }
+          ],
+          "total_nano_aiu": 593500000
+        }
+      },
+      "note": "Captured earlier in the session; data[0].b64_json was 956464 chars (PNG 1024x1024, ~717KB). response_format:'url' is ignored (still b64_json)."
+    },
+    {
+      "name": "error_missing_prompt",
+      "request": {
+        "model": "gpt-image-2.5-flare"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "prompt is required",
+          "code": ""
+        }
+      }
+    },
+    {
+      "name": "error_missing_model",
+      "request": {
+        "prompt": "a red circle"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "model is required",
+          "code": ""
+        }
+      }
+    },
+    {
+      "name": "error_bad_size",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "a red circle",
+        "size": "13x13"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Invalid size '13x13'. Width and height must both be divisible by 16.",
+          "type": "image_generation_user_error",
+          "param": "size",
+          "code": "invalid_value"
+        }
+      }
+    },
+    {
+      "name": "error_stream_not_supported",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "a red circle",
+        "stream": true
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "streaming image generation is not supported",
+          "code": ""
+        }
+      }
+    },
+    {
+      "name": "error_chat_model",
+      "request": {
+        "model": "gpt-6-luna",
+        "prompt": "a red circle"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "Model is not supported for this request.",
+          "code": "model_not_supported",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      }
+    }
+  ]
+}

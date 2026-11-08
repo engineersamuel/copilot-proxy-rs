@@ -1,0 +1,1 @@
+{:version 1 :tested-at "2026-11-08T08:28:55-05:00" :source "src/models.rs" :namespace "copilot_proxy_rs::models::ModelExcludes" :outcomes {} :forms [{:id "defn/contains" :kind "defn" :file "src/models.rs" :line 30 :end-line 32 :hash "4828542e367b2bf666325c8f204ac5a6ed73329c0e9a7482f075592fbce6ab54" :killed 0 :survived 0 :uncovered 0 :sites 1}]}

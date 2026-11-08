@@ -1,0 +1,1 @@
+{:version 1 :tested-at "2026-11-08T08:28:55-05:00" :source "src/http/images.rs" :namespace "copilot_proxy_rs::http::images::ImageRoute" :outcomes {} :forms [{:id "defn-/path" :kind "defn-" :file "src/http/images.rs" :line 22 :end-line 27 :hash "ef3623777435d552f3a007615d5f33d26c22e0138dddcfe927e872fbbba95326" :killed 0 :survived 0 :uncovered 0 :sites 0}]}

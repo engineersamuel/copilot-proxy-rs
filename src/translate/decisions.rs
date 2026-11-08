@@ -170,18 +170,18 @@ fn numbered_options(text: &str) -> Option<DecisionOptions> {
         .iter()
         .position(|line| numbered_item(line).is_some())?;
     let (start, _) = numbered_item(lines[first])?;
-    let options = lines[first..]
-        .iter()
-        .zip(start..)
-        .map_while(|(line, expected)| {
-            numbered_item(line)
-                .filter(|(number, _)| *number == expected)
-                .map(|(number, item)| DecisionOption {
-                    label: format!("Option {number}"),
-                    text: item.to_string(),
-                })
-        })
-        .collect();
+    // Blank lines and continuation text between items do not end the list.
+    let mut expected = start;
+    let mut options = Vec::new();
+    for line in &lines[first..] {
+        if let Some((number, item)) = numbered_item(line).filter(|(n, _)| *n == expected) {
+            options.push(DecisionOption {
+                label: format!("Option {number}"),
+                text: item.to_string(),
+            });
+            expected += 1;
+        }
+    }
     Some(DecisionOptions {
         context: lines[..first].join("\n").trim().to_string(),
         options,
@@ -627,6 +627,27 @@ mod tests {
         assert_eq!(
             option_pairs(&found),
             [("Option 1", "tacos"), ("Option 2", "noodles")]
+        );
+    }
+
+    #[test]
+    fn extract_options_numbered_list_survives_blank_lines_and_continuations() {
+        let blank = extract_options("Choose a plan:\n1. Ship Friday\n\n2. Delay a week").unwrap();
+        assert_eq!(
+            option_pairs(&blank),
+            [("Option 1", "Ship Friday"), ("Option 2", "Delay a week")]
+        );
+        let later = extract_options(
+            "Plan?\n1. Ship Friday\n   more detail here\n2. Delay a week\n\nExtra paragraph.\n\n3. Cancel",
+        )
+        .unwrap();
+        assert_eq!(
+            option_pairs(&later),
+            [
+                ("Option 1", "Ship Friday"),
+                ("Option 2", "Delay a week"),
+                ("Option 3", "Cancel")
+            ]
         );
     }
 

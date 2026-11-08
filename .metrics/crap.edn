@@ -1,0 +1,28 @@
+{:entries [
+  {:name "label_marker", :namespace "copilot_proxy_rs::translate::decisions", :complexity 9, :coverage 100.0, :crap 9.0}
+  {:name "answer_probability", :namespace "copilot_proxy_rs::translate::decisions", :complexity 8, :coverage 95.0, :crap 8.008}
+  {:name "conversational_role", :namespace "copilot_proxy_rs::translate::decisions", :complexity 6, :coverage 100.0, :crap 6.0}
+  {:name "build_upstream_request", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "content_text", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "decision_text", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "extract_options", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "named_answer", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "numbered_item", :namespace "copilot_proxy_rs::translate::decisions", :complexity 4, :coverage 100.0, :crap 4.0}
+  {:name "render_options", :namespace "copilot_proxy_rs::translate::decisions", :complexity 3, :coverage 95.0, :crap 3.0011}
+  {:name "normalize", :namespace "copilot_proxy_rs::translate::decisions", :complexity 3, :coverage 100.0, :crap 3.0}
+  {:name "numbered_options", :namespace "copilot_proxy_rs::translate::decisions", :complexity 3, :coverage 100.0, :crap 3.0}
+  {:name "turns_from_responses", :namespace "copilot_proxy_rs::translate::decisions", :complexity 3, :coverage 100.0, :crap 3.0}
+  {:name "upstream_questions", :namespace "copilot_proxy_rs::translate::decisions::DecisionQuestion", :complexity 3, :coverage 100.0, :crap 3.0}
+  {:name "answer_text", :namespace "copilot_proxy_rs::translate::decisions", :complexity 2, :coverage 100.0, :crap 2.0}
+  {:name "decision_to_responses", :namespace "copilot_proxy_rs::translate::decisions", :complexity 2, :coverage 100.0, :crap 2.0}
+  {:name "first_sentence", :namespace "copilot_proxy_rs::translate::decisions", :complexity 2, :coverage 100.0, :crap 2.0}
+  {:name "labeled_options", :namespace "copilot_proxy_rs::translate::decisions", :complexity 2, :coverage 100.0, :crap 2.0}
+  {:name "message_turns", :namespace "copilot_proxy_rs::translate::decisions", :complexity 2, :coverage 100.0, :crap 2.0}
+  {:name "turn", :namespace "copilot_proxy_rs::translate::decisions", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "turns_from_anthropic", :namespace "copilot_proxy_rs::translate::decisions", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "turns_from_openai_chat", :namespace "copilot_proxy_rs::translate::decisions", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "usage", :namespace "copilot_proxy_rs::translate::decisions", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "key", :namespace "copilot_proxy_rs::translate::decisions::DecisionOption", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "instructions", :namespace "copilot_proxy_rs::translate::decisions::DecisionOptions", :complexity 1, :coverage 100.0, :crap 1.0}
+  {:name "parse", :namespace "copilot_proxy_rs::translate::decisions::DecisionQuestion", :complexity 1, :coverage 100.0, :crap 1.0}
+]}
