@@ -145,7 +145,7 @@ pub(crate) async fn handle_copilot_decisions(
 ) -> Response {
     let (body, previous_identity) = match expand_previous(state, api, body).await {
         Ok(expanded) => expanded,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Ok(request) = build_upstream_request(endpoint, copilot_model, &api.turns(&body)) else {
         return api.error(
@@ -191,17 +191,17 @@ async fn expand_previous(
     state: &AppState,
     api: ClientApi,
     body: &Map<String, Value>,
-) -> Result<(Map<String, Value>, Option<ResponsesTurnIdentity>), Response> {
+) -> Result<(Map<String, Value>, Option<ResponsesTurnIdentity>), Box<Response>> {
     if api != ClientApi::Responses {
         return Ok((body.clone(), None));
     }
     let expanded = expand_previous_response(&state.responses, body.clone()).await;
     if expanded.cache_status == PreviousResponseCacheStatus::Miss {
-        return Err(api.error(
+        return Err(Box::new(api.error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
             "previous_response_id was not found".to_string(),
-        ));
+        )));
     }
     Ok((expanded.body, expanded.previous_identity))
 }
