@@ -196,7 +196,7 @@ fn decision_responses_sse_events(response: &Value) -> Vec<String> {
         BTreeMap::new(),
     );
     let mut events = adapter
-        .begin_events()
+        .begin_events_with_usage(response.get("usage").cloned().unwrap_or(Value::Null))
         .into_iter()
         .map(|event| format!("{event}\n\n"))
         .collect::<Vec<_>>();

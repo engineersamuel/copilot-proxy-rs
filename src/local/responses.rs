@@ -443,6 +443,11 @@ impl ChatToResponsesStream {
         self.start_events()
     }
 
+    pub(crate) fn begin_events_with_usage(&mut self, usage: Value) -> Vec<String> {
+        self.usage = usage;
+        self.start_events()
+    }
+
     fn start_events(&mut self) -> Vec<String> {
         if self.started {
             return Vec::new();

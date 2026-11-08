@@ -1933,7 +1933,7 @@ async fn assert_messages_decision_answer(model: &str, input_tokens: u64, output_
     support::assert_decision_upstream(&fixture.mock, model, 1).await;
 }
 
-async fn assert_messages_decision_stream(model: &str) {
+async fn assert_messages_decision_stream(model: &str, input_tokens: u64) {
     let fixture = support::AppFixture::with_decision_models().await;
     let (status, content_type, body) = support::send_json(
         &fixture.state,
@@ -1962,6 +1962,7 @@ async fn assert_messages_decision_stream(model: &str) {
         assert!(types.contains(&expected), "missing {expected}: {body}");
     }
     assert_eq!(events[0]["message"]["model"], model);
+    assert_eq!(events[0]["message"]["usage"]["input_tokens"], input_tokens);
     let text: String = events
         .iter()
         .filter(|event| event["type"] == "content_block_delta")
@@ -1978,7 +1979,7 @@ async fn messages_decisions_model_non_stream() {
 
 #[tokio::test]
 async fn messages_decisions_model_stream() {
-    assert_messages_decision_stream("gpt-6-luna-decisions").await;
+    assert_messages_decision_stream("gpt-6-luna-decisions", 173).await;
 }
 
 #[tokio::test]
@@ -1988,7 +1989,7 @@ async fn messages_systemone_model_non_stream() {
 
 #[tokio::test]
 async fn messages_systemone_model_stream() {
-    assert_messages_decision_stream("microsoft-decision-1").await;
+    assert_messages_decision_stream("microsoft-decision-1", 51).await;
 }
 
 #[tokio::test]
