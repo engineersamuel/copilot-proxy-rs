@@ -98,6 +98,7 @@ pub struct CopilotBackend {
     pub(crate) endpoints: CopilotEndpoints,
     client: Client,
     rate_limiter: Option<Arc<TokenBucket>>,
+    models_refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl CopilotBackend {
@@ -121,6 +122,7 @@ impl CopilotBackend {
             endpoints,
             client,
             rate_limiter,
+            models_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -359,11 +361,11 @@ impl CopilotBackend {
     }
 
     pub async fn refresh_models_if_stale_result(&self) -> Result<(), CopilotError> {
-        if !self
-            .models
-            .refresh_needed(self.config.copilot_models_ttl)
-            .await
-        {
+        if !self.models_refresh_needed().await {
+            return Ok(());
+        }
+        let _guard = self.models_refresh_lock.lock().await;
+        if !self.models_refresh_needed().await {
             return Ok(());
         }
         let value = self.get_json(&self.endpoints.models_url, None).await?;
@@ -371,6 +373,12 @@ impl CopilotBackend {
             self.models.set_copilot_models(models.clone()).await;
         }
         Ok(())
+    }
+
+    async fn models_refresh_needed(&self) -> bool {
+        self.models
+            .refresh_needed(self.config.copilot_models_ttl)
+            .await
     }
 
     pub async fn post_decisions(&self, body: Map<String, Value>) -> Result<Value, CopilotError> {
