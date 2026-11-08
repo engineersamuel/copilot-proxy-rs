@@ -144,11 +144,43 @@ fn loads_default_json_config_from_copilot_proxy_rs_home_dir() {
 }
 
 #[test]
+fn copilot_max_rate_defaults_to_120_without_env_or_file_value() {
+    let temp = repo_tempdir("config-rate-default-");
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    assert_eq!(AppConfig::default().copilot_max_rate, 120);
+    assert_eq!(
+        AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+        120
+    );
+    fs::write(temp.path().join("config.json"), "{}").unwrap();
+    assert_eq!(
+        AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+        120
+    );
+}
+
+#[test]
+fn copilot_max_rate_file_value_overrides_default() {
+    let temp = repo_tempdir("config-rate-file-");
+    fs::write(
+        temp.path().join("config.json"),
+        r#"{"copilot_max_rate":42}"#,
+    )
+    .unwrap();
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    assert_eq!(AppConfig::load_from_env(&env).unwrap().copilot_max_rate, 42);
+}
+
+#[test]
 fn environment_values_override_file_values() {
     let temp = repo_tempdir("config-contract-");
     fs::write(
         temp.path().join("config.json"),
-        r#"{"backend":"copilot","fallback_backend":"","port":8080,"copilot_timeout":600}"#,
+        r#"{"backend":"copilot","fallback_backend":"","port":8080,"copilot_timeout":600,"copilot_max_rate":42}"#,
     )
     .unwrap();
 
@@ -168,6 +200,17 @@ fn environment_values_override_file_values() {
     assert_eq!(config.copilot_timeout, 900);
     assert_eq!(config.copilot_connect_timeout, 120);
     assert_eq!(config.web_search_model, "gpt-5.6-luna");
+
+    for rate in ["75", "0"] {
+        let env = EnvSource::from_pairs([
+            ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+            ("COPILOT_MAX_RATE", rate),
+        ]);
+        assert_eq!(
+            AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+            rate.parse::<u32>().unwrap()
+        );
+    }
 }
 
 #[test]
