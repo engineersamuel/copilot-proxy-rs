@@ -65,6 +65,18 @@ pub struct ConfigLoad {
     pub notices: Vec<ConfigNotice>,
 }
 
+impl ConfigLoad {
+    /// Call after logging is initialised; config loads before the subscriber exists.
+    pub fn log(&self) {
+        if let Some(path) = &self.path {
+            tracing::info!(config.path = %path.display(), "loaded config file");
+        }
+        for notice in &self.notices {
+            tracing::warn!("{notice}");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigFormat {
     Toml,
