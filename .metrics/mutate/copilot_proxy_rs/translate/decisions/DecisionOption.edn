@@ -1,1 +1,0 @@
-{:version 1 :tested-at "2026-11-08T08:28:55-05:00" :source "src/translate/decisions.rs" :namespace "copilot_proxy_rs::translate::decisions::DecisionOption" :outcomes {} :forms [{:id "defn/key" :kind "defn" :file "src/translate/decisions.rs" :line 36 :end-line 38 :hash "d158c76c1a822c4285b36be912455f58a570b63be25ef15c375db5aac9ca2276" :killed 0 :survived 0 :uncovered 0 :sites 0}]}
