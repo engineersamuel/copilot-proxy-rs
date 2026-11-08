@@ -1,0 +1,417 @@
+{
+  "data": [
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "default": {
+            "cache_price": 10,
+            "cache_write_1h_price": 400,
+            "cache_write_price": 250,
+            "context_max": 200000,
+            "input_price": 200,
+            "output_price": 1000
+          },
+          "long_context": {
+            "cache_price": 10,
+            "cache_write_1h_price": 400,
+            "cache_write_price": 250,
+            "context_max": 936000,
+            "input_price": 200,
+            "output_price": 1000
+          }
+        }
+      },
+      "capabilities": {
+        "family": "claude-sonnet-5.5",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_non_streaming_output_tokens": 16000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 936000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 5,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "adaptive_thinking": true,
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "claude-sonnet-5.5",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "versatile",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "medium",
+      "name": "Claude Sonnet 5.5",
+      "object": "model",
+      "preview": false,
+      "supported_endpoints": [
+        "/v1/messages",
+        "/chat/completions"
+      ],
+      "vendor": "Anthropic",
+      "version": "claude-sonnet-5.5"
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "individual_trial",
+          "edu",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 0,
+          "default": {
+            "cache_price": 0,
+            "cache_write_price": 0,
+            "input_price": 0,
+            "output_price": 0
+          }
+        }
+      },
+      "capabilities": {
+        "family": "gpt-6-luna",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_prompt_tokens": 872000
+        },
+        "object": "model_capabilities",
+        "supports": {},
+        "tokenizer": "o200k_base",
+        "type": "decisions"
+      },
+      "id": "gpt-6-luna-decisions",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_enabled": false,
+      "model_picker_price_category": "low",
+      "name": "GPT-6 Luna Decisions",
+      "object": "model",
+      "preview": false,
+      "supported_endpoints": [
+        "/v1/decisions"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-6-luna-decisions"
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "free",
+          "edu",
+          "pro",
+          "pro_plus",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "default": {
+            "cache_price": 1,
+            "cache_write_price": 12,
+            "context_max": 272000,
+            "input_price": 10,
+            "output_price": 50
+          },
+          "long_context": {
+            "cache_price": 2,
+            "cache_write_price": 25,
+            "context_max": 872000,
+            "input_price": 20,
+            "output_price": 75
+          }
+        }
+      },
+      "capabilities": {
+        "family": "gpt-6-luna",
+        "limits": {
+          "max_context_window_tokens": 1000000,
+          "max_output_tokens": 128000,
+          "max_prompt_tokens": 872000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "application/pdf"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "reasoning_effort": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "streaming": true,
+          "structured_outputs": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-6-luna",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "lightweight",
+      "model_picker_enabled": true,
+      "model_picker_price_category": "low",
+      "name": "GPT-6 Luna",
+      "object": "model",
+      "preview": false,
+      "supported_endpoints": [
+        "/responses",
+        "ws:/responses"
+      ],
+      "vendor": "OpenAI",
+      "version": "gpt-6-luna"
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "pro",
+          "pro_plus",
+          "individual_trial",
+          "business",
+          "enterprise",
+          "max"
+        ],
+        "token_prices": {
+          "batch_size": 1000000,
+          "default": {
+            "cache_price": 0,
+            "cache_write_price": 0,
+            "context_max": 32000,
+            "image_input_price": 800,
+            "image_output_price": 3000,
+            "input_price": 500,
+            "output_price": 0
+          }
+        }
+      },
+      "capabilities": {
+        "family": "gpt-image-2.5-flare",
+        "limits": {
+          "max_prompt_tokens": 32000
+        },
+        "object": "model_capabilities",
+        "supports": {},
+        "tokenizer": "o200k_base",
+        "type": "image"
+      },
+      "id": "gpt-image-2.5-flare",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_enabled": false,
+      "model_picker_price_category": "high",
+      "name": "GPT Image 2.5 Flare",
+      "object": "model",
+      "preview": true,
+      "supported_endpoints": [
+        "/v1/images/generations",
+        "/v1/images/edits"
+      ],
+      "vendor": "Experimental",
+      "version": "gpt-image-2.5-flare"
+    },
+    {
+      "billing": {
+        "restricted_to": [
+          "business",
+          "enterprise"
+        ],
+        "token_prices": {
+          "batch_size": 0,
+          "default": {
+            "cache_price": 0,
+            "cache_write_price": 0,
+            "input_price": 0,
+            "output_price": 0
+          }
+        }
+      },
+      "capabilities": {
+        "family": "microsoft-decision-1",
+        "object": "model_capabilities",
+        "supports": {},
+        "tokenizer": "o200k_base",
+        "type": "decisions"
+      },
+      "id": "microsoft-decision-1",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_enabled": false,
+      "model_picker_price_category": "low",
+      "name": "Microsoft-Decision-1",
+      "object": "model",
+      "preview": true,
+      "supported_endpoints": [
+        "/v1/systemone"
+      ],
+      "vendor": "Experimental",
+      "version": "microsoft-decision-1"
+    },
+    {
+      "billing": {
+        "token_prices": {
+          "batch_size": 0,
+          "default": {
+            "cache_price": 0,
+            "cache_write_price": 0,
+            "input_price": 0,
+            "output_price": 0
+          }
+        }
+      },
+      "capabilities": {
+        "family": "text-embedding-3-small",
+        "limits": {
+          "max_inputs": 512
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "dimensions": true
+        },
+        "tokenizer": "cl100k_base",
+        "type": "embeddings"
+      },
+      "id": "text-embedding-3-small",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_enabled": false,
+      "name": "Embedding V3 small",
+      "object": "model",
+      "preview": false,
+      "vendor": "Azure OpenAI",
+      "version": "text-embedding-3-small"
+    },
+    {
+      "billing": {
+        "token_prices": {
+          "batch_size": 1000000,
+          "default": {
+            "cache_price": 50,
+            "cache_write_price": 0,
+            "input_price": 200,
+            "output_price": 800
+          }
+        }
+      },
+      "capabilities": {
+        "family": "gpt-4.1",
+        "object": "model_capabilities",
+        "supports": {
+          "streaming": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "completion"
+      },
+      "id": "gpt-41-copilot",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_category": "versatile",
+      "model_picker_enabled": false,
+      "model_picker_price_category": "medium",
+      "name": "GPT-4.1 Copilot",
+      "object": "model",
+      "preview": false,
+      "vendor": "Azure OpenAI",
+      "version": "gpt-41-copilot"
+    },
+    {
+      "billing": {
+        "token_prices": {
+          "batch_size": 0,
+          "default": {
+            "cache_price": 0,
+            "cache_write_price": 0,
+            "input_price": 0,
+            "output_price": 0
+          }
+        }
+      },
+      "capabilities": {
+        "family": "gpt-4o",
+        "limits": {
+          "max_context_window_tokens": 128000,
+          "max_output_tokens": 4096,
+          "max_prompt_tokens": 64000,
+          "vision": {
+            "max_prompt_image_size": 3145728,
+            "max_prompt_images": 1,
+            "supported_media_types": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif"
+            ]
+          }
+        },
+        "object": "model_capabilities",
+        "supports": {
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "tool_calls": true,
+          "vision": true
+        },
+        "tokenizer": "o200k_base",
+        "type": "chat"
+      },
+      "id": "gpt-4o",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "model_picker_enabled": false,
+      "model_picker_price_category": "medium",
+      "name": "GPT-4o",
+      "object": "model",
+      "preview": false,
+      "vendor": "Azure OpenAI",
+      "version": "gpt-4o-2024-11-20"
+    }
+  ]
+}

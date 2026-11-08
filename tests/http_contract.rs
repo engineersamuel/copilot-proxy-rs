@@ -323,6 +323,36 @@ async fn count_tokens_non_object_json_returns_anthropic_error() {
 }
 
 #[tokio::test]
+async fn image_routes_return_structured_error_over_body_limit() {
+    for uri in ["/v1/images/generations", "/v1/images/edits"] {
+        let config = AppConfig {
+            max_decoded_body_bytes: 8,
+            ..Default::default()
+        };
+        let app = router(AppState::new(config));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-image-2.5-flare","prompt":"cat"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json(response).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES"));
+        assert_eq!(body["error"]["type"], "invalid_request_error", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn chat_route_rejects_body_over_decoded_limit() {
     let config = AppConfig {
         max_decoded_body_bytes: 8,
@@ -1983,4 +2013,365 @@ async fn ui_rule_is_enforced_only_when_ui_true_and_opus_listed() {
     .await;
     assert_eq!(b["recommended"]["id"], "claude-haiku-5.5");
     assert_eq!(b["routed_by"], "jev");
+}
+
+// ─── Images pass-through ─────────────────────────────────────────────────────
+
+const BOUNDARY: &str = "----cprsBoundary7MA4YWxk";
+
+fn multipart_edit_body(model: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"circle.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    body.extend_from_slice(b"\r\n");
+    for (name, value) in [
+        ("model", model),
+        ("prompt", "make the circle green"),
+        ("size", "1024x1024"),
+    ] {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+    body
+}
+
+fn multipart_content_type() -> String {
+    format!("multipart/form-data; boundary={BOUNDARY}")
+}
+
+async fn assert_json_image_passthrough(route: &str, fixture_name: &str, case: &str) {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let recorded = &support::fixture_json(fixture_name)[case];
+    fixture
+        .mock
+        .respond_json("POST", route, 200, recorded["response"].clone())
+        .await;
+    let (status, _, body) =
+        support::send_json(&fixture.state, route, recorded["request"].clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        recorded["response"]
+    );
+    assert_eq!(fixture.mock.hits("POST", route).await, 1);
+    assert_eq!(
+        fixture.mock.last_request_body_json("POST", route).await,
+        Some(recorded["request"].clone())
+    );
+    fixture.mock.assert_no_generation_calls().await;
+}
+
+fn error_message(body: &str) -> String {
+    let body: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    body["error"]["message"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn images_generations_passes_through_json() {
+    assert_json_image_passthrough(
+        "/v1/images/generations",
+        "copilot_images_generations.json",
+        "success_b64_json",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn images_edits_json_passes_through() {
+    assert_json_image_passthrough(
+        "/v1/images/edits",
+        "copilot_images_edits_json.json",
+        "success_json_images_image_url",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn images_generations_rejects_stream_locally() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/images/generations",
+        serde_json::json!({"model": "gpt-image-2.5-flare", "prompt": "a red circle", "stream": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "streaming image generation is not supported"
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+#[tokio::test]
+async fn images_generations_requires_model() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/images/generations",
+        serde_json::json!({"prompt": "a red circle"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(error_message(&body).contains("model"), "{body}");
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+#[tokio::test]
+async fn images_generations_rejects_local_model() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/images/generations",
+        serde_json::json!({"model": "qwen3-coder-30b-local", "prompt": "a red circle"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "Local models do not support /v1/images/generations"
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+    assert_eq!(fixture.mock.hits("POST", "/v1/chat/completions").await, 0);
+}
+
+#[tokio::test]
+async fn images_generations_upstream_error_sanitized() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let recorded = &support::fixture_json("copilot_images_generations.json")["error_bad_size"];
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/images/generations",
+            400,
+            recorded["response"].clone(),
+        )
+        .await;
+    let (status, _, body) = support::send_json(
+        &fixture.state,
+        "/v1/images/generations",
+        recorded["request"].clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!body.contains("13x13"), "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Copilot request failed with HTTP 400: invalid_value"
+    );
+}
+
+#[tokio::test]
+async fn images_edits_multipart_raw_passthrough() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let recorded =
+        &support::fixture_json("copilot_images_edits_multipart.json")["success_multipart"];
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/images/edits",
+            200,
+            recorded["response"].clone(),
+        )
+        .await;
+    let sent = multipart_edit_body("gpt-image-2.5-flare");
+    let (status, _, body) = support::send(
+        &fixture.state,
+        "/v1/images/edits",
+        &multipart_content_type(),
+        sent.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        recorded["response"]
+    );
+    assert_eq!(
+        fixture
+            .mock
+            .last_request_body_bytes("POST", "/v1/images/edits")
+            .await,
+        Some(sent)
+    );
+    assert_eq!(
+        fixture
+            .mock
+            .last_request_header("POST", "/v1/images/edits", "content-type")
+            .await,
+        Some(multipart_content_type())
+    );
+    assert!(
+        fixture
+            .mock
+            .last_request_header("POST", "/v1/images/edits", "authorization")
+            .await
+            .is_some_and(|value| value == "Bearer copilot-token")
+    );
+}
+
+#[tokio::test]
+async fn images_edits_multipart_rejects_local_model() {
+    let fixture = support::AppFixture::with_mock_local().await;
+    let (status, _, body) = support::send(
+        &fixture.state,
+        "/v1/images/edits",
+        &multipart_content_type(),
+        multipart_edit_body("qwen3-coder-30b-local"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "Local models do not support /v1/images/edits"
+    );
+    support::assert_no_upstream_posts(&fixture.mock).await;
+    assert_eq!(fixture.mock.hits("GET", "/copilot/token").await, 0);
+}
+
+#[tokio::test]
+async fn images_edits_multipart_requires_boundary_and_model() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) = support::send(
+        &fixture.state,
+        "/v1/images/edits",
+        "multipart/form-data",
+        multipart_edit_body("gpt-image-2.5-flare"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let without_model: Vec<u8> = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nhi\r\n--{BOUNDARY}--\r\n"
+    )
+    .into_bytes();
+    let (status, _, body) = support::send(
+        &fixture.state,
+        "/v1/images/edits",
+        &multipart_content_type(),
+        without_model,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+#[tokio::test]
+async fn images_edits_unsupported_content_type_415() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let (status, _, body) =
+        support::send(&fixture.state, "/v1/images/edits", "text/plain", "hello").await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    support::assert_no_upstream_posts(&fixture.mock).await;
+}
+
+// ─── /v1/models type + supported_endpoints ───────────────────────────────────
+
+#[tokio::test]
+async fn models_list_includes_type_and_supported_endpoints() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let response = router(fixture.state.clone())
+        .oneshot(Request::get("/v1/models").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    let entry = |id: &str| {
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+            .clone()
+    };
+    for (id, model_type, endpoints) in [
+        (
+            "gpt-6-luna-decisions",
+            "decisions",
+            serde_json::json!(["/v1/decisions"]),
+        ),
+        (
+            "microsoft-decision-1",
+            "decisions",
+            serde_json::json!(["/v1/systemone"]),
+        ),
+        (
+            "gpt-image-2.5-flare",
+            "image",
+            serde_json::json!(["/v1/images/generations", "/v1/images/edits"]),
+        ),
+        (
+            "claude-sonnet-5.5",
+            "chat",
+            serde_json::json!(["/v1/messages", "/chat/completions"]),
+        ),
+        (
+            "gpt-6-luna",
+            "chat",
+            serde_json::json!(["/responses", "ws:/responses"]),
+        ),
+    ] {
+        let entry = entry(id);
+        assert_eq!(entry["object"], "model", "{id}");
+        assert!(entry["created"].is_u64(), "{id}");
+        assert!(entry["owned_by"].is_string(), "{id}");
+        assert_eq!(entry["type"], model_type, "{id}");
+        assert_eq!(entry["supported_endpoints"], endpoints, "{id}");
+    }
+    assert_eq!(entry("microsoft-decision-1")["owned_by"], "other");
+}
+
+#[tokio::test]
+async fn model_registry_entries_carry_type_for_static_local_and_legacy_models() {
+    let registry = ModelRegistry::with_models(BTreeMap::new(), qwen_local_models());
+    registry
+        .set_copilot_models(vec![
+            serde_json::json!({"id": "gpt-4o", "capabilities": {"type": "chat"}}),
+            serde_json::json!({"id": "text-embedding-3-small", "capabilities": {"type": "embeddings"}}),
+            serde_json::json!({"id": "no-capabilities-model"}),
+        ])
+        .await;
+    let list = registry
+        .list_for_snapshot(BackendSnapshot {
+            primary: BackendKind::Copilot,
+            fallback: None,
+        })
+        .await;
+    let entry = |id: &str| {
+        serde_json::to_value(list.data.iter().find(|entry| entry.id == id).unwrap()).unwrap()
+    };
+    let legacy = entry("gpt-4o");
+    assert_eq!(legacy["type"], "chat");
+    assert_eq!(legacy["supported_endpoints"], serde_json::json!([]));
+    assert_eq!(entry("text-embedding-3-small")["type"], "embeddings");
+    assert_eq!(entry("no-capabilities-model")["type"], "chat");
+    let static_model = entry("gpt-5.6-sol");
+    assert_eq!(static_model["type"], "chat");
+    assert_eq!(
+        static_model["supported_endpoints"],
+        serde_json::json!(["/responses", "ws:/responses"])
+    );
+    let local = entry("qwen3-coder-30b-local");
+    assert_eq!(local["type"], "chat");
+    assert_eq!(local["owned_by"], "local");
+    assert_eq!(
+        local["supported_endpoints"],
+        serde_json::json!(["/chat/completions", "/responses", "/v1/messages"])
+    );
 }

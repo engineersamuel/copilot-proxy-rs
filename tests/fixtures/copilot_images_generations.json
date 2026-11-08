@@ -1,0 +1,94 @@
+{
+  "success_b64_json": {
+    "request": {
+      "model": "gpt-image-2.5-flare",
+      "prompt": "a red circle on white",
+      "n": 1,
+      "size": "1024x1024"
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "created": 1794109009,
+      "background": "opaque",
+      "data": [
+        {
+          "b64_json": "iVBORw0KGgoAAAAN...<truncated>"
+        }
+      ],
+      "output_format": "png",
+      "quality": "low",
+      "size": "1024x1024",
+      "usage": {
+        "input_tokens": 11,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 11
+        },
+        "output_tokens": 196,
+        "output_tokens_details": {
+          "image_tokens": 196,
+          "text_tokens": 0
+        },
+        "total_tokens": 207
+      },
+      "copilot_usage": {
+        "token_details": [
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 500000000000,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 11,
+            "token_type": "input"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "cache_read"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "cache_write"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "output"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 3000000000000,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 196,
+            "token_type": "image_output"
+          }
+        ],
+        "total_nano_aiu": 593500000
+      }
+    }
+  },
+  "error_bad_size": {
+    "request": {
+      "model": "gpt-image-2.5-flare",
+      "prompt": "a red circle",
+      "size": "13x13"
+    },
+    "status": 400,
+    "content_type": "application/json",
+    "response": {
+      "error": {
+        "message": "Invalid size '13x13'. Width and height must both be divisible by 16.",
+        "type": "image_generation_user_error",
+        "param": "size",
+        "code": "invalid_value"
+      }
+    }
+  }
+}

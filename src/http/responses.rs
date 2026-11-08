@@ -11,6 +11,7 @@ use crate::copilot::request::{
     ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR, strip_agent_message_encrypted_content,
 };
 use crate::errors::openai_error;
+use crate::http::decisions::{ClientApi, nonchat_model_response, responses_ws_rejection};
 use crate::http::errors::{
     openai_copilot_error, openai_local_error, openai_responses_translation_error,
     request_body_error_details, request_body_rejection_details,
@@ -263,6 +264,18 @@ pub(crate) async fn responses(
         .models
         .get_copilot_openai_model(&requested_model)
         .await;
+    if let Some(response) = nonchat_model_response(
+        &state,
+        ClientApi::Responses,
+        &body,
+        &copilot_model,
+        &requested_model,
+        stream,
+    )
+    .await
+    {
+        return response;
+    }
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
     let copilot_model_id = copilot_model.clone();
     let prepared = crate::responses::request::prepare_responses_request(
@@ -855,7 +868,7 @@ fn streaming_web_search_response(
 ///
 /// The opening events are omitted: callers emit those before any slow work so
 /// the client sees the response start immediately.
-fn completed_response_events(response: &Value) -> Vec<String> {
+pub(crate) fn completed_response_events(response: &Value) -> Vec<String> {
     let mut events = Vec::new();
     let mut push = |event_type: &str, payload: Value| {
         events.push(format!("event: {event_type}\ndata: {payload}\n\n"));
@@ -1436,6 +1449,21 @@ async fn handle_responses_ws(state: AppState, mut client_ws: axum::extract::ws::
             .models
             .get_copilot_openai_model(&requested_model)
             .await;
+        if let Some(message) =
+            responses_ws_rejection(&state, &copilot_model, &requested_model).await
+        {
+            let _ = client_ws
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "error": {"type": "invalid_request_error", "message": message}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+            continue;
+        }
         let supported_efforts = state.models.supported_efforts(&copilot_model).await;
         let prepared = crate::responses::request::prepare_responses_request(
             &state.responses,

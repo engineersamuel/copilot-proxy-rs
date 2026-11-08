@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::copilot::request::adapt_openai_reasoning_effort;
 use crate::errors::openai_error;
+use crate::http::decisions::{ClientApi, nonchat_model_response};
 use crate::http::errors::{
     openai_copilot_error, openai_local_error, request_body_error_details,
     request_body_rejection_details,
@@ -74,6 +75,18 @@ async fn chat_completions_inner(
         .models
         .get_copilot_openai_model(&requested_model)
         .await;
+    if let Some(response) = nonchat_model_response(
+        &state,
+        ClientApi::Chat,
+        &body,
+        &copilot_model,
+        &requested_model,
+        stream,
+    )
+    .await
+    {
+        return Ok(response);
+    }
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
     body.insert("model".to_string(), Value::String(copilot_model));
     let original_effort = body

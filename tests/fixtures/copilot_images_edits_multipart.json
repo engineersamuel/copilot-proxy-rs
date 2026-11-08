@@ -1,0 +1,87 @@
+{
+  "success_multipart": {
+    "request": {
+      "content_type": "multipart/form-data; boundary=<boundary>",
+      "fields": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "make the circle green",
+        "size": "1024x1024",
+        "image": "<file circle.png, image/png, 717348 bytes>"
+      }
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "created": 1794109054,
+      "background": "opaque",
+      "data": [
+        {
+          "b64_json": "iVBORw0KGgoAAAAN...<truncated>"
+        }
+      ],
+      "output_format": "png",
+      "quality": "low",
+      "size": "1024x1024",
+      "usage": {
+        "input_tokens": 1044,
+        "input_tokens_details": {
+          "image_tokens": 1024,
+          "text_tokens": 20
+        },
+        "output_tokens": 196,
+        "output_tokens_details": {
+          "image_tokens": 196,
+          "text_tokens": 0
+        },
+        "total_tokens": 1240
+      },
+      "copilot_usage": {
+        "token_details": [
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 500000000000,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 20,
+            "token_type": "input"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "cache_read"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "cache_write"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 0,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 0,
+            "token_type": "output"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 800000000000,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 1024,
+            "token_type": "image_input"
+          },
+          {
+            "batch_size": 1000000,
+            "cost_per_batch": 3000000000000,
+            "model": "gpt-image-2.5-flare",
+            "token_count": 196,
+            "token_type": "image_output"
+          }
+        ],
+        "total_nano_aiu": 1417200000
+      }
+    }
+  }
+}

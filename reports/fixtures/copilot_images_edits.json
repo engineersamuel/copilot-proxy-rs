@@ -1,0 +1,244 @@
+{
+  "endpoint": "POST /v1/images/edits",
+  "upstream_base": "https://api.githubcopilot.com",
+  "required_headers": {
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
+    "User-Agent": "GithubCopilot/1.155.0",
+    "Accept": "application/json",
+    "X-GitHub-Api-Version": "2026-06-01",
+    "X-Initiator": "user",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer <redacted copilot token>"
+  },
+  "captured_at": "2026-11-08T03:38:55Z",
+  "cases": [
+    {
+      "name": "success_json_images_image_url",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "make the circle blue",
+        "images": [
+          {
+            "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAADw...<truncated>"
+          }
+        ],
+        "size": "1024x1024"
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "created": 1794109042,
+        "background": "opaque",
+        "data": [
+          {
+            "b64_json": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAADw...<truncated 1168732 chars>"
+          }
+        ],
+        "output_format": "png",
+        "quality": "low",
+        "size": "1024x1024",
+        "usage": {
+          "input_tokens": 1044,
+          "input_tokens_details": {
+            "image_tokens": 1024,
+            "text_tokens": 20
+          },
+          "output_tokens": 196,
+          "output_tokens_details": {
+            "image_tokens": 196,
+            "text_tokens": 0
+          },
+          "total_tokens": 1240
+        },
+        "copilot_usage": {
+          "token_details": [
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 500000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 20,
+              "token_type": "input"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_read"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_write"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "output"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 800000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 1024,
+              "token_type": "image_input"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 3000000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 196,
+              "token_type": "image_output"
+            }
+          ],
+          "total_nano_aiu": 1417200000
+        }
+      }
+    },
+    {
+      "name": "success_multipart",
+      "request": {
+        "content_type": "multipart/form-data; boundary=<boundary>",
+        "fields": {
+          "model": "gpt-image-2.5-flare",
+          "prompt": "make the circle green",
+          "size": "1024x1024",
+          "image": "<file circle.png, image/png, 717348 bytes>"
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "created": 1794109054,
+        "background": "opaque",
+        "data": [
+          {
+            "b64_json": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAADw...<truncated 1317600 chars>"
+          }
+        ],
+        "output_format": "png",
+        "quality": "low",
+        "size": "1024x1024",
+        "usage": {
+          "input_tokens": 1044,
+          "input_tokens_details": {
+            "image_tokens": 1024,
+            "text_tokens": 20
+          },
+          "output_tokens": 196,
+          "output_tokens_details": {
+            "image_tokens": 196,
+            "text_tokens": 0
+          },
+          "total_tokens": 1240
+        },
+        "copilot_usage": {
+          "token_details": [
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 500000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 20,
+              "token_type": "input"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_read"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "cache_write"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 0,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 0,
+              "token_type": "output"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 800000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 1024,
+              "token_type": "image_input"
+            },
+            {
+              "batch_size": 1000000,
+              "cost_per_batch": 3000000000000,
+              "model": "gpt-image-2.5-flare",
+              "token_count": 196,
+              "token_type": "image_output"
+            }
+          ],
+          "total_nano_aiu": 1417200000
+        }
+      }
+    },
+    {
+      "name": "error_missing_images",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "x"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "images must contain between 1 and 16 images",
+          "code": ""
+        }
+      }
+    },
+    {
+      "name": "error_singular_image_string_not_accepted_in_json",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "x",
+        "image": "data:image/png;base64,AAAA"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "images must contain between 1 and 16 images",
+          "code": ""
+        }
+      }
+    },
+    {
+      "name": "error_invalid_image_data",
+      "request": {
+        "model": "gpt-image-2.5-flare",
+        "prompt": "x",
+        "images": [
+          {
+            "image_url": "data:image/png;base64,AAAA"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Invalid image data.",
+          "type": "image_generation_user_error",
+          "param": "images[0].image_url",
+          "code": "invalid_image_file"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,297 @@
+{
+  "endpoint": "POST /v1/systemone",
+  "upstream_base": "https://api.githubcopilot.com",
+  "required_headers": {
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
+    "User-Agent": "GithubCopilot/1.155.0",
+    "Accept": "application/json",
+    "X-GitHub-Api-Version": "2026-06-01",
+    "X-Initiator": "user",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer <redacted copilot token>"
+  },
+  "captured_at": "2026-11-08T03:38:37Z",
+  "cases": [
+    {
+      "name": "noul_messages_state",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": [
+          {
+            "role": "system",
+            "content": "You are helpful"
+          },
+          {
+            "role": "user",
+            "content": "Is the sky blue on a clear day?"
+          }
+        ],
+        "questions": {
+          "answer": {
+            "type": "noul",
+            "instructions": "Is the sky blue on a clear day?"
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "microsoft-decision-1",
+        "answers": {
+          "answer": {
+            "noul": 0.9947798745330428,
+            "type": "noul"
+          }
+        },
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "noul_string_state",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": "I love this product",
+        "questions": {
+          "positive": {
+            "type": "noul",
+            "instructions": "Is this positive?"
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "microsoft-decision-1",
+        "answers": {
+          "positive": {
+            "noul": 0.9978172832152007,
+            "type": "noul"
+          }
+        },
+        "usage": {
+          "input_tokens": 24,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choice",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": [
+          {
+            "role": "user",
+            "content": "I want my money back"
+          }
+        ],
+        "questions": {
+          "intent": {
+            "type": "choice",
+            "instructions": "What is the intent?",
+            "criteria": {
+              "refund": "refund request",
+              "other": null
+            }
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "microsoft-decision-1",
+        "answers": {
+          "intent": {
+            "choice": "refund",
+            "confidence": 0.9413755331974984,
+            "probabilities": {
+              "other": 0.029312233401250783,
+              "refund": 0.9706877665987492
+            },
+            "type": "choice"
+          }
+        },
+        "usage": {
+          "input_tokens": 44,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "score",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": [
+          {
+            "role": "user",
+            "content": "It is ok I guess"
+          }
+        ],
+        "questions": {
+          "sentiment": {
+            "type": "score",
+            "instructions": "How positive?",
+            "criteria": [
+              {
+                "label": "negative"
+              },
+              "neutral",
+              "positive"
+            ]
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "microsoft-decision-1",
+        "answers": {
+          "sentiment": {
+            "confidence": 0.9011601808964955,
+            "legend": {
+              "0": {
+                "label": "negative"
+              },
+              "1": "neutral",
+              "2": "positive"
+            },
+            "probabilities": {
+              "0": 0.019386769750754963,
+              "1": 0.9341067872643303,
+              "2": 0.046506442984914756
+            },
+            "score": 1.0271196732341599,
+            "type": "score"
+          }
+        },
+        "usage": {
+          "input_tokens": 42,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "stream_true_is_ignored",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": "hi",
+        "stream": true,
+        "questions": {
+          "greeting": {
+            "type": "noul",
+            "instructions": "Is this a greeting?"
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "microsoft-decision-1",
+        "answers": {
+          "greeting": {
+            "noul": 0.997817283102551,
+            "type": "noul"
+          }
+        },
+        "usage": {
+          "input_tokens": 23,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "error_missing_questions",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": "hi"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request"
+    },
+    {
+      "name": "error_chat_shape",
+      "request": {
+        "model": "microsoft-decision-1",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request"
+    },
+    {
+      "name": "error_bad_question_type",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": "hi",
+        "questions": {
+          "x": {
+            "type": "predicate",
+            "instructions": "Greeting?"
+          }
+        }
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "message": "Model does not support request argument supplied: invalid question x",
+          "details": "Model does not support request argument supplied: invalid question x"
+        }
+      }
+    },
+    {
+      "name": "error_questions_array",
+      "request": {
+        "model": "microsoft-decision-1",
+        "state": "hi",
+        "questions": [
+          {
+            "type": "noul",
+            "name": "x",
+            "instructions": "Greeting?"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "The request body is not valid JSON.",
+          "code": "invalid_request_body"
+        }
+      }
+    },
+    {
+      "name": "error_wrong_decision_model",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "state": "hi",
+        "questions": {
+          "x": {
+            "type": "noul",
+            "instructions": "Greeting?"
+          }
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "no model endpoints available given user constraints",
+          "code": "no_available_model_endpoints"
+        }
+      }
+    }
+  ]
+}

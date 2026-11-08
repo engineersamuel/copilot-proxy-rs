@@ -11,6 +11,7 @@ use crate::copilot::request::{
     CopilotRequestMetadata, adapt_thinking_for_copilot, filter_anthropic_beta_header,
 };
 use crate::errors::anthropic_error;
+use crate::http::decisions::{ClientApi, nonchat_model_response};
 use crate::http::errors::{
     anthropic_copilot_error, anthropic_local_error, anthropic_request_body_error_type,
     anthropic_responses_translation_error, request_body_error_details,
@@ -81,6 +82,18 @@ async fn messages_inner(
         .models
         .get_copilot_openai_model(&requested_model)
         .await;
+    if let Some(response) = nonchat_model_response(
+        &state,
+        ClientApi::Messages,
+        &body,
+        &copilot_model,
+        &requested_model,
+        stream,
+    )
+    .await
+    {
+        return Ok(response);
+    }
     let has_web_search = crate::translate::responses_formats::has_anthropic_web_search_tool(&body);
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
     let summary = summarize_effective_request(ApiFamily::Messages, Some(&requested_model), &body);

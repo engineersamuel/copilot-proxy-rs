@@ -1,0 +1,110 @@
+{
+  "predicate_messages_input": {
+    "request": {
+      "model": "gpt-6-luna-decisions",
+      "input": [
+        {
+          "role": "system",
+          "content": "You are helpful"
+        },
+        {
+          "role": "user",
+          "content": "Is the sky blue on a clear day?"
+        }
+      ],
+      "questions": [
+        {
+          "type": "predicate",
+          "name": "answer",
+          "instructions": "Is the sky blue on a clear day?"
+        }
+      ]
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "gpt-6-luna",
+      "answers": [
+        {
+          "type": "predicate",
+          "name": "answer",
+          "probability": 0.99
+        }
+      ],
+      "usage": {
+        "input_tokens": 173,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 173
+      }
+    }
+  },
+  "error_wrong_decision_model": {
+    "request": {
+      "model": "microsoft-decision-1",
+      "input": "hi",
+      "questions": [
+        {
+          "type": "predicate",
+          "name": "x",
+          "instructions": "Greeting?"
+        }
+      ]
+    },
+    "status": 400,
+    "content_type": "application/json",
+    "response": {
+      "error": {
+        "message": "no model endpoints available given user constraints",
+        "code": "no_available_model_endpoints"
+      }
+    }
+  },
+  "refusal_messages_input": {
+    "request": {
+      "model": "gpt-6-luna-decisions",
+      "input": [
+        {
+          "role": "user",
+          "content": "Which lunch spot is best?"
+        }
+      ],
+      "questions": [
+        {
+          "type": "predicate",
+          "name": "answer",
+          "instructions": "Which lunch spot is best?"
+        }
+      ]
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "gpt-6-luna",
+      "answers": [
+        {
+          "type": "refusal",
+          "name": "answer"
+        }
+      ],
+      "usage": {
+        "input_tokens": 190,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 190
+      }
+    }
+  }
+}

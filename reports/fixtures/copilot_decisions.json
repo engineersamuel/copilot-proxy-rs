@@ -1,0 +1,557 @@
+{
+  "endpoint": "POST /v1/decisions",
+  "upstream_base": "https://api.githubcopilot.com",
+  "required_headers": {
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
+    "User-Agent": "GithubCopilot/1.155.0",
+    "Accept": "application/json",
+    "X-GitHub-Api-Version": "2026-06-01",
+    "X-Initiator": "user",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer <redacted copilot token>"
+  },
+  "captured_at": "2026-11-08T03:38:32Z",
+  "cases": [
+    {
+      "name": "predicate_messages_input",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are helpful"
+          },
+          {
+            "role": "user",
+            "content": "Is the sky blue on a clear day?"
+          }
+        ],
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "answer",
+            "instructions": "Is the sky blue on a clear day?"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "predicate",
+            "name": "answer",
+            "probability": 0.99
+          }
+        ],
+        "usage": {
+          "input_tokens": 173,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 173
+        }
+      }
+    },
+    {
+      "name": "predicate_string_input",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "I love this product",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "positive",
+            "instructions": "Is this positive?"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "predicate",
+            "name": "positive",
+            "probability": 1.0
+          }
+        ],
+        "usage": {
+          "input_tokens": 156,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 156
+        }
+      }
+    },
+    {
+      "name": "predicate_input_text_parts",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "The package was left in the rain and the box is soaked through."
+              }
+            ]
+          }
+        ],
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "visible_damage",
+            "instructions": "Does the customer report visible damage to the package?"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "predicate",
+            "name": "visible_damage",
+            "probability": 0.99
+          }
+        ],
+        "usage": {
+          "input_tokens": 172,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 172
+        }
+      }
+    },
+    {
+      "name": "choice",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "I want my money back",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "intent",
+            "instructions": "What is the intent?",
+            "choices": [
+              {
+                "value": "refund",
+                "description": "refund request"
+              },
+              {
+                "value": "other"
+              }
+            ]
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "choice",
+            "name": "intent",
+            "choice": "refund",
+            "probabilities": [
+              {
+                "value": "refund",
+                "probability": 1.0
+              },
+              {
+                "value": "other",
+                "probability": 0.0
+              }
+            ],
+            "confidence": 1.0
+          }
+        ],
+        "usage": {
+          "input_tokens": 114,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 114
+        }
+      }
+    },
+    {
+      "name": "score",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "It is ok I guess",
+        "questions": [
+          {
+            "type": "score",
+            "name": "sentiment",
+            "instructions": "How positive?",
+            "levels": [
+              {
+                "label": "negative"
+              },
+              {
+                "label": "neutral",
+                "description": "neither"
+              },
+              {
+                "label": "positive"
+              }
+            ]
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "score",
+            "name": "sentiment",
+            "score": 1.59,
+            "probabilities": [
+              {
+                "value": 0,
+                "label": "negative",
+                "probability": 0.03
+              },
+              {
+                "value": 1,
+                "label": "neutral",
+                "probability": 0.35
+              },
+              {
+                "value": 2,
+                "label": "positive",
+                "probability": 0.62
+              }
+            ],
+            "confidence": 0.39
+          }
+        ],
+        "usage": {
+          "input_tokens": 115,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 115
+        }
+      }
+    },
+    {
+      "name": "multiple_questions",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "Refund me now, this is terrible",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "angry",
+            "instructions": "Is the user angry?"
+          },
+          {
+            "type": "predicate",
+            "name": "polite",
+            "instructions": "Is the user polite?"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "predicate",
+            "name": "angry",
+            "probability": 0.96
+          },
+          {
+            "type": "predicate",
+            "name": "polite",
+            "probability": 0.0
+          }
+        ],
+        "usage": {
+          "input_tokens": 309,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 309
+        }
+      }
+    },
+    {
+      "name": "stream_true_is_ignored",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi",
+        "stream": true,
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "greeting",
+            "instructions": "Is this a greeting?"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "model": "gpt-6-luna",
+        "answers": [
+          {
+            "type": "predicate",
+            "name": "greeting",
+            "probability": 1.0
+          }
+        ],
+        "usage": {
+          "input_tokens": 154,
+          "input_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 154
+        }
+      }
+    },
+    {
+      "name": "error_missing_questions",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi"
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request"
+    },
+    {
+      "name": "error_chat_shape",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request"
+    },
+    {
+      "name": "error_missing_input",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "x",
+            "instructions": "Greeting?"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Missing required parameter: 'input'.",
+          "type": "invalid_request_error",
+          "param": "input",
+          "code": "missing_required_parameter"
+        }
+      }
+    },
+    {
+      "name": "error_missing_instructions",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "x"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Missing required parameter: 'questions[0].instructions'.",
+          "type": "invalid_request_error",
+          "param": "questions[0].instructions",
+          "code": "missing_required_parameter"
+        }
+      }
+    },
+    {
+      "name": "error_bad_question_type",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "text",
+            "name": "x",
+            "instructions": "Say hi"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Invalid value: 'text'. Supported values are: 'predicate', 'choice', and 'score'.",
+          "type": "invalid_request_error",
+          "param": "questions[0].type",
+          "code": "invalid_value"
+        }
+      }
+    },
+    {
+      "name": "error_choice_strings",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "x",
+            "instructions": "?",
+            "choices": [
+              "a",
+              "b"
+            ]
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Invalid type for 'questions[0].choices[0]': expected an object, but got a string instead.",
+          "type": "invalid_request_error",
+          "param": "questions[0].choices[0]",
+          "code": "invalid_type"
+        }
+      }
+    },
+    {
+      "name": "error_score_missing_levels",
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "score",
+            "name": "x",
+            "instructions": "?"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "Missing required parameter: 'questions[0].levels'.",
+          "type": "invalid_request_error",
+          "param": "questions[0].levels",
+          "code": "missing_required_parameter"
+        }
+      }
+    },
+    {
+      "name": "error_wrong_decision_model",
+      "request": {
+        "model": "microsoft-decision-1",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "x",
+            "instructions": "Greeting?"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "message": "no model endpoints available given user constraints",
+          "code": "no_available_model_endpoints"
+        }
+      }
+    },
+    {
+      "name": "error_chat_model",
+      "request": {
+        "model": "gpt-6-luna",
+        "input": "hi",
+        "questions": [
+          {
+            "type": "predicate",
+            "name": "x",
+            "instructions": "Greeting?"
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "message": "Model is not supported for this request.",
+          "code": "model_not_supported",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      }
+    }
+  ]
+}

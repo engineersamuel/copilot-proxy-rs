@@ -536,3 +536,66 @@ async fn responses_websocket_bridges_backend_completed_event() {
         "expected response.completed from bridge, got: {text}"
     );
 }
+
+async fn ws_error_for_nonchat_model(model: &str) -> (serde_json::Value, usize) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (ws_backend_addr, backend_open_count) = mock_ws_backend_addr().await;
+    let (mut state, _temp, mock) = state_with_ws_backend(ws_backend_addr).await;
+    mock.respond_json(
+        "GET",
+        "/models",
+        200,
+        support::fixture_json("copilot_models_nonchat.json"),
+    )
+    .await;
+    Arc::make_mut(&mut state.config).api_key = "local-secret".to_string();
+    let addr = start_proxy(state).await;
+    let mut request = format!("ws://{addr}/v1/responses")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer local-secret".parse().unwrap());
+    let (mut ws, _) = connect_async(request).await.unwrap();
+    ws.send(Message::Text(
+        serde_json::json!({"type": "response.create", "model": model, "input": "hello"})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let message = ws.next().await.unwrap().unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected text frame, got {message:?}");
+    };
+    support::assert_no_upstream_posts(&mock).await;
+    (
+        serde_json::from_str(&text).unwrap(),
+        backend_open_count.load(Ordering::SeqCst),
+    )
+}
+
+#[tokio::test]
+async fn responses_ws_rejects_decisions_model() {
+    let (event, backend_opens) = ws_error_for_nonchat_model("gpt-6-luna-decisions").await;
+    assert_eq!(event["type"], "error");
+    assert_eq!(event["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        event["error"]["message"],
+        "model 'gpt-6-luna-decisions' does not support Responses WebSocket; use POST /v1/responses"
+    );
+    assert_eq!(backend_opens, 0);
+}
+
+#[tokio::test]
+async fn responses_ws_rejects_image_model() {
+    let (event, backend_opens) = ws_error_for_nonchat_model("gpt-image-2.5-flare").await;
+    assert_eq!(event["type"], "error");
+    assert_eq!(event["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        event["error"]["message"],
+        support::image_model_message("Responses WebSocket")
+    );
+    assert_eq!(backend_opens, 0);
+}

@@ -1,0 +1,58 @@
+{
+  "options_messages_input": {
+    "request": {
+      "model": "gpt-6-luna-decisions",
+      "input": [
+        {
+          "role": "system",
+          "content": "You are helpful"
+        },
+        {
+          "role": "user",
+          "content": "Pick a lunch spot. Option A: tacos by the park. Option B: noodles downtown. Which option should we pick?"
+        }
+      ],
+      "questions": [
+        {
+          "type": "predicate",
+          "name": "option_a",
+          "instructions": "Pick a lunch spot. Should we pick Option A: tacos by the park?"
+        },
+        {
+          "type": "predicate",
+          "name": "option_b",
+          "instructions": "Pick a lunch spot. Should we pick Option B: noodles downtown?"
+        }
+      ]
+    },
+    "status": 200,
+    "content_type": "application/json",
+    "response": {
+      "model": "gpt-6-luna",
+      "answers": [
+        {
+          "type": "predicate",
+          "name": "option_a",
+          "probability": 0.2
+        },
+        {
+          "type": "predicate",
+          "name": "option_b",
+          "probability": 0.6
+        }
+      ],
+      "usage": {
+        "input_tokens": 190,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 190
+      }
+    }
+  }
+}
