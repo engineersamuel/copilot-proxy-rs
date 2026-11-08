@@ -3,12 +3,15 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::extract::rejection::BytesRejection;
 use axum::response::{IntoResponse, Response};
 use http::{HeaderMap, StatusCode, header};
 use serde_json::{Map, Value};
 
 use crate::errors::{OpenAiErrorResponse, openai_error};
-use crate::http::errors::{openai_copilot_error, request_body_error_details};
+use crate::http::errors::{
+    openai_copilot_error, request_body_error_details, request_body_rejection_details,
+};
 use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 
@@ -56,6 +59,22 @@ async fn copilot_model_for(state: &AppState, model: &str) -> String {
     state.models.get_copilot_openai_model(model).await
 }
 
+fn read_body(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Bytes, ImageError> {
+    body.map_err(|rejection| {
+        let (status, message) = request_body_rejection_details(
+            rejection,
+            headers,
+            state.config.max_decoded_body_bytes,
+            "images",
+        );
+        openai_error(status, "invalid_request_error", message)
+    })
+}
+
 fn upstream_response(result: Result<Value, crate::copilot::errors::CopilotError>) -> Response {
     match result {
         Ok(value) => Json(value).into_response(),
@@ -66,8 +85,12 @@ fn upstream_response(result: Result<Value, crate::copilot::errors::CopilotError>
 pub(crate) async fn images_generations(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let body = match read_body(&state, &headers, body) {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
     json_image_request(&state, &headers, &body, ImageRoute::Generations)
         .await
         .unwrap_or_else(IntoResponse::into_response)
@@ -76,8 +99,12 @@ pub(crate) async fn images_generations(
 pub(crate) async fn images_edits(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let body = match read_body(&state, &headers, body) {
+        Ok(body) => body,
+        Err(error) => return error.into_response(),
+    };
     let content_type = header_text(&headers, header::CONTENT_TYPE).unwrap_or_default();
     let media_type = content_type
         .split(';')

@@ -323,6 +323,36 @@ async fn count_tokens_non_object_json_returns_anthropic_error() {
 }
 
 #[tokio::test]
+async fn image_routes_return_structured_error_over_body_limit() {
+    for uri in ["/v1/images/generations", "/v1/images/edits"] {
+        let config = AppConfig {
+            max_decoded_body_bytes: 8,
+            ..Default::default()
+        };
+        let app = router(AppState::new(config));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-image-2.5-flare","prompt":"cat"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json(response).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("COPILOT_PROXY_RS_MAX_DECODED_BODY_BYTES"));
+        assert_eq!(body["error"]["type"], "invalid_request_error", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn chat_route_rejects_body_over_decoded_limit() {
     let config = AppConfig {
         max_decoded_body_bytes: 8,
