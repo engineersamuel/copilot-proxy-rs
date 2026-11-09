@@ -1,0 +1,3806 @@
+{
+  "endpoint": "POST /v1/systemone",
+  "upstream_base": "https://api.githubcopilot.com",
+  "required_headers": {
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
+    "User-Agent": "GithubCopilot/1.155.0",
+    "Accept": "application/json",
+    "X-GitHub-Api-Version": "2026-06-01",
+    "X-Initiator": "user",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer <redacted copilot token>"
+  },
+  "captured_at": "2026-11-09T01:30:00Z",
+  "notes": "Captured with a throwaway harness reusing copilot_proxy_rs::auth::CopilotAuth + copilot::request::base_copilot_request_headers. Strings >300 chars and arrays/objects >12 entries are elided; request_bytes is the real size sent. JSON key order in responses is not significant (re-serialized).",
+  "cases": [
+    {
+      "name": "mixed_5",
+      "source_batch": "A_multi",
+      "request_bytes": 630,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "intent": {
+            "criteria": {
+              "info": null,
+              "refund": "money back",
+              "replacement": null
+            },
+            "instructions": "What does the customer want?",
+            "type": "choice"
+          },
+          "is_angry": {
+            "instructions": "Is the customer angry?",
+            "type": "noul"
+          },
+          "is_billing": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          },
+          "mentions_order_id": {
+            "instructions": "Does it include an order number?",
+            "type": "noul"
+          },
+          "severity": {
+            "criteria": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "instructions": "How severe?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "intent": {
+            "choice": "refund",
+            "confidence": 0.9981902957612758,
+            "probabilities": {
+              "info": 0.00029568769784808167,
+              "refund": 0.9987935305075172,
+              "replacement": 0.0009107817946347388
+            },
+            "type": "choice"
+          },
+          "is_angry": {
+            "noul": 0.9964063977918796,
+            "type": "noul"
+          },
+          "is_billing": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          },
+          "mentions_order_id": {
+            "noul": 0.9991959142171842,
+            "type": "noul"
+          },
+          "severity": {
+            "confidence": 0.28812506152039075,
+            "legend": {
+              "0": "low",
+              "1": "medium",
+              "2": "high"
+            },
+            "probabilities": {
+              "0": 0.010904675225713744,
+              "1": 0.5254167076802605,
+              "2": 0.4636786170940257
+            },
+            "score": 1.452773941868312,
+            "type": "score"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 139,
+          "output_tokens": 5
+        }
+      }
+    },
+    {
+      "name": "noul_40",
+      "source_batch": "A_multi",
+      "request_bytes": 3631,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "q006": {
+            "instructions": "Does the message mention fraud (variant 6)?",
+            "type": "noul"
+          },
+          "q007": {
+            "instructions": "Does the message mention account (variant 7)?",
+            "type": "noul"
+          },
+          "q008": {
+            "instructions": "Does the message mention login (variant 8)?",
+            "type": "noul"
+          },
+          "q009": {
+            "instructions": "Does the message mention pricing (variant 9)?",
+            "type": "noul"
+          },
+          "q010": {
+            "instructions": "Does the message mention billing (variant 10)?",
+            "type": "noul"
+          },
+          "q011": {
+            "instructions": "Does the message mention shipping (variant 11)?",
+            "type": "noul"
+          },
+          "q012": {
+            "instructions": "Does the message mention damage (variant 12)?",
+            "type": "noul"
+          },
+          "q013": {
+            "instructions": "Does the message mention refund (variant 13)?",
+            "type": "noul"
+          },
+          "q014": {
+            "instructions": "Does the message mention anger (variant 14)?",
+            "type": "noul"
+          },
+          "q015": {
+            "instructions": "Does the message mention politeness (variant 15)?",
+            "type": "noul"
+          },
+          "q016": {
+            "instructions": "Does the message mention fraud (variant 16)?",
+            "type": "noul"
+          },
+          "q017": {
+            "instructions": "Does the message mention account (variant 17)?",
+            "type": "noul"
+          },
+          "q018": {
+            "instructions": "Does the message mention login (variant 18)?",
+            "type": "noul"
+          },
+          "q019": {
+            "instructions": "Does the message mention pricing (variant 19)?",
+            "type": "noul"
+          },
+          "q020": {
+            "instructions": "Does the message mention billing (variant 20)?",
+            "type": "noul"
+          },
+          "q021": {
+            "instructions": "Does the message mention shipping (variant 21)?",
+            "type": "noul"
+          },
+          "q022": {
+            "instructions": "Does the message mention damage (variant 22)?",
+            "type": "noul"
+          },
+          "q023": {
+            "instructions": "Does the message mention refund (variant 23)?",
+            "type": "noul"
+          },
+          "q024": {
+            "instructions": "Does the message mention anger (variant 24)?",
+            "type": "noul"
+          },
+          "q025": {
+            "instructions": "Does the message mention politeness (variant 25)?",
+            "type": "noul"
+          },
+          "q026": {
+            "instructions": "Does the message mention fraud (variant 26)?",
+            "type": "noul"
+          },
+          "q027": {
+            "instructions": "Does the message mention account (variant 27)?",
+            "type": "noul"
+          },
+          "q028": {
+            "instructions": "Does the message mention login (variant 28)?",
+            "type": "noul"
+          },
+          "q029": {
+            "instructions": "Does the message mention pricing (variant 29)?",
+            "type": "noul"
+          },
+          "q030": {
+            "instructions": "Does the message mention billing (variant 30)?",
+            "type": "noul"
+          },
+          "q031": {
+            "instructions": "Does the message mention shipping (variant 31)?",
+            "type": "noul"
+          },
+          "q032": {
+            "instructions": "Does the message mention damage (variant 32)?",
+            "type": "noul"
+          },
+          "q033": {
+            "instructions": "Does the message mention refund (variant 33)?",
+            "type": "noul"
+          },
+          "q034": {
+            "instructions": "Does the message mention anger (variant 34)?",
+            "type": "noul"
+          },
+          "q035": {
+            "instructions": "Does the message mention politeness (variant 35)?",
+            "type": "noul"
+          },
+          "q036": {
+            "instructions": "Does the message mention fraud (variant 36)?",
+            "type": "noul"
+          },
+          "q037": {
+            "instructions": "Does the message mention account (variant 37)?",
+            "type": "noul"
+          },
+          "q038": {
+            "instructions": "Does the message mention login (variant 38)?",
+            "type": "noul"
+          },
+          "q039": {
+            "instructions": "Does the message mention pricing (variant 39)?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "q000": {
+            "noul": 0.9525742897641508,
+            "type": "noul"
+          },
+          "q001": {
+            "noul": 0.705789359488229,
+            "type": "noul"
+          },
+          "q002": {
+            "noul": 0.9840936251297452,
+            "type": "noul"
+          },
+          "q003": {
+            "noul": 0.9706878789563468,
+            "type": "noul"
+          },
+          "q004": {
+            "noul": 0.7057900353762926,
+            "type": "noul"
+          },
+          "q005": {
+            "noul": 0.1824291885804114,
+            "type": "noul"
+          },
+          "q006": {
+            "noul": 0.010987042885727574,
+            "type": "noul"
+          },
+          "q007": {
+            "noul": 0.014063751617019974,
+            "type": "noul"
+          },
+          "q008": {
+            "noul": 0.0010322357688780928,
+            "type": "noul"
+          },
+          "q009": {
+            "noul": 0.08510099102026336,
+            "type": "noul"
+          },
+          "q010": {
+            "noul": 0.9669140966129974,
+            "type": "noul"
+          },
+          "q011": {
+            "noul": 0.6513607253714779,
+            "type": "noul"
+          },
+          "q012": {
+            "noul": 0.9890130675469736,
+            "type": "noul"
+          },
+          "q013": {
+            "noul": 0.9890130685501882,
+            "type": "noul"
+          },
+          "q014": {
+            "noul": 0.6791836455803598,
+            "type": "noul"
+          },
+          "q015": {
+            "noul": 0.22270464161645664,
+            "type": "noul"
+          },
+          "q016": {
+            "noul": 0.012431772129676383,
+            "type": "noul"
+          },
+          "q017": {
+            "noul": 0.01406377503159622,
+            "type": "noul"
+          },
+          "q018": {
+            "noul": 0.0009110554887407434,
+            "type": "noul"
+          },
+          "q019": {
+            "noul": 0.0758595190382196,
+            "type": "noul"
+          },
+          "q020": {
+            "noul": 0.9525743363139788,
+            "type": "noul"
+          },
+          "q021": {
+            "noul": 0.7310624230195797,
+            "type": "noul"
+          },
+          "q022": {
+            "noul": 0.9890130677832089,
+            "type": "noul"
+          },
+          "q023": {
+            "noul": 0.974042712756086,
+            "type": "noul"
+          },
+          "q024": {
+            "noul": 0.6791839864765798,
+            "type": "noul"
+          },
+          "q025": {
+            "noul": 0.2227044006097434,
+            "type": "noul"
+          },
+          "q026": {
+            "noul": 0.010987056392443203,
+            "type": "noul"
+          },
+          "q027": {
+            "noul": 0.005220166598611012,
+            "type": "noul"
+          },
+          "q028": {
+            "noul": 0.0008040892491593751,
+            "type": "noul"
+          },
+          "q029": {
+            "noul": 0.03732746557804711,
+            "type": "noul"
+          },
+          "q030": {
+            "noul": 0.9324537075007452,
+            "type": "noul"
+          },
+          "q031": {
+            "noul": 0.7057894965049666,
+            "type": "noul"
+          },
+          "q032": {
+            "noul": 0.9875683590073516,
+            "type": "noul"
+          },
+          "q033": {
+            "noul": 0.9859363964907064,
+            "type": "noul"
+          },
+          "q034": {
+            "noul": 0.6791844138879246,
+            "type": "noul"
+          },
+          "q035": {
+            "noul": 0.1824292304838623,
+            "type": "noul"
+          },
+          "q036": {
+            "noul": 0.009708567608612636,
+            "type": "noul"
+          },
+          "q037": {
+            "noul": 0.006692904047527791,
+            "type": "noul"
+          },
+          "q038": {
+            "noul": 0.0008040890746335007,
+            "type": "noul"
+          },
+          "q039": {
+            "noul": 0.02931257447658435,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 1029,
+          "output_tokens": 40
+        }
+      }
+    },
+    {
+      "name": "noul_100",
+      "source_batch": "A_multi",
+      "request_bytes": 8827,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "q006": {
+            "instructions": "Does the message mention fraud (variant 6)?",
+            "type": "noul"
+          },
+          "q007": {
+            "instructions": "Does the message mention account (variant 7)?",
+            "type": "noul"
+          },
+          "q008": {
+            "instructions": "Does the message mention login (variant 8)?",
+            "type": "noul"
+          },
+          "q009": {
+            "instructions": "Does the message mention pricing (variant 9)?",
+            "type": "noul"
+          },
+          "q010": {
+            "instructions": "Does the message mention billing (variant 10)?",
+            "type": "noul"
+          },
+          "q011": {
+            "instructions": "Does the message mention shipping (variant 11)?",
+            "type": "noul"
+          },
+          "q012": {
+            "instructions": "Does the message mention damage (variant 12)?",
+            "type": "noul"
+          },
+          "q013": {
+            "instructions": "Does the message mention refund (variant 13)?",
+            "type": "noul"
+          },
+          "q014": {
+            "instructions": "Does the message mention anger (variant 14)?",
+            "type": "noul"
+          },
+          "q015": {
+            "instructions": "Does the message mention politeness (variant 15)?",
+            "type": "noul"
+          },
+          "q016": {
+            "instructions": "Does the message mention fraud (variant 16)?",
+            "type": "noul"
+          },
+          "q017": {
+            "instructions": "Does the message mention account (variant 17)?",
+            "type": "noul"
+          },
+          "q018": {
+            "instructions": "Does the message mention login (variant 18)?",
+            "type": "noul"
+          },
+          "q019": {
+            "instructions": "Does the message mention pricing (variant 19)?",
+            "type": "noul"
+          },
+          "q020": {
+            "instructions": "Does the message mention billing (variant 20)?",
+            "type": "noul"
+          },
+          "q021": {
+            "instructions": "Does the message mention shipping (variant 21)?",
+            "type": "noul"
+          },
+          "q022": {
+            "instructions": "Does the message mention damage (variant 22)?",
+            "type": "noul"
+          },
+          "q023": {
+            "instructions": "Does the message mention refund (variant 23)?",
+            "type": "noul"
+          },
+          "q024": {
+            "instructions": "Does the message mention anger (variant 24)?",
+            "type": "noul"
+          },
+          "q025": {
+            "instructions": "Does the message mention politeness (variant 25)?",
+            "type": "noul"
+          },
+          "q026": {
+            "instructions": "Does the message mention fraud (variant 26)?",
+            "type": "noul"
+          },
+          "q027": {
+            "instructions": "Does the message mention account (variant 27)?",
+            "type": "noul"
+          },
+          "q028": {
+            "instructions": "Does the message mention login (variant 28)?",
+            "type": "noul"
+          },
+          "q029": {
+            "instructions": "Does the message mention pricing (variant 29)?",
+            "type": "noul"
+          },
+          "q030": {
+            "instructions": "Does the message mention billing (variant 30)?",
+            "type": "noul"
+          },
+          "q031": {
+            "instructions": "Does the message mention shipping (variant 31)?",
+            "type": "noul"
+          },
+          "q032": {
+            "instructions": "Does the message mention damage (variant 32)?",
+            "type": "noul"
+          },
+          "q033": {
+            "instructions": "Does the message mention refund (variant 33)?",
+            "type": "noul"
+          },
+          "q034": {
+            "instructions": "Does the message mention anger (variant 34)?",
+            "type": "noul"
+          },
+          "q035": {
+            "instructions": "Does the message mention politeness (variant 35)?",
+            "type": "noul"
+          },
+          "q036": {
+            "instructions": "Does the message mention fraud (variant 36)?",
+            "type": "noul"
+          },
+          "q037": {
+            "instructions": "Does the message mention account (variant 37)?",
+            "type": "noul"
+          },
+          "q038": {
+            "instructions": "Does the message mention login (variant 38)?",
+            "type": "noul"
+          },
+          "q039": {
+            "instructions": "Does the message mention pricing (variant 39)?",
+            "type": "noul"
+          },
+          "q040": {
+            "instructions": "Does the message mention billing (variant 40)?",
+            "type": "noul"
+          },
+          "q041": {
+            "instructions": "Does the message mention shipping (variant 41)?",
+            "type": "noul"
+          },
+          "q042": {
+            "instructions": "Does the message mention damage (variant 42)?",
+            "type": "noul"
+          },
+          "q043": {
+            "instructions": "Does the message mention refund (variant 43)?",
+            "type": "noul"
+          },
+          "q044": {
+            "instructions": "Does the message mention anger (variant 44)?",
+            "type": "noul"
+          },
+          "q045": {
+            "instructions": "Does the message mention politeness (variant 45)?",
+            "type": "noul"
+          },
+          "q046": {
+            "instructions": "Does the message mention fraud (variant 46)?",
+            "type": "noul"
+          },
+          "q047": {
+            "instructions": "Does the message mention account (variant 47)?",
+            "type": "noul"
+          },
+          "q048": {
+            "instructions": "Does the message mention login (variant 48)?",
+            "type": "noul"
+          },
+          "q049": {
+            "instructions": "Does the message mention pricing (variant 49)?",
+            "type": "noul"
+          },
+          "q050": {
+            "instructions": "Does the message mention billing (variant 50)?",
+            "type": "noul"
+          },
+          "q051": {
+            "instructions": "Does the message mention shipping (variant 51)?",
+            "type": "noul"
+          },
+          "q052": {
+            "instructions": "Does the message mention damage (variant 52)?",
+            "type": "noul"
+          },
+          "q053": {
+            "instructions": "Does the message mention refund (variant 53)?",
+            "type": "noul"
+          },
+          "q054": {
+            "instructions": "Does the message mention anger (variant 54)?",
+            "type": "noul"
+          },
+          "q055": {
+            "instructions": "Does the message mention politeness (variant 55)?",
+            "type": "noul"
+          },
+          "q056": {
+            "instructions": "Does the message mention fraud (variant 56)?",
+            "type": "noul"
+          },
+          "q057": {
+            "instructions": "Does the message mention account (variant 57)?",
+            "type": "noul"
+          },
+          "q058": {
+            "instructions": "Does the message mention login (variant 58)?",
+            "type": "noul"
+          },
+          "q059": {
+            "instructions": "Does the message mention pricing (variant 59)?",
+            "type": "noul"
+          },
+          "q060": {
+            "instructions": "Does the message mention billing (variant 60)?",
+            "type": "noul"
+          },
+          "q061": {
+            "instructions": "Does the message mention shipping (variant 61)?",
+            "type": "noul"
+          },
+          "q062": {
+            "instructions": "Does the message mention damage (variant 62)?",
+            "type": "noul"
+          },
+          "q063": {
+            "instructions": "Does the message mention refund (variant 63)?",
+            "type": "noul"
+          },
+          "q064": {
+            "instructions": "Does the message mention anger (variant 64)?",
+            "type": "noul"
+          },
+          "q065": {
+            "instructions": "Does the message mention politeness (variant 65)?",
+            "type": "noul"
+          },
+          "q066": {
+            "instructions": "Does the message mention fraud (variant 66)?",
+            "type": "noul"
+          },
+          "q067": {
+            "instructions": "Does the message mention account (variant 67)?",
+            "type": "noul"
+          },
+          "q068": {
+            "instructions": "Does the message mention login (variant 68)?",
+            "type": "noul"
+          },
+          "q069": {
+            "instructions": "Does the message mention pricing (variant 69)?",
+            "type": "noul"
+          },
+          "q070": {
+            "instructions": "Does the message mention billing (variant 70)?",
+            "type": "noul"
+          },
+          "q071": {
+            "instructions": "Does the message mention shipping (variant 71)?",
+            "type": "noul"
+          },
+          "q072": {
+            "instructions": "Does the message mention damage (variant 72)?",
+            "type": "noul"
+          },
+          "q073": {
+            "instructions": "Does the message mention refund (variant 73)?",
+            "type": "noul"
+          },
+          "q074": {
+            "instructions": "Does the message mention anger (variant 74)?",
+            "type": "noul"
+          },
+          "q075": {
+            "instructions": "Does the message mention politeness (variant 75)?",
+            "type": "noul"
+          },
+          "q076": {
+            "instructions": "Does the message mention fraud (variant 76)?",
+            "type": "noul"
+          },
+          "q077": {
+            "instructions": "Does the message mention account (variant 77)?",
+            "type": "noul"
+          },
+          "q078": {
+            "instructions": "Does the message mention login (variant 78)?",
+            "type": "noul"
+          },
+          "q079": {
+            "instructions": "Does the message mention pricing (variant 79)?",
+            "type": "noul"
+          },
+          "q080": {
+            "instructions": "Does the message mention billing (variant 80)?",
+            "type": "noul"
+          },
+          "q081": {
+            "instructions": "Does the message mention shipping (variant 81)?",
+            "type": "noul"
+          },
+          "q082": {
+            "instructions": "Does the message mention damage (variant 82)?",
+            "type": "noul"
+          },
+          "q083": {
+            "instructions": "Does the message mention refund (variant 83)?",
+            "type": "noul"
+          },
+          "q084": {
+            "instructions": "Does the message mention anger (variant 84)?",
+            "type": "noul"
+          },
+          "q085": {
+            "instructions": "Does the message mention politeness (variant 85)?",
+            "type": "noul"
+          },
+          "q086": {
+            "instructions": "Does the message mention fraud (variant 86)?",
+            "type": "noul"
+          },
+          "q087": {
+            "instructions": "Does the message mention account (variant 87)?",
+            "type": "noul"
+          },
+          "q088": {
+            "instructions": "Does the message mention login (variant 88)?",
+            "type": "noul"
+          },
+          "q089": {
+            "instructions": "Does the message mention pricing (variant 89)?",
+            "type": "noul"
+          },
+          "q090": {
+            "instructions": "Does the message mention billing (variant 90)?",
+            "type": "noul"
+          },
+          "q091": {
+            "instructions": "Does the message mention shipping (variant 91)?",
+            "type": "noul"
+          },
+          "q092": {
+            "instructions": "Does the message mention damage (variant 92)?",
+            "type": "noul"
+          },
+          "q093": {
+            "instructions": "Does the message mention refund (variant 93)?",
+            "type": "noul"
+          },
+          "q094": {
+            "instructions": "Does the message mention anger (variant 94)?",
+            "type": "noul"
+          },
+          "q095": {
+            "instructions": "Does the message mention politeness (variant 95)?",
+            "type": "noul"
+          },
+          "q096": {
+            "instructions": "Does the message mention fraud (variant 96)?",
+            "type": "noul"
+          },
+          "q097": {
+            "instructions": "Does the message mention account (variant 97)?",
+            "type": "noul"
+          },
+          "q098": {
+            "instructions": "Does the message mention login (variant 98)?",
+            "type": "noul"
+          },
+          "q099": {
+            "instructions": "Does the message mention pricing (variant 99)?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "q000": {
+            "noul": 0.9525742897641508,
+            "type": "noul"
+          },
+          "q001": {
+            "noul": 0.705789359488229,
+            "type": "noul"
+          },
+          "q002": {
+            "noul": 0.9875683586897136,
+            "type": "noul"
+          },
+          "q003": {
+            "noul": 0.974042720580343,
+            "type": "noul"
+          },
+          "q004": {
+            "noul": 0.7057900353762926,
+            "type": "noul"
+          },
+          "q005": {
+            "noul": 0.1824291885804114,
+            "type": "noul"
+          },
+          "q006": {
+            "noul": 0.010987042885727574,
+            "type": "noul"
+          },
+          "q007": {
+            "noul": 0.014063751617019974,
+            "type": "noul"
+          },
+          "q008": {
+            "noul": 0.0010322357688780928,
+            "type": "noul"
+          },
+          "q009": {
+            "noul": 0.08510099102026336,
+            "type": "noul"
+          },
+          "q010": {
+            "noul": 0.9669140966129974,
+            "type": "noul"
+          },
+          "q011": {
+            "noul": 0.6513607253714779,
+            "type": "noul"
+          },
+          "q012": {
+            "noul": 0.9890130675469736,
+            "type": "noul"
+          },
+          "q013": {
+            "noul": 0.9890130685501882,
+            "type": "noul"
+          },
+          "q014": {
+            "noul": 0.6791836455803598,
+            "type": "noul"
+          },
+          "q015": {
+            "noul": 0.22270464161645664,
+            "type": "noul"
+          },
+          "q016": {
+            "noul": 0.012431772129676383,
+            "type": "noul"
+          },
+          "q017": {
+            "noul": 0.01406377503159622,
+            "type": "noul"
+          },
+          "q018": {
+            "noul": 0.0009110554887407434,
+            "type": "noul"
+          },
+          "q019": {
+            "noul": 0.0758595190382196,
+            "type": "noul"
+          },
+          "q020": {
+            "noul": 0.9525743363139788,
+            "type": "noul"
+          },
+          "q021": {
+            "noul": 0.7310624230195797,
+            "type": "noul"
+          },
+          "q022": {
+            "noul": 0.9890130677832089,
+            "type": "noul"
+          },
+          "q023": {
+            "noul": 0.974042712756086,
+            "type": "noul"
+          },
+          "q024": {
+            "noul": 0.6791839864765798,
+            "type": "noul"
+          },
+          "q025": {
+            "noul": 0.2227044006097434,
+            "type": "noul"
+          },
+          "q026": {
+            "noul": 0.010987056392443203,
+            "type": "noul"
+          },
+          "q027": {
+            "noul": 0.005220166598611012,
+            "type": "noul"
+          },
+          "q028": {
+            "noul": 0.0008040892491593751,
+            "type": "noul"
+          },
+          "q029": {
+            "noul": 0.03732746557804711,
+            "type": "noul"
+          },
+          "q030": {
+            "noul": 0.9324537075007452,
+            "type": "noul"
+          },
+          "q031": {
+            "noul": 0.7057894965049666,
+            "type": "noul"
+          },
+          "q032": {
+            "noul": 0.9875683590073516,
+            "type": "noul"
+          },
+          "q033": {
+            "noul": 0.9859363964907064,
+            "type": "noul"
+          },
+          "q034": {
+            "noul": 0.6791844138879246,
+            "type": "noul"
+          },
+          "q035": {
+            "noul": 0.1824292304838623,
+            "type": "noul"
+          },
+          "q036": {
+            "noul": 0.009708567608612636,
+            "type": "noul"
+          },
+          "q037": {
+            "noul": 0.006692904047527791,
+            "type": "noul"
+          },
+          "q038": {
+            "noul": 0.0008040890746335007,
+            "type": "noul"
+          },
+          "q039": {
+            "noul": 0.02931257447658435,
+            "type": "noul"
+          },
+          "q040": {
+            "noul": 0.9399136242061452,
+            "type": "noul"
+          },
+          "q041": {
+            "noul": 0.6513600257766184,
+            "type": "noul"
+          },
+          "q042": {
+            "noul": 0.9875683618830848,
+            "type": "noul"
+          },
+          "q043": {
+            "noul": 0.9859363856807266,
+            "type": "noul"
+          },
+          "q044": {
+            "noul": 0.6791838302524703,
+            "type": "noul"
+          },
+          "q045": {
+            "noul": 0.22270426014976885,
+            "type": "noul"
+          },
+          "q046": {
+            "noul": 0.010987067367667748,
+            "type": "noul"
+          },
+          "q047": {
+            "noul": 0.004609599837613392,
+            "type": "noul"
+          },
+          "q048": {
+            "noul": 0.000911054814062601,
+            "type": "noul"
+          },
+          "q049": {
+            "noul": 0.03308637888073859,
+            "type": "noul"
+          },
+          "q050": {
+            "noul": 0.939913646685584,
+            "type": "noul"
+          },
+          "q051": {
+            "noul": 0.705789584222933,
+            "type": "noul"
+          },
+          "q052": {
+            "noul": 0.989013063491656,
+            "type": "noul"
+          },
+          "q053": {
+            "noul": 0.9740427224696224,
+            "type": "noul"
+          },
+          "q054": {
+            "noul": 0.6791844538950886,
+            "type": "noul"
+          },
+          "q055": {
+            "noul": 0.2227045470791545,
+            "type": "noul"
+          },
+          "q056": {
+            "noul": 0.012431787852602773,
+            "type": "noul"
+          },
+          "q057": {
+            "noul": 0.004070164935150876,
+            "type": "noul"
+          },
+          "q058": {
+            "noul": 0.0008040898098998136,
+            "type": "noul"
+          },
+          "q059": {
+            "noul": 0.03308638391464456,
+            "type": "noul"
+          },
+          "q060": {
+            "noul": 0.9324537389806046,
+            "type": "noul"
+          },
+          "q061": {
+            "noul": 0.6791833972788995,
+            "type": "noul"
+          },
+          "q062": {
+            "noul": 0.987568363017361,
+            "type": "noul"
+          },
+          "q063": {
+            "noul": 0.984093635606686,
+            "type": "noul"
+          },
+          "q064": {
+            "noul": 0.6791839068396056,
+            "type": "noul"
+          },
+          "q065": {
+            "noul": 0.2227042019749034,
+            "type": "noul"
+          },
+          "q066": {
+            "noul": 0.012431788977863666,
+            "type": "noul"
+          },
+          "q067": {
+            "noul": 0.0059111095173650305,
+            "type": "noul"
+          },
+          "q068": {
+            "noul": 0.0010322354277874965,
+            "type": "noul"
+          },
+          "q069": {
+            "noul": 0.033086435140441746,
+            "type": "noul"
+          },
+          "q070": {
+            "noul": 0.9324536926574492,
+            "type": "noul"
+          },
+          "q071": {
+            "noul": 0.7057895892356576,
+            "type": "noul"
+          },
+          "q072": {
+            "noul": 0.9875683587558184,
+            "type": "noul"
+          },
+          "q073": {
+            "noul": 0.9740427077856672,
+            "type": "noul"
+          },
+          "q074": {
+            "noul": 0.6513601969510698,
+            "type": "noul"
+          },
+          "q075": {
+            "noul": 0.22270454628790376,
+            "type": "noul"
+          },
+          "q076": {
+            "noul": 0.014063802065318052,
+            "type": "noul"
+          },
+          "q077": {
+            "noul": 0.0031727023687492845,
+            "type": "noul"
+          },
+          "q078": {
+            "noul": 0.001032236236899526,
+            "type": "noul"
+          },
+          "q079": {
+            "noul": 0.022977656912117037,
+            "type": "noul"
+          },
+          "q080": {
+            "noul": 0.9465969158394384,
+            "type": "noul"
+          },
+          "q081": {
+            "noul": 0.7310628353075967,
+            "type": "noul"
+          },
+          "q082": {
+            "noul": 0.987568358531163,
+            "type": "noul"
+          },
+          "q083": {
+            "noul": 0.9525743785313476,
+            "type": "noul"
+          },
+          "q084": {
+            "noul": 0.6513604038065723,
+            "type": "noul"
+          },
+          "q085": {
+            "noul": 0.22270427453309527,
+            "type": "noul"
+          },
+          "q086": {
+            "noul": 0.01243177260225838,
+            "type": "noul"
+          },
+          "q087": {
+            "noul": 0.003593622144499863,
+            "type": "noul"
+          },
+          "q088": {
+            "noul": 0.000911055434075092,
+            "type": "noul"
+          },
+          "q089": {
+            "noul": 0.03308640357975577,
+            "type": "noul"
+          },
+          "q090": {
+            "noul": 0.9399136327962172,
+            "type": "noul"
+          },
+          "q091": {
+            "noul": 0.7057892980001561,
+            "type": "noul"
+          },
+          "q092": {
+            "noul": 0.985936388811745,
+            "type": "noul"
+          },
+          "q093": {
+            "noul": 0.9740427113228324,
+            "type": "noul"
+          },
+          "q094": {
+            "noul": 0.6224663103395224,
+            "type": "noul"
+          },
+          "q095": {
+            "noul": 0.24508926314394777,
+            "type": "noul"
+          },
+          "q096": {
+            "noul": 0.012431798198335987,
+            "type": "noul"
+          },
+          "q097": {
+            "noul": 0.004070163405315974,
+            "type": "noul"
+          },
+          "q098": {
+            "noul": 0.0009110550114125876,
+            "type": "noul"
+          },
+          "q099": {
+            "noul": 0.006692917179352059,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 2535,
+          "output_tokens": 100
+        }
+      }
+    },
+    {
+      "name": "type_noul",
+      "source_batch": "B_types",
+      "request_bytes": 237,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 50,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_noul_criteria_only",
+      "source_batch": "B_types",
+      "request_bytes": 276,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "false": "Not about billing",
+              "true": "The message is about billing"
+            },
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9626732609650054,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 59,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_noul_criteria_and_instructions",
+      "source_batch": "B_types",
+      "request_bytes": 263,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "true": "charges, invoices"
+            },
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.974042697337693,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 56,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_noul_json_instructions",
+      "source_batch": "B_types",
+      "request_bytes": 267,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": {
+              "hint": "charges",
+              "question": "Is this about billing?"
+            },
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9465969392391828,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 57,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_choice_map",
+      "source_batch": "B_types",
+      "request_bytes": 311,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "info": null,
+              "refund": "money back",
+              "replacement": null
+            },
+            "instructions": "What does the customer want?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "refund",
+            "confidence": 0.9981902957612758,
+            "probabilities": {
+              "info": 0.00029568769784808167,
+              "refund": 0.9987935305075172,
+              "replacement": 0.0009107817946347388
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 66,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_choice_all_null",
+      "source_batch": "B_types",
+      "request_bytes": 282,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "info": null,
+              "refund": null,
+              "replacement": null
+            },
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "refund",
+            "confidence": 0.9978057652388436,
+            "probabilities": {
+              "info": 0.0005522752394847237,
+              "refund": 0.9985371768258956,
+              "replacement": 0.0009105479346194712
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 61,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_choice_no_instructions",
+      "source_batch": "B_types",
+      "request_bytes": 267,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "info": "wants information",
+              "refund": "wants money back"
+            },
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "refund",
+            "confidence": 0.9993292994574496,
+            "probabilities": {
+              "info": 0.0003353502712752069,
+              "refund": 0.9996646497287248
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 57,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_choice_single_label",
+      "source_batch": "B_types",
+      "request_bytes": 251,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "refund": null
+            },
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: choice question x requires 2-255 options",
+          "message": "Model does not support request argument supplied: choice question x requires 2-255 options"
+        }
+      }
+    },
+    {
+      "name": "type_choice_list_criteria",
+      "source_batch": "B_types",
+      "request_bytes": 253,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "refund",
+              "info"
+            ],
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: choice question x requires 2-255 options",
+          "message": "Model does not support request argument supplied: choice question x requires 2-255 options"
+        }
+      }
+    },
+    {
+      "name": "type_choice_empty_criteria",
+      "source_batch": "B_types",
+      "request_bytes": 238,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {},
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: choice question x requires 2-255 options",
+          "message": "Model does not support request argument supplied: choice question x requires 2-255 options"
+        }
+      }
+    },
+    {
+      "name": "type_score",
+      "source_batch": "B_types",
+      "request_bytes": 262,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "instructions": "How severe?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "confidence": 0.28812506152039075,
+            "legend": {
+              "0": "low",
+              "1": "medium",
+              "2": "high"
+            },
+            "probabilities": {
+              "0": 0.010904675225713744,
+              "1": 0.5254167076802605,
+              "2": 0.4636786170940257
+            },
+            "score": 1.452773941868312,
+            "type": "score"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 56,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "type_score_one_level",
+      "source_batch": "B_types",
+      "request_bytes": 247,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "only"
+            ],
+            "instructions": "How severe?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "type_score_map_criteria",
+      "source_batch": "B_types",
+      "request_bytes": 261,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "0": "low",
+              "1": "high"
+            },
+            "instructions": "How severe?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "type_box_text_state",
+      "source_batch": "B_types",
+      "request_bytes": 221,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "The box",
+            "type": "box"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: invalid question x",
+          "message": "Model does not support request argument supplied: invalid question x"
+        }
+      }
+    },
+    {
+      "name": "type_predicate",
+      "source_batch": "B_types",
+      "request_bytes": 228,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "predicate"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: invalid question x",
+          "message": "Model does not support request argument supplied: invalid question x"
+        }
+      }
+    },
+    {
+      "name": "state_json_object",
+      "source_batch": "B_types",
+      "request_bytes": 266,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": {
+          "priority": "high",
+          "ticket": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9626733106894004,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 57,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "extra_field_ignored",
+      "source_batch": "B_types",
+      "request_bytes": 249,
+      "request": {
+        "foo": "bar",
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 50,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "no_model",
+      "source_batch": "B_types",
+      "request_bytes": 206,
+      "request": {
+        "questions": {
+          "x": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request\n"
+    },
+    {
+      "name": "count_200",
+      "source_batch": "C_limits",
+      "request_bytes": 17587,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "194 more keys, 200 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "q000": {
+            "noul": 0.9525742897641508,
+            "type": "noul"
+          },
+          "q001": {
+            "noul": 0.7310624001408796,
+            "type": "noul"
+          },
+          "q002": {
+            "noul": 0.9840936251297452,
+            "type": "noul"
+          },
+          "q003": {
+            "noul": 0.9706878789563468,
+            "type": "noul"
+          },
+          "q004": {
+            "noul": 0.7057900353762926,
+            "type": "noul"
+          },
+          "q005": {
+            "noul": 0.1824291885804114,
+            "type": "noul"
+          },
+          "<elided>": "194 more keys, 200 total"
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 5145,
+          "output_tokens": 200
+        }
+      }
+    },
+    {
+      "name": "count_256",
+      "source_batch": "C_limits",
+      "request_bytes": 22495,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "250 more keys, 256 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request has 256 questions; the limit is 255"
+      }
+    },
+    {
+      "name": "count_257",
+      "source_batch": "C_limits",
+      "request_bytes": 22581,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "251 more keys, 257 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request has 257 questions; the limit is 255"
+      }
+    },
+    {
+      "name": "count_500",
+      "source_batch": "C_limits",
+      "request_bytes": 43867,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "494 more keys, 500 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request has 500 questions; the limit is 255"
+      }
+    },
+    {
+      "name": "count_1000",
+      "source_batch": "C_limits",
+      "request_bytes": 87667,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "994 more keys, 1000 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request has 1000 questions; the limit is 255"
+      }
+    },
+    {
+      "name": "name_len_64",
+      "source_batch": "C_limits",
+      "request_bytes": 300,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 57,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_len_65",
+      "source_batch": "C_limits",
+      "request_bytes": 301,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 58,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_len_128",
+      "source_batch": "C_limits",
+      "request_bytes": 364,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 65,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_len_256",
+      "source_batch": "C_limits",
+      "request_bytes": 492,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 81,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_len_1024",
+      "source_batch": "C_limits",
+      "request_bytes": 1260,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "<elided 1024 chars; starts 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'>": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "<elided 1024 chars; starts 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'>": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 177,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_space",
+      "source_batch": "C_limits",
+      "request_bytes": 245,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "has space": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "has space": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_dot",
+      "source_batch": "C_limits",
+      "request_bytes": 244,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "dot.name": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "dot.name": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_dash",
+      "source_batch": "C_limits",
+      "request_bytes": 245,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "dash-name": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "dash-name": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_unicode",
+      "source_batch": "C_limits",
+      "request_bytes": 241,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "über": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "über": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 50,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_slash",
+      "source_batch": "C_limits",
+      "request_bytes": 239,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "a/b": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "a/b": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_upper_digit",
+      "source_batch": "C_limits",
+      "request_bytes": 238,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "Q1": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "Q1": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_leading_digit",
+      "source_batch": "C_limits",
+      "request_bytes": 240,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "1abc": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "1abc": {
+            "noul": 0.9399137519606044,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 51,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "name_empty",
+      "source_batch": "C_limits",
+      "request_bytes": 236,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "": {
+            "instructions": "Is this about billing?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: invalid question ",
+          "message": "Model does not support request argument supplied: invalid question "
+        }
+      }
+    },
+    {
+      "name": "instr_4KB",
+      "source_batch": "C_limits",
+      "request_bytes": 4311,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "<elided 4096 chars; starts 'Is this about billing? Is this about bil'>",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.7310624569798544,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 937,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "instr_16KB",
+      "source_batch": "C_limits",
+      "request_bytes": 16599,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "<elided 16384 chars; starts 'Is this about billing? Is this about bil'>",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.7057884029286153,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 3608,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "instr_64KB",
+      "source_batch": "C_limits",
+      "request_bytes": 65751,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "<elided 65536 chars; starts 'Is this about billing? Is this about bil'>",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.7981888999989893,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 14294,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "instr_256KB",
+      "source_batch": "C_limits",
+      "request_bytes": 262359,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "<elided 262144 chars; starts 'Is this about billing? Is this about bil'>",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request is about 65575 tokens; the limit for the state plus all questions is 64000"
+      }
+    },
+    {
+      "name": "instr_1024KB",
+      "source_batch": "C_limits",
+      "request_bytes": 1048791,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "<elided 1048576 chars; starts 'Is this about billing? Is this about bil'>",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 413,
+      "content_type": "application/json",
+      "response": {
+        "detail": "request body too large: limit is 1048576 bytes"
+      }
+    },
+    {
+      "name": "input_64KB",
+      "source_batch": "C_limits",
+      "request_bytes": 65639,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": "<elided 65536 chars; starts 'Customer complains about billing. Custom'>"
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9626731891845384,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 9655,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "input_256KB",
+      "source_batch": "C_limits",
+      "request_bytes": 262247,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": "<elided 262144 chars; starts 'Customer complains about billing. Custom'>"
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: request is about 65547 tokens; the limit for the state plus all questions is 64000"
+      }
+    },
+    {
+      "name": "input_1024KB",
+      "source_batch": "C_limits",
+      "request_bytes": 1048679,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": "<elided 1048576 chars; starts 'Customer complains about billing. Custom'>"
+      },
+      "status": 413,
+      "content_type": "application/json",
+      "response": {
+        "detail": "request body too large: limit is 1048576 bytes"
+      }
+    },
+    {
+      "name": "input_4096KB",
+      "source_batch": "C_limits",
+      "request_bytes": 4194407,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": "<elided 4194304 chars; starts 'Customer complains about billing. Custom'>"
+      },
+      "status": 413,
+      "content_type": "application/json",
+      "response": {
+        "detail": "request body too large: limit is 1048576 bytes"
+      }
+    },
+    {
+      "name": "choices_10",
+      "source_batch": "C_limits",
+      "request_bytes": 354,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt2": null,
+              "opt3": null,
+              "opt4": null,
+              "opt5": null,
+              "opt6": null,
+              "opt7": null,
+              "opt8": null,
+              "opt9": null
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "opt0",
+            "confidence": 0.011155761822216718,
+            "probabilities": {
+              "opt0": 0.11004018563999506,
+              "opt1": 0.11004018563999506,
+              "opt2": 0.09711012298712952,
+              "opt3": 0.08569938274575091,
+              "opt4": 0.09711012298712952,
+              "opt5": 0.09711012298712952,
+              "opt6": 0.11004018563999506,
+              "opt7": 0.09711012298712952,
+              "opt8": 0.11004018563999506,
+              "opt9": 0.08569938274575091
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 98,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choices_50",
+      "source_batch": "C_limits",
+      "request_bytes": 874,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt10": null,
+              "opt11": null,
+              "opt12": null,
+              "opt13": null,
+              "<elided>": "44 more keys, 50 total"
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "opt3",
+            "confidence": 0.02851993963651273,
+            "probabilities": {
+              "opt0": 0.03731117795501243,
+              "opt1": 0.03731117795501243,
+              "opt10": 0.029057974608680218,
+              "opt11": 0.01555361299891072,
+              "opt12": 0.025643572587542112,
+              "opt13": 0.017624552509315765,
+              "<elided>": "44 more keys, 50 total"
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 338,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choices_100",
+      "source_batch": "C_limits",
+      "request_bytes": 1524,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt10": null,
+              "opt11": null,
+              "opt12": null,
+              "opt13": null,
+              "<elided>": "94 more keys, 100 total"
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "opt0",
+            "confidence": 0.031393255529888094,
+            "probabilities": {
+              "opt0": 0.041079322974589216,
+              "opt1": 0.041079322974589216,
+              "opt10": 0.011769425890038286,
+              "opt11": 0.013336506740781538,
+              "opt12": 0.024915868864325934,
+              "opt13": 0.010386481893157731,
+              "<elided>": "94 more keys, 100 total"
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 638,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choices_255",
+      "source_batch": "C_limits",
+      "request_bytes": 3694,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt10": null,
+              "opt100": null,
+              "opt101": null,
+              "opt102": null,
+              "<elided>": "249 more keys, 255 total"
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "opt0",
+            "confidence": 0.05435748268043058,
+            "probabilities": {
+              "opt0": 0.05806588470913478,
+              "opt1": 0.03108042839763047,
+              "opt10": 0.007858361079915747,
+              "opt100": 0.014681351319595306,
+              "opt101": 0.0213612452179219,
+              "opt102": 0.01295624706529912,
+              "<elided>": "249 more keys, 255 total"
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 1723,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choices_256",
+      "source_batch": "C_limits",
+      "request_bytes": 3708,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt10": null,
+              "opt100": null,
+              "opt101": null,
+              "opt102": null,
+              "<elided>": "250 more keys, 256 total"
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: choice question x requires 2-255 options",
+          "message": "Model does not support request argument supplied: choice question x requires 2-255 options"
+        }
+      }
+    },
+    {
+      "name": "choices_300",
+      "source_batch": "C_limits",
+      "request_bytes": 4324,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "opt0": null,
+              "opt1": null,
+              "opt10": null,
+              "opt100": null,
+              "opt101": null,
+              "opt102": null,
+              "<elided>": "294 more keys, 300 total"
+            },
+            "instructions": "Pick",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: choice question x requires 2-255 options",
+          "message": "Model does not support request argument supplied: choice question x requires 2-255 options"
+        }
+      }
+    },
+    {
+      "name": "levels_10",
+      "source_batch": "C_limits",
+      "request_bytes": 283,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "l0",
+              "l1",
+              "l2",
+              "l3",
+              "l4",
+              "l5",
+              "l6",
+              "l7",
+              "l8",
+              "l9"
+            ],
+            "instructions": "Rate",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "confidence": 0.1741674295098195,
+            "legend": {
+              "0": "l0",
+              "1": "l1",
+              "2": "l2",
+              "3": "l3",
+              "4": "l4",
+              "5": "l5",
+              "6": "l6",
+              "7": "l7",
+              "8": "l8",
+              "9": "l9"
+            },
+            "probabilities": {
+              "0": 0.0008171810572545617,
+              "1": 0.0032320137779591443,
+              "2": 0.016413520298416036,
+              "3": 0.05728881498073339,
+              "4": 0.17646199419411043,
+              "5": 0.22658168562464245,
+              "6": 0.25675068655883754,
+              "7": 0.17646199419411043,
+              "8": 0.06491673207344967,
+              "9": 0.021075377240486352
+            },
+            "score": 5.531432234680418,
+            "type": "score"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 78,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "levels_11",
+      "source_batch": "C_limits",
+      "request_bytes": 289,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "l0",
+              "l1",
+              "l2",
+              "l3",
+              "l4",
+              "l5",
+              "l6",
+              "l7",
+              "l8",
+              "l9",
+              "l10"
+            ],
+            "instructions": "Rate",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "levels_20",
+      "source_batch": "C_limits",
+      "request_bytes": 343,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "l0",
+              "l1",
+              "l2",
+              "l3",
+              "l4",
+              "l5",
+              "<elided 14 more items, 20 total>"
+            ],
+            "instructions": "Rate",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "levels_50",
+      "source_batch": "C_limits",
+      "request_bytes": 523,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              "l0",
+              "l1",
+              "l2",
+              "l3",
+              "l4",
+              "l5",
+              "<elided 44 more items, 50 total>"
+            ],
+            "instructions": "Rate",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "err_empty_questions",
+      "source_batch": "C_limits",
+      "request_bytes": 178,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {},
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": "Bad Request\n"
+    },
+    {
+      "name": "err_unknown_type",
+      "source_batch": "C_limits",
+      "request_bytes": 216,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "text"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: invalid question x",
+          "message": "Model does not support request argument supplied: invalid question x"
+        }
+      }
+    },
+    {
+      "name": "err_missing_type",
+      "source_batch": "C_limits",
+      "request_bytes": 202,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: invalid question x",
+          "message": "Model does not support request argument supplied: invalid question x"
+        }
+      }
+    },
+    {
+      "name": "err_missing_instructions",
+      "source_batch": "C_limits",
+      "request_bytes": 197,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.4073389759030635,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 43,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "err_noul_null_instructions",
+      "source_batch": "C_limits",
+      "request_bytes": 217,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": null,
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.4073389759030635,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 43,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "err_score_missing_criteria",
+      "source_batch": "C_limits",
+      "request_bytes": 217,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "unsupported_request_argument",
+          "details": "Model does not support request argument supplied: score question x requires 2-10 levels",
+          "message": "Model does not support request argument supplied: score question x requires 2-10 levels"
+        }
+      }
+    },
+    {
+      "name": "err_wrong_model",
+      "source_batch": "C_limits",
+      "request_bytes": 216,
+      "request": {
+        "model": "gpt-6-luna-decisions",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "response": {
+        "error": {
+          "code": "no_available_model_endpoints",
+          "message": "no model endpoints available given user constraints"
+        }
+      }
+    },
+    {
+      "name": "err_chat_model",
+      "source_batch": "C_limits",
+      "request_bytes": 202,
+      "request": {
+        "model": "gpt-4o",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "model_not_supported",
+          "message": "Model is not supported for this request.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      }
+    },
+    {
+      "name": "err_unknown_model",
+      "source_batch": "C_limits",
+      "request_bytes": 200,
+      "request": {
+        "model": "nope",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "model_not_supported",
+          "message": "The requested model is not supported.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      }
+    },
+    {
+      "name": "err_missing_state",
+      "source_batch": "C_limits",
+      "request_bytes": 85,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        }
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.29422067100603444,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 18,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "err_null_state",
+      "source_batch": "C_limits",
+      "request_bytes": 98,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        },
+        "state": null
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.29422067100603444,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 18,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "err_empty_state",
+      "source_batch": "C_limits",
+      "request_bytes": 96,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "?",
+            "type": "noul"
+          }
+        },
+        "state": ""
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.40734007664594446,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 16,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "err_invalid_json",
+      "source_batch": "C_limits",
+      "request_bytes": 32,
+      "request": "<raw body sent; see request_note>",
+      "status": 400,
+      "content_type": "text/plain; charset=utf-8",
+      "response": {
+        "error": {
+          "code": "invalid_request_body",
+          "message": "The request body is not valid JSON."
+        }
+      }
+    },
+    {
+      "name": "count_255",
+      "source_batch": "D_extra",
+      "request_bytes": 22404,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "q000": {
+            "instructions": "Does the message mention billing (variant 0)?",
+            "type": "noul"
+          },
+          "q001": {
+            "instructions": "Does the message mention shipping (variant 1)?",
+            "type": "noul"
+          },
+          "q002": {
+            "instructions": "Does the message mention damage (variant 2)?",
+            "type": "noul"
+          },
+          "q003": {
+            "instructions": "Does the message mention refund (variant 3)?",
+            "type": "noul"
+          },
+          "q004": {
+            "instructions": "Does the message mention anger (variant 4)?",
+            "type": "noul"
+          },
+          "q005": {
+            "instructions": "Does the message mention politeness (variant 5)?",
+            "type": "noul"
+          },
+          "<elided>": "249 more keys, 255 total"
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "q000": {
+            "noul": 0.9525742897641508,
+            "type": "noul"
+          },
+          "q001": {
+            "noul": 0.705789359488229,
+            "type": "noul"
+          },
+          "q002": {
+            "noul": 0.9840936251297452,
+            "type": "noul"
+          },
+          "q003": {
+            "noul": 0.9706878789563468,
+            "type": "noul"
+          },
+          "q004": {
+            "noul": 0.7057900353762926,
+            "type": "noul"
+          },
+          "q005": {
+            "noul": 0.1824291885804114,
+            "type": "noul"
+          },
+          "<elided>": "249 more keys, 255 total"
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 6580,
+          "output_tokens": 255
+        }
+      }
+    },
+    {
+      "name": "empty_instructions",
+      "source_batch": "D_extra",
+      "request_bytes": 215,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "",
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 422,
+      "content_type": "application/json",
+      "response": {
+        "detail": "invalid TypeSafe request: invalid instructions for question \"x\": value must not be empty"
+      }
+    },
+    {
+      "name": "state_messages_roles",
+      "source_batch": "D_extra",
+      "request_bytes": 250,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Is the assistant being helpful?",
+            "type": "noul"
+          }
+        },
+        "state": [
+          {
+            "content": "Be nice",
+            "role": "system"
+          },
+          {
+            "content": "hi",
+            "role": "user"
+          },
+          {
+            "content": "Hello! How can I help?",
+            "role": "assistant"
+          }
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9525742972574512,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 53,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "score_object_criteria",
+      "source_batch": "G_edge",
+      "request_bytes": 288,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              {
+                "detail": "minor",
+                "label": "low"
+              },
+              {
+                "label": "high"
+              }
+            ],
+            "instructions": "Severity?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "confidence": 0.9253462266503716,
+            "legend": {
+              "0": {
+                "detail": "minor",
+                "label": "low"
+              },
+              "1": {
+                "label": "high"
+              }
+            },
+            "probabilities": {
+              "0": 0.03732688667481418,
+              "1": 0.9626731133251858
+            },
+            "score": 0.9626731133251858,
+            "type": "score"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 62,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choice_object_description",
+      "source_batch": "G_edge",
+      "request_bytes": 281,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "info": null,
+              "refund": {
+                "means": "money back"
+              }
+            },
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "refund",
+            "confidence": 0.9981778972880097,
+            "probabilities": {
+              "info": 0.0009110513559952894,
+              "refund": 0.9990889486440048
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 60,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "score_null_criteria_entries",
+      "source_batch": "G_edge",
+      "request_bytes": 253,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": [
+              null,
+              null,
+              null
+            ],
+            "instructions": "Severity?",
+            "type": "score"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "confidence": 0.46400053543513087,
+            "legend": {
+              "0": null,
+              "1": null,
+              "2": null
+            },
+            "probabilities": {
+              "0": 0.013338127753551057,
+              "1": 0.34399484862302837,
+              "2": 0.6426670236234205
+            },
+            "score": 1.6293288958698695,
+            "type": "score"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 53,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "state_array_of_strings",
+      "source_batch": "G_edge",
+      "request_bytes": 132,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "instructions": "Billing?",
+            "type": "noul"
+          }
+        },
+        "state": [
+          "charged twice",
+          "box crushed"
+        ]
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.9046508266698744,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 23,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "choice_label_255_chars",
+      "source_batch": "G_edge",
+      "request_bytes": 557,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": {
+              "info": null,
+              "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": null
+            },
+            "instructions": "Intent?",
+            "type": "choice"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "choice": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "confidence": 0.941375533515486,
+            "probabilities": {
+              "info": 0.029312233242257107,
+              "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": 0.9706877667577428
+            },
+            "type": "choice"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 206,
+          "output_tokens": 1
+        }
+      }
+    },
+    {
+      "name": "noul_no_instructions_no_criteria_explicit_null",
+      "source_batch": "G_edge",
+      "request_bytes": 233,
+      "request": {
+        "model": "microsoft-decision-1",
+        "questions": {
+          "x": {
+            "criteria": null,
+            "instructions": null,
+            "type": "noul"
+          }
+        },
+        "state": "Customer: I was charged twice for my order #1042 and the box arrived crushed. I want a refund now, this is unacceptable."
+      },
+      "status": 200,
+      "content_type": "application/json",
+      "response": {
+        "answers": {
+          "x": {
+            "noul": 0.4073389759030635,
+            "type": "noul"
+          }
+        },
+        "model": "microsoft-decision-1",
+        "usage": {
+          "input_tokens": 43,
+          "output_tokens": 1
+        }
+      }
+    }
+  ]
+}
