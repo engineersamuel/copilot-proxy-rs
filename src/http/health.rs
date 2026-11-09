@@ -86,7 +86,41 @@ pub(crate) async fn build_models_value(state: &AppState) -> serde_json::Value {
         value["stats_attribution"] = crate::model_stats::attribution();
     }
     mark_latest_opus_for_ui(&mut value);
+    advertise_systemone(&mut value, &state.models).await;
     value
+}
+
+/// Lists `POST /v1/systemone` for decision models. Output only: registry
+/// metadata stays as fetched so chat routing keeps its model kinds.
+async fn advertise_systemone(
+    value: &mut serde_json::Value,
+    registry: &crate::models::ModelRegistry,
+) {
+    let Some(entries) = value.get_mut("data").and_then(|d| d.as_array_mut()) else {
+        return;
+    };
+    for entry in entries {
+        let Some(id) = entry.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        let is_decision = matches!(
+            registry.copilot_model_kind(id).await,
+            Some(
+                crate::models::CopilotModelKind::Decisions
+                    | crate::models::CopilotModelKind::SystemOne
+            )
+        );
+        let Some(endpoints) = entry
+            .get_mut("supported_endpoints")
+            .and_then(|e| e.as_array_mut())
+            .filter(|_| is_decision)
+        else {
+            continue;
+        };
+        if !endpoints.iter().any(|e| e == "/v1/systemone") {
+            endpoints.push("/v1/systemone".into());
+        }
+    }
 }
 
 /// Numeric version segments and `-fast` flag from `claude-opus-5.5[-fast]`.

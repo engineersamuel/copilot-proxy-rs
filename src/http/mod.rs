@@ -9,6 +9,7 @@ pub(crate) mod model_router;
 pub(crate) mod responses;
 pub(crate) mod routes;
 pub(crate) mod sse;
+pub(crate) mod systemone;
 pub(crate) mod validation;
 
 pub use routes::router;
