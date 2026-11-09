@@ -492,6 +492,7 @@ pub fn from_systemone_response(
             return Err(malformed);
         }
     }
+    answers.retain(|name, answer| questions.iter().any(|(n, _)| n == name) || !is_refusal(answer));
     body.insert("model".to_string(), json!(public_model));
     settle(questions, Value::Object(body), refused)
 }
