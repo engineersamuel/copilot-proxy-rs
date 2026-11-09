@@ -519,6 +519,42 @@ curl -fsS http://127.0.0.1:8080/v1/responses \
   -d '{"model":"gpt-5.5","input":"Say hello"}'
 ```
 
+### SystemOne decisions (`POST /v1/systemone`)
+
+`POST /v1/systemone` speaks the [TypeSafe SystemOne](https://docs.typesafe.ai/primitives.md)
+wire format and answers many questions with **one** upstream request (one
+rate-limit token). Set `model` to `microsoft-decision-1` or `gpt-6-luna-decisions`:
+
+```bash
+for model in microsoft-decision-1 gpt-6-luna-decisions; do
+  curl -fsS http://127.0.0.1:8080/v1/systemone \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"'"$model"'",
+         "state":"Customer: I was charged twice for order 7. Refund me now.",
+         "questions":{
+           "is_billing":{"type":"noul","instructions":"Is this about billing?"},
+           "intent":{"type":"choice","instructions":"What does the customer want?",
+                     "criteria":{"refund":"money back","replacement":null,"info":null}},
+           "severity":{"type":"score","instructions":"How severe?","criteria":["low","medium","high"]}}}'
+done
+```
+
+The response is keyed by question name and echoes the requested model:
+`{"model", "answers": {name: {"type":"noul","noul"} | {"type":"choice","choice","confidence","probabilities"} | {"type":"score","score","confidence","legend","probabilities"}}, "usage": {"input_tokens","output_tokens"}}`.
+
+- `noul`, `choice` and `score` are supported. `box` and multipart bodies (assets) are rejected with 400.
+- `choice` and `score` are answered natively by both upstreams; no per-option predicate emulation is used.
+- `microsoft-decision-1` forwards the request to `/v1/systemone` unchanged apart from `model`.
+- `gpt-6-luna-decisions` is translated to one `/v1/decisions` request. noul `criteria` are folded into the
+  instructions text, and probabilities are rounded to 2 decimal places by that upstream.
+- Limits checked locally (400, no upstream call): 255 questions for `microsoft-decision-1`, 400 for
+  `gpt-6-luna-decisions`, 2-255 choice options, 2-10 score levels, non-empty names and instructions.
+  Chat, image, local and unknown models are rejected; there is no fallback.
+- If `gpt-6-luna-decisions` refuses any question, the request fails with 422 naming the refused questions;
+  no answers are fabricated.
+- `zstd` and `gzip` request bodies (the TypeSafe SDK default) are accepted.
+- `/v1/models` lists `/v1/systemone` in `supported_endpoints` for both decision models.
+
 ## Test
 
 ```bash
