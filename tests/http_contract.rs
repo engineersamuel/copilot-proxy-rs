@@ -2304,7 +2304,7 @@ async fn models_list_includes_type_and_supported_endpoints() {
         (
             "gpt-6-luna-decisions",
             "decisions",
-            serde_json::json!(["/v1/decisions"]),
+            serde_json::json!(["/v1/decisions", "/v1/systemone"]),
         ),
         (
             "microsoft-decision-1",
