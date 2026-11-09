@@ -1,0 +1,145 @@
+{
+  "notes": "Synthetic values in the real upstream response shapes of /v1/decisions and /v1/systemone (mixed noul/choice/score and per-question refusal cases).",
+  "client_request": {
+    "state": "Customer: charged twice for order 7 and wants the money back.",
+    "questions": {
+      "intent": {
+        "type": "choice",
+        "criteria": {"info": null, "refund": "money back", "replace": {"kind": "new item"}}
+      },
+      "is_angry": {
+        "type": "noul",
+        "instructions": "Is the customer angry?",
+        "criteria": {"true": "raised voice", "false": "calm"}
+      },
+      "is_billing": {"type": "noul", "instructions": "Is this about billing?"},
+      "only_criteria": {"type": "noul", "criteria": {"true": "mentions an order number"}},
+      "severity": {
+        "type": "score",
+        "instructions": "How severe?",
+        "criteria": ["low", {"tier": "mid"}, null]
+      }
+    }
+  },
+  "decisions_request": {
+    "model": "gpt-6-luna-decisions",
+    "input": "Customer: charged twice for order 7 and wants the money back.",
+    "questions": [
+      {
+        "type": "choice",
+        "name": "intent",
+        "instructions": "Which option best fits?",
+        "choices": [
+          {"value": "info"},
+          {"value": "refund", "description": "money back"},
+          {"value": "replace", "description": "{\"kind\":\"new item\"}"}
+        ]
+      },
+      {
+        "type": "predicate",
+        "name": "is_angry",
+        "instructions": "Is the customer angry? Yes means: raised voice. No means: calm."
+      },
+      {"type": "predicate", "name": "is_billing", "instructions": "Is this about billing?"},
+      {"type": "predicate", "name": "only_criteria", "instructions": "Yes means: mentions an order number."},
+      {
+        "type": "score",
+        "name": "severity",
+        "instructions": "How severe?",
+        "levels": [{"label": "low"}, {"label": "{\"tier\":\"mid\"}"}, {"label": "2"}]
+      }
+    ]
+  },
+  "decisions_response": {
+    "model": "gpt-6-luna",
+    "answers": [
+      {
+        "type": "choice",
+        "name": "intent",
+        "choice": "refund",
+        "confidence": 0.9,
+        "probabilities": [
+          {"value": "info", "probability": 0.02},
+          {"value": "refund", "probability": 0.93},
+          {"value": "replace", "probability": 0.05}
+        ]
+      },
+      {"type": "predicate", "name": "is_angry", "probability": 0.12},
+      {"type": "predicate", "name": "is_billing", "probability": 0.97},
+      {"type": "predicate", "name": "only_criteria", "probability": 0.88},
+      {
+        "type": "score",
+        "name": "severity",
+        "score": 1.2,
+        "confidence": 0.4,
+        "probabilities": [
+          {"value": 0, "label": "low", "probability": 0.1},
+          {"value": 1, "label": "{\"tier\":\"mid\"}", "probability": 0.6},
+          {"value": 2, "label": "2", "probability": 0.3}
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 701,
+      "input_tokens_details": {"cache_write_tokens": 0, "cached_tokens": 0},
+      "output_tokens": 0,
+      "output_tokens_details": {"reasoning_tokens": 0},
+      "total_tokens": 701
+    }
+  },
+  "decisions_answer": {
+    "model": "gpt-6-luna-decisions",
+    "answers": {
+      "intent": {
+        "type": "choice",
+        "choice": "refund",
+        "confidence": 0.9,
+        "probabilities": {"info": 0.02, "refund": 0.93, "replace": 0.05}
+      },
+      "is_angry": {"type": "noul", "noul": 0.12},
+      "is_billing": {"type": "noul", "noul": 0.97},
+      "only_criteria": {"type": "noul", "noul": 0.88},
+      "severity": {
+        "type": "score",
+        "score": 1.2,
+        "confidence": 0.4,
+        "legend": {"0": "low", "1": {"tier": "mid"}, "2": null},
+        "probabilities": {"0": 0.1, "1": 0.6, "2": 0.3}
+      }
+    },
+    "usage": {"input_tokens": 701, "output_tokens": 0}
+  },
+  "decisions_refusal_response": {
+    "model": "gpt-6-luna",
+    "answers": [
+      {"type": "refusal", "name": "intent"},
+      {"type": "predicate", "name": "is_angry", "probability": 0.12},
+      {"type": "predicate", "name": "is_billing", "probability": 0.97},
+      {"type": "predicate", "name": "only_criteria", "probability": 0.88},
+      {"type": "refusal", "name": "severity"}
+    ],
+    "usage": {"input_tokens": 330, "output_tokens": 0, "total_tokens": 330}
+  },
+  "systemone_response": {
+    "model": "microsoft-decision-1",
+    "answers": {
+      "intent": {
+        "type": "choice",
+        "choice": "refund",
+        "confidence": 0.9712345,
+        "probabilities": {"info": 0.0101, "refund": 0.9808, "replace": 0.0091}
+      },
+      "is_angry": {"type": "noul", "noul": 0.1234567},
+      "is_billing": {"type": "noul", "noul": 0.9765432},
+      "only_criteria": {"type": "noul", "noul": 0.8812345},
+      "severity": {
+        "type": "score",
+        "score": 1.21,
+        "confidence": 0.41,
+        "legend": {"0": "low", "1": {"tier": "mid"}, "2": null},
+        "probabilities": {"0": 0.1, "1": 0.59, "2": 0.31}
+      }
+    },
+    "usage": {"input_tokens": 139, "output_tokens": 5}
+  }
+}
