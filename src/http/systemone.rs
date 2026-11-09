@@ -18,8 +18,8 @@ use crate::request_body::parse_json_request_body_with_limit;
 use crate::state::AppState;
 use crate::translate::decisions::DecisionsEndpoint;
 use crate::translate::systemone::{
-    Questions, SystemOneError, from_decisions_response, from_systemone_response, parse_questions,
-    requested_model, to_decisions_request, to_systemone_request,
+    Questions, SystemOneError, Translated, from_decisions_response, from_systemone_response,
+    parse_questions, requested_model, to_decisions_request, to_systemone_request,
 };
 
 const API_FAMILY: &str = "/v1/systemone";
@@ -63,7 +63,7 @@ async fn answer(
         systemone.endpoint = ?endpoint,
         "systemone request prepared"
     );
-    match endpoint {
+    let translated = match endpoint {
         DecisionsEndpoint::SystemOne => {
             ask_systemone(state, body, &questions, &copilot_model, &public_model).await
         }
@@ -71,7 +71,21 @@ async fn answer(
             let input = body.get("state").unwrap_or(&Value::Null);
             ask_decisions(state, input, &questions, &copilot_model, &public_model).await
         }
+    }?;
+    log_partial_refusal(&translated.refused);
+    Ok(translated.response)
+}
+
+/// Logs only the count and names of declined questions, never refusal text.
+fn log_partial_refusal(refused: &[String]) {
+    if refused.is_empty() {
+        return;
     }
+    tracing::warn!(
+        systemone.refused = refused.len() as u64,
+        systemone.refused_questions = ?refused,
+        "systemone questions declined"
+    );
 }
 
 async fn ask_systemone(
@@ -80,7 +94,7 @@ async fn ask_systemone(
     questions: &Questions,
     copilot_model: &str,
     public_model: &str,
-) -> Result<Value, Failure> {
+) -> Result<Translated, Failure> {
     let request = to_systemone_request(body, copilot_model).map_err(rejection)?;
     let upstream = state
         .copilot
@@ -96,7 +110,7 @@ async fn ask_decisions(
     questions: &Questions,
     copilot_model: &str,
     public_model: &str,
-) -> Result<Value, Failure> {
+) -> Result<Translated, Failure> {
     let request = to_decisions_request(copilot_model, input, questions).map_err(rejection)?;
     let upstream = state
         .copilot
