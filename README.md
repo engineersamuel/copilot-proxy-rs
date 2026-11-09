@@ -72,8 +72,11 @@ mise run proxy:down
 
 Later tasks do not need the port variable: restart uses the existing supervisor's
 environment. The readiness probe always checks `127.0.0.1/health` on the selected
-port. Raw failed-request/body diagnostics are disabled in this configuration;
-do not enable sensitive logging when sharing logs. Authenticate interactively
+port. Failed-request body logging follows `config.toml` or
+`COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES`; the default is `true`, which logs
+prompts and tool output. Turn it off with
+`COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false mise run proxy:up`, and do not
+share logs that contain bodies. Authenticate interactively
 with `cargo run` first if needed; the detached process cannot prompt for login.
 
 The control API uses **only a Unix socket**, never a TCP control port. The default
@@ -192,7 +195,14 @@ Compose runs can reuse the same file without setting `GITHUB_TOKEN`.
 ## Configuration
 
 Copy `config.example.toml` to `~/.config/copilot-proxy-rs/config.toml` and edit
-as needed. Environment variables override file values.
+as needed. Precedence is environment variables over `config.toml` over built-in
+defaults. The process-compose setup (`mise run proxy:up`) no longer forces
+failed-request body logging off: `log_failed_request_bodies` in `config.toml`
+decides unless `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` is exported. With
+no `config.toml` and no env var, failed-request bodies (including prompts and
+tool output) are logged by default. Copying `config.example.toml`, which sets
+`log_failed_request_bodies = false`, turns this off; so does
+`COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false` for a single run.
 
 Legacy `config.json` is still read, with a `WARN` asking you to move to
 `config.toml`, when `config.toml` is absent. If both files exist, `config.toml`

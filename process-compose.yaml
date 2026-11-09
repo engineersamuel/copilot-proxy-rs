@@ -7,7 +7,6 @@ processes:
       - COPILOT_PROXY_RS_HOST=${COPILOT_PROXY_RS_HOST:-127.0.0.1}
       - COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}
       - RUST_LOG=${RUST_LOG:-info}
-      - COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false
     readiness_probe:
       http_get:
         host: 127.0.0.1
