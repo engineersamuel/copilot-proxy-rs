@@ -715,6 +715,36 @@ async fn invalid_questions_are_rejected_before_any_catalog_fetch() {
 }
 
 #[tokio::test]
+async fn cold_catalog_rejects_non_decision_models_without_upstream_calls() {
+    for model in [
+        "no-such-model",
+        "gpt-4o",
+        "claude-sonnet-5.5",
+        "gpt-image-2.5-flare",
+    ] {
+        let fixture = support::AppFixture::with_nonchat_models().await;
+
+        let (status, body) = post(&fixture, request_for(model, noul_questions(1))).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{model}: {body}");
+        assert_eq!(
+            body["error"]["message"],
+            format!(
+                "model '{model}' is not a SystemOne decision model; use gpt-6-luna-decisions or microsoft-decision-1"
+            )
+        );
+        assert_eq!(fixture.mock.hits("GET", "/models").await, 0, "{model}");
+        assert_eq!(
+            fixture.mock.hits("GET", "/copilot/token").await,
+            0,
+            "{model}"
+        );
+        assert_eq!(upstream_posts(&fixture).await, (0, 0), "{model}");
+        support::assert_no_upstream_posts(&fixture.mock).await;
+    }
+}
+
+#[tokio::test]
 async fn cached_catalog_rejects_wrong_models_and_questions_without_upstream_calls() {
     let fixture = support::AppFixture::with_nonchat_models().await;
     let catalog = support::fixture_json("copilot_models_nonchat.json");
