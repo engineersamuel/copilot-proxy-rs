@@ -373,6 +373,34 @@ async fn microsoft_refusal_text_is_truncated_to_200_chars() {
     assert_eq!(body["answers"]["c"], json!({"type": "noul", "noul": 0.25}));
 }
 
+#[tokio::test]
+async fn microsoft_unrequested_refusal_is_dropped() {
+    let upstream = json!({
+        "answers": {
+            "a": {"type": "refusal", "refusal": "no"},
+            "b": {"type": "noul", "noul": 0.5},
+            "extra": {"type": "refusal", "refusal": "x".repeat(250), "detail": "secret"}
+        },
+        "usage": {"input_tokens": 9, "output_tokens": 1}
+    });
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/systemone", 200, upstream)
+        .await;
+
+    let (status, body) = post(
+        &fixture,
+        request_for(MICROSOFT, noul_questions_named(&["a", "b"])),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["answers"].get("extra").is_none(), "{body}");
+    assert_eq!(body["answers"]["a"], refusal("no"));
+    assert_eq!(body["answers"]["b"], json!({"type": "noul", "noul": 0.5}));
+}
+
 fn noul_questions_named(names: &[&str]) -> Value {
     let questions: Map<String, Value> = names
         .iter()
