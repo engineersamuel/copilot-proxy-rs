@@ -98,6 +98,9 @@ pub struct CopilotBackend {
     pub(crate) endpoints: CopilotEndpoints,
     client: Client,
     rate_limiter: Option<Arc<TokenBucket>>,
+    models_refresh_lock: tokio::sync::Mutex<()>,
+    /// Count of finished /models fetch attempts; only incremented while holding `models_refresh_lock`.
+    models_refresh_attempts: std::sync::atomic::AtomicU64,
 }
 
 impl CopilotBackend {
@@ -121,6 +124,8 @@ impl CopilotBackend {
             endpoints,
             client,
             rate_limiter,
+            models_refresh_lock: tokio::sync::Mutex::new(()),
+            models_refresh_attempts: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -359,18 +364,31 @@ impl CopilotBackend {
     }
 
     pub async fn refresh_models_if_stale_result(&self) -> Result<(), CopilotError> {
-        if !self
-            .models
-            .refresh_needed(self.config.copilot_models_ttl)
-            .await
+        if !self.models_refresh_needed().await {
+            return Ok(());
+        }
+        use std::sync::atomic::Ordering;
+        let seen = self.models_refresh_attempts.load(Ordering::Acquire);
+        let _guard = self.models_refresh_lock.lock().await;
+        // Another caller attempted a refresh while we waited; share its outcome.
+        if self.models_refresh_attempts.load(Ordering::Acquire) != seen
+            || !self.models_refresh_needed().await
         {
             return Ok(());
         }
-        let value = self.get_json(&self.endpoints.models_url, None).await?;
+        let fetched = self.get_json(&self.endpoints.models_url, None).await;
+        self.models_refresh_attempts.fetch_add(1, Ordering::Release);
+        let value = fetched?;
         if let Some(models) = value.get("data").and_then(Value::as_array) {
             self.models.set_copilot_models(models.clone()).await;
         }
         Ok(())
+    }
+
+    async fn models_refresh_needed(&self) -> bool {
+        self.models
+            .refresh_needed(self.config.copilot_models_ttl)
+            .await
     }
 
     pub async fn post_decisions(&self, body: Map<String, Value>) -> Result<Value, CopilotError> {
@@ -1216,6 +1234,27 @@ fn map_reqwest_error(error: reqwest::Error) -> CopilotError {
 mod tests {
     use super::*;
     use http::HeaderMap;
+
+    #[tokio::test]
+    async fn token_bucket_burst_and_refill_match_rate() {
+        for rate in [120, 240] {
+            let bucket = TokenBucket::new(rate);
+            let started = std::time::Instant::now();
+            for _ in 0..rate {
+                assert_eq!(bucket.acquire().await, 0.0);
+            }
+            assert!(started.elapsed() < Duration::from_millis(50));
+
+            let interval = 60.0 / f64::from(rate);
+            let waited = bucket.acquire().await;
+            assert!((waited - interval).abs() < 0.05, "waited {waited}s");
+            let elapsed = started.elapsed().as_secs_f64();
+            assert!(
+                (interval..interval + 0.25).contains(&elapsed),
+                "elapsed {elapsed}s, expected approximately {interval}s"
+            );
+        }
+    }
 
     #[test]
     fn retry_delay_honors_zero_retry_after_without_jitter() {

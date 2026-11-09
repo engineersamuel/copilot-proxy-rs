@@ -1,6 +1,6 @@
 use std::fs;
 
-use copilot_proxy_rs::config::{AppConfig, ConfigError, EnvSource};
+use copilot_proxy_rs::config::{AppConfig, ConfigError, ConfigNotice, EnvSource};
 
 fn repo_tempdir(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -144,11 +144,31 @@ fn loads_default_json_config_from_copilot_proxy_rs_home_dir() {
 }
 
 #[test]
+fn copilot_max_rate_defaults_to_120_unless_file_sets_it() {
+    let temp = repo_tempdir("config-rate-default-");
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+
+    assert_eq!(AppConfig::default().copilot_max_rate, 120);
+    assert_eq!(
+        AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+        120
+    );
+    for (contents, expected) in [("{}", 120), (r#"{"copilot_max_rate":42}"#, 42)] {
+        fs::write(temp.path().join("config.json"), contents).unwrap();
+        assert_eq!(
+            AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+            expected
+        );
+    }
+}
+
+#[test]
 fn environment_values_override_file_values() {
     let temp = repo_tempdir("config-contract-");
     fs::write(
         temp.path().join("config.json"),
-        r#"{"backend":"copilot","fallback_backend":"","port":8080,"copilot_timeout":600}"#,
+        r#"{"backend":"copilot","fallback_backend":"","port":8080,"copilot_timeout":600,"copilot_max_rate":42}"#,
     )
     .unwrap();
 
@@ -168,6 +188,17 @@ fn environment_values_override_file_values() {
     assert_eq!(config.copilot_timeout, 900);
     assert_eq!(config.copilot_connect_timeout, 120);
     assert_eq!(config.web_search_model, "gpt-5.6-luna");
+
+    for rate in ["75", "0"] {
+        let env = EnvSource::from_pairs([
+            ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+            ("COPILOT_MAX_RATE", rate),
+        ]);
+        assert_eq!(
+            AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+            rate.parse::<u32>().unwrap()
+        );
+    }
 }
 
 #[test]
@@ -515,4 +546,205 @@ fn typesafe_key_comment_only_is_missing_and_star_exclude_is_flagged() {
     assert_eq!(invalid_model_excludes(&extra), vec!["*"]);
     let set = model_exclude_set(&extra);
     assert!(!set.contains("claude-opus-5.5") && set.contains("x-1"));
+}
+
+fn load_dir(files: &[(&str, &str)]) -> (tempfile::TempDir, EnvSource) {
+    let temp = repo_tempdir("config-toml-");
+    for (name, contents) in files {
+        fs::write(temp.path().join(name), contents).unwrap();
+    }
+    let env =
+        EnvSource::from_pairs([("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap())]);
+    (temp, env)
+}
+
+#[test]
+fn toml_parses_scalars_bools_and_local_models() {
+    let (_temp, env) = load_dir(&[(
+        "config.toml",
+        r#"
+port = 9191
+copilot_retry_base_delay = 2
+update_check = "false"
+auto_update = true
+allowed_origins = ["http://localhost:3000"]
+
+[local_models.qwen-local]
+base_url = "http://127.0.0.1:8081/v1"
+upstream_model = 'models\Qwen.gguf'
+"#,
+    )]);
+
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+    let config = load.config;
+
+    assert_eq!(config.port, 9191);
+    assert_eq!(config.copilot_retry_base_delay, 2.0);
+    assert!(!config.update_check);
+    assert!(config.auto_update);
+    assert_eq!(
+        config.allowed_origins,
+        vec!["http://localhost:3000".to_string()]
+    );
+    let local = config.local_models.get("qwen-local").unwrap();
+    assert_eq!(local.base_url, "http://127.0.0.1:8081/v1");
+    assert_eq!(local.upstream_model, r"models\Qwen.gguf");
+    assert!(load.notices.is_empty());
+}
+
+#[test]
+fn toml_loads_from_copilot_proxy_rs_home_dir() {
+    let temp = repo_tempdir("config-toml-home-");
+    let config_dir = temp.path().join(".config").join("copilot-proxy-rs");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("config.toml"), "port = 9292\n").unwrap();
+
+    let env = EnvSource::from_pairs([("HOME", temp.path().to_str().unwrap())]);
+
+    assert_eq!(AppConfig::load_from_env(&env).unwrap().port, 9292);
+}
+
+#[test]
+fn toml_invalid_values_fall_back_like_json() {
+    let (_temp, env) = load_dir(&[(
+        "config.toml",
+        r#"port = "not-a-port"
+copilot_timeout = "not-a-number"
+update_check = "garbage"
+auto_update = "garbage"
+"#,
+    )]);
+
+    let config = AppConfig::load_from_env(&env).unwrap();
+
+    assert_eq!(config.port, 8080);
+    assert_eq!(config.copilot_timeout, 300);
+    assert!(config.update_check);
+    assert!(!config.auto_update);
+}
+
+#[test]
+fn toml_and_json_report_identical_invalid_local_model_errors() {
+    let (_json, json_env) = load_dir(&[(
+        "config.json",
+        r#"{"local_models":{"qwen-local":{"base_url":"ftp://host/v1","upstream_model":"model.gguf"}}}"#,
+    )]);
+    let (_toml, toml_env) = load_dir(&[(
+        "config.toml",
+        "[local_models.qwen-local]\nbase_url = \"ftp://host/v1\"\nupstream_model = \"model.gguf\"\n",
+    )]);
+
+    let json_error = AppConfig::load_from_env(&json_env).unwrap_err();
+    let toml_error = AppConfig::load_from_env(&toml_env).unwrap_err();
+
+    assert!(matches!(toml_error, ConfigError::InvalidLocalModel { .. }));
+    assert_eq!(toml_error.to_string(), json_error.to_string());
+}
+
+#[test]
+fn malformed_toml_names_the_path_without_echoing_file_contents() {
+    let (temp, env) = load_dir(&[(
+        "config.toml",
+        "api_key = \"sk-secret-value-123\"\nport = = 9191\n",
+    )]);
+
+    let error = AppConfig::load_from_env(&env).unwrap_err();
+    let rendered = error.to_string();
+
+    match &error {
+        ConfigError::ParseToml { path, message } => {
+            assert_eq!(path, &temp.path().join("config.toml").display().to_string());
+            assert!(!message.contains("sk-secret-value-123"));
+        }
+        other => panic!("expected ParseToml, got {other}"),
+    }
+    assert!(rendered.contains("config.toml"));
+    assert!(rendered.contains("line 2"));
+    assert!(!rendered.contains("sk-secret-value-123"));
+}
+
+#[test]
+fn json_only_loads_with_one_notice_naming_config_toml() {
+    let (_temp, env) = load_dir(&[(
+        "config.json",
+        r#"{"port": 9393, "api_key": "sk-json-secret"}"#,
+    )]);
+
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+
+    assert_eq!(load.config.port, 9393);
+    assert_eq!(load.notices, vec![ConfigNotice::LegacyJsonFallback]);
+    let message = load.notices[0].to_string();
+    assert!(message.contains("config.toml"));
+    assert!(!message.contains("sk-json-secret"));
+    assert!(!message.contains("9393"));
+}
+
+#[test]
+fn toml_wins_over_json_with_one_notice() {
+    let (_temp, env) = load_dir(&[
+        ("config.toml", "port = 9494\n"),
+        ("config.json", r#"{"port": 9393, "copilot_timeout": 5}"#),
+    ]);
+
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+
+    assert_eq!(load.config.port, 9494);
+    assert_eq!(load.config.copilot_timeout, 300);
+    assert_eq!(load.notices, vec![ConfigNotice::JsonIgnoredTomlPresent]);
+    assert!(load.notices[0].to_string().contains("config.toml"));
+}
+
+#[test]
+fn no_config_files_load_defaults_without_notices() {
+    let (_temp, env) = load_dir(&[]);
+
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+
+    assert_eq!(load.config, AppConfig::default());
+    assert!(load.notices.is_empty());
+}
+
+#[test]
+fn env_copilot_max_rate_overrides_toml_value() {
+    let (temp, env) = load_dir(&[("config.toml", "copilot_max_rate = 42\n")]);
+    assert_eq!(AppConfig::load_from_env(&env).unwrap().copilot_max_rate, 42);
+    for (rate, expected) in [("75", 75), ("0", 0)] {
+        let env = EnvSource::from_pairs([
+            ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+            ("COPILOT_MAX_RATE", rate),
+        ]);
+        assert_eq!(
+            AppConfig::load_from_env(&env).unwrap().copilot_max_rate,
+            expected
+        );
+    }
+}
+
+#[path = "support/log_capture.rs"]
+mod log_capture;
+
+#[tokio::test]
+async fn config_load_logs_source_and_one_value_free_warn_per_notice() {
+    let (temp, env) = load_dir(&[(
+        "config.json",
+        r#"{"api_key": "sk-json-secret", "port": 9393}"#,
+    )]);
+    let load = AppConfig::load_with_notices_from_env(&env).unwrap();
+
+    let events = log_capture::with_event_capture(|| async { load.log() }).await;
+
+    let warns: Vec<_> = events
+        .iter()
+        .filter(|event| event.level == Some(tracing::Level::WARN))
+        .collect();
+    assert_eq!(warns.len(), 1);
+    assert!(warns[0].message.contains("config.toml"));
+    assert_eq!(
+        log_capture::field(&events, "loaded config file", "config.path"),
+        Some(temp.path().join("config.json").display().to_string())
+    );
+    let rendered = format!("{events:?}");
+    assert!(!rendered.contains("sk-json-secret"));
+    assert!(!rendered.contains("9393"));
 }

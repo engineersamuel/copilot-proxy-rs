@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,6 +20,10 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+    /// Carries only toml's message and a line/column, never source excerpts,
+    /// because the file may hold secrets such as `api_key`.
+    #[error("failed to parse config file {path}: {message}")]
+    ParseToml { path: String, message: String },
     #[error("invalid local model {model_id:?} field {field}: {message}")]
     InvalidLocalModel {
         model_id: String,
@@ -30,6 +34,80 @@ pub enum ConfigError {
         "refusing non-loopback bind address {host:?}; set COPILOT_PROXY_RS_ALLOW_NON_LOOPBACK=true only behind trusted network controls or inbound auth"
     )]
     UnsafeBind { host: String },
+}
+
+/// Deferred config-file notices; logged by the caller once logging is up.
+/// Messages are fixed text naming files only, never config values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigNotice {
+    LegacyJsonFallback,
+    JsonIgnoredTomlPresent,
+}
+
+impl std::fmt::Display for ConfigNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::LegacyJsonFallback => {
+                "loaded legacy config.json; move its settings to config.toml (config.json support is deprecated)"
+            }
+            Self::JsonIgnoredTomlPresent => {
+                "both config.toml and config.json exist; using config.toml and ignoring config.json"
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ConfigLoad {
+    pub config: AppConfig,
+    /// File the settings were read from, if any.
+    pub path: Option<PathBuf>,
+    pub notices: Vec<ConfigNotice>,
+}
+
+impl ConfigLoad {
+    /// Call after logging is initialised; config loads before the subscriber exists.
+    pub fn log(&self) {
+        if let Some(path) = &self.path {
+            tracing::info!(config.path = %path.display(), "loaded config file");
+        }
+        for notice in &self.notices {
+            tracing::warn!("{notice}");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFormat {
+    Toml,
+    Json,
+}
+
+impl ConfigFormat {
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Toml => "config.toml",
+            Self::Json => "config.json",
+        }
+    }
+}
+
+fn select_config_file(
+    toml_exists: bool,
+    json_exists: bool,
+) -> (Option<ConfigFormat>, Option<ConfigNotice>) {
+    match (toml_exists, json_exists) {
+        (true, true) => (
+            Some(ConfigFormat::Toml),
+            Some(ConfigNotice::JsonIgnoredTomlPresent),
+        ),
+        (true, false) => (Some(ConfigFormat::Toml), None),
+        (false, true) => (
+            Some(ConfigFormat::Json),
+            Some(ConfigNotice::LegacyJsonFallback),
+        ),
+        (false, false) => (None, None),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -195,7 +273,7 @@ impl Default for AppConfig {
             copilot_models_ttl: 300,
             copilot_retry_max: 3,
             copilot_retry_base_delay: 1.0,
-            copilot_max_rate: 15,
+            copilot_max_rate: 120,
             web_search_model: "gpt-5.6-sol".to_string(),
             context_guard_threshold: 0.90,
             bedrock_region_prefix: "us".to_string(),
@@ -309,31 +387,31 @@ impl AppConfig {
     }
 
     pub fn load_from_env(env: &EnvSource) -> Result<Self, ConfigError> {
+        Self::load_with_notices_from_env(env).map(|load| load.config)
+    }
+
+    pub fn load_with_notices() -> Result<ConfigLoad, ConfigError> {
+        Self::load_with_notices_from_env(&EnvSource::current())
+    }
+
+    pub fn load_with_notices_from_env(env: &EnvSource) -> Result<ConfigLoad, ConfigError> {
+        let dir = config_dir(env);
+        let (format, notice) = select_config_file(
+            dir.join(ConfigFormat::Toml.file_name()).exists(),
+            dir.join(ConfigFormat::Json.file_name()).exists(),
+        );
         let mut config = Self::default();
-        let config_path = config_path(env);
-
-        if config_path.exists() {
-            let raw = fs::read_to_string(&config_path).map_err(|source| ConfigError::Read {
-                path: config_path.display().to_string(),
-                source,
-            })?;
-            let mut raw_value: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|source| ConfigError::Parse {
-                    path: config_path.display().to_string(),
-                    source,
-                })?;
-            sanitize_file_bools(&mut raw_value);
-            let file_config: FileConfig =
-                serde_json::from_value(raw_value).map_err(|source| ConfigError::Parse {
-                    path: config_path.display().to_string(),
-                    source,
-                })?;
-            config.merge_file_values(file_config);
+        let path = format.map(|format| dir.join(format.file_name()));
+        if let (Some(format), Some(path)) = (format, &path) {
+            config.merge_file_values(read_file_config(path, format)?);
         }
-
         apply_env_overrides(&mut config, env);
         config.validate_local_models()?;
-        Ok(config)
+        Ok(ConfigLoad {
+            config,
+            path,
+            notices: notice.into_iter().collect(),
+        })
     }
 
     pub fn validate_bind_safety(&self) -> Result<(), ConfigError> {
@@ -536,10 +614,54 @@ impl AppConfig {
 }
 
 pub fn config_dir(env: &EnvSource) -> PathBuf {
-    config_path(env)
-        .parent()
+    if let Some(dir) = env.get("COPILOT_PROXY_RS_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = env
+        .get("HOME")
         .map(PathBuf::from)
-        .unwrap_or_default()
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".config").join("copilot-proxy-rs")
+}
+
+fn read_file_config(path: &Path, format: ConfigFormat) -> Result<FileConfig, ConfigError> {
+    let display = path.display().to_string();
+    let raw = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: display.clone(),
+        source,
+    })?;
+    let mut raw_value = match format {
+        ConfigFormat::Json => serde_json::from_str(&raw).map_err(|source| ConfigError::Parse {
+            path: display.clone(),
+            source,
+        })?,
+        ConfigFormat::Toml => toml_to_json(&raw).map_err(|message| ConfigError::ParseToml {
+            path: display.clone(),
+            message,
+        })?,
+    };
+    sanitize_file_bools(&mut raw_value);
+    serde_json::from_value(raw_value).map_err(|source| ConfigError::Parse {
+        path: display,
+        source,
+    })
+}
+
+fn toml_to_json(raw: &str) -> Result<serde_json::Value, String> {
+    let table: toml::Table =
+        toml::from_str(raw).map_err(|error| toml_error_message(raw, &error))?;
+    serde_json::to_value(table).map_err(|error| error.to_string())
+}
+
+fn toml_error_message(raw: &str, error: &toml::de::Error) -> String {
+    let message = error.message().trim();
+    let Some(span) = error.span() else {
+        return message.to_string();
+    };
+    let before = &raw[..span.start.min(raw.len())];
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    format!("{message} at line {line}, column {column}")
 }
 
 /// Environment value first, else `<name>=` from `.env.local`; empty if neither.
@@ -580,19 +702,6 @@ fn strip_inline_comment(value: &str) -> &str {
         prev_ws = c.is_whitespace();
     }
     value.trim()
-}
-
-fn config_path(env: &EnvSource) -> PathBuf {
-    if let Some(dir) = env.get("COPILOT_PROXY_RS_CONFIG_DIR") {
-        return PathBuf::from(dir).join("config.json");
-    }
-    let home = env
-        .get("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config")
-        .join("copilot-proxy-rs")
-        .join("config.json")
 }
 
 fn apply_env_overrides(config: &mut AppConfig, env: &EnvSource) {
