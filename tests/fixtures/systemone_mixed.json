@@ -1,5 +1,5 @@
 {
-  "notes": "Synthetic values in the real upstream shapes of reports/fixtures/copilot_decisions_multi.json and copilot_systemone_multi.json (case mixed_5, refusal_mixed).",
+  "notes": "Synthetic values in the real upstream response shapes of /v1/decisions and /v1/systemone (mixed noul/choice/score and per-question refusal cases).",
   "client_request": {
     "state": "Customer: charged twice for order 7 and wants the money back.",
     "questions": {
