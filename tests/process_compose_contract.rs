@@ -1,12 +1,14 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -108,6 +110,19 @@ impl Scratch {
             .env("CALLS", self.0.join("calls"));
         cmd
     }
+
+    fn ready_process_compose(&self) {
+        fs::write(self.0.join("calls"), "").unwrap();
+        self.executable(
+            "process-compose",
+            r#"#!/bin/bash
+set -eu
+[[ ${PC_SOCKET_PATH:-} != /tmp/factory-supervisor-must-not-be-used.sock ]]
+printf '%s\n' "$*" >> "$CALLS"
+printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
+"#,
+        );
+    }
 }
 
 impl Drop for Scratch {
@@ -119,15 +134,7 @@ impl Drop for Scratch {
 #[test]
 fn controls_use_stable_isolated_socket_and_correct_commands() {
     let scratch = Scratch::new();
-    scratch.executable(
-        "process-compose",
-        r#"#!/bin/bash
-set -eu
-[[ ${PC_SOCKET_PATH:-} != /tmp/factory-supervisor-must-not-be-used.sock ]]
-printf '%s\n' "$*" >> "$CALLS"
-printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
-"#,
-    );
+    scratch.ready_process_compose();
     success(
         scratch
             .script("up")
@@ -135,7 +142,7 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
             .output()
             .unwrap(),
     );
-    for command in ["status", "restart", "logs", "tui", "down"] {
+    for command in ["status", "logs", "tui", "down"] {
         success(scratch.script(command).output().unwrap());
     }
     let calls = fs::read_to_string(scratch.0.join("calls")).unwrap();
@@ -155,7 +162,6 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
         "-D",
         "--tui=false",
         "process list",
-        "process restart proxy",
         "process logs proxy",
         "attach",
     ] {
@@ -173,6 +179,140 @@ printf '[{"name":"proxy","status":"Running","is_ready":"Ready"}]\n'
     );
     let calls = fs::read_to_string(scratch.0.join("calls")).unwrap();
     assert!(calls.lines().last().unwrap().contains("override.sock"));
+}
+
+fn restart_with_reload_response(status: u16, body: &str) -> (Output, String) {
+    let scratch = Scratch::new();
+    scratch.ready_process_compose();
+    let socket = scratch.0.join("reload.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let body = body.to_owned();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "reload request was not received");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept reload request: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).unwrap();
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        write!(
+            stream,
+            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        request_line
+    });
+    let output = scratch
+        .script("restart")
+        .env("COPILOT_PROXY_RS_PC_SOCKET", &socket)
+        .output()
+        .unwrap();
+    assert_eq!(
+        server.join().unwrap(),
+        "POST /project/configuration HTTP/1.1\r\n"
+    );
+    let calls = fs::read_to_string(scratch.0.join("calls")).unwrap();
+    for call in calls.lines() {
+        assert!(call.starts_with(&format!("-U --unix-socket {} ", socket.display())));
+    }
+    (output, calls)
+}
+
+#[test]
+fn restart_updated_proxy_reloads_without_an_extra_restart_and_waits_ready() {
+    for body in [r#"{"proxy":"updated"}"#, "{ \"proxy\": \t \"updated\" }"] {
+        let (output, calls) = restart_with_reload_response(200, body);
+        assert_eq!(
+            success(output),
+            "Reloaded process-compose.yaml; proxy restarted with the new configuration\nproxy is Ready\n"
+        );
+        assert!(!calls.contains("process restart proxy"), "{calls}");
+        assert!(calls.ends_with("process list -o json\n"), "{calls}");
+    }
+}
+
+#[test]
+fn restart_unchanged_proxy_reloads_then_restarts_once_and_waits_ready() {
+    let (output, calls) = restart_with_reload_response(200, "{}");
+    let stdout = success(output);
+    assert!(stdout.starts_with("Reloaded process-compose.yaml (proxy configuration unchanged)\n"));
+    assert!(stdout.ends_with("proxy is Ready\n"));
+    assert_eq!(calls.matches("process restart proxy").count(), 1);
+    assert!(
+        calls
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("process restart proxy")
+    );
+    assert!(calls.ends_with("process list -o json\n"), "{calls}");
+}
+
+#[test]
+fn restart_rejects_non_200_reload_without_restart_or_readiness() {
+    for status in [400, 207] {
+        let (output, calls) =
+            restart_with_reload_response(status, &format!(r#"{{"error":"{}"}}"#, "x".repeat(4096)));
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("process-compose could not reload process-compose.yaml"));
+        assert!(stderr.contains(&status.to_string()));
+        assert!(
+            stderr.len() < 512,
+            "reload failure must not dump a large body"
+        );
+        assert!(calls.is_empty(), "{calls}");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn restart_unreachable_reload_fails_without_restart_or_readiness() {
+    let scratch = Scratch::new();
+    scratch.ready_process_compose();
+    let output = scratch
+        .script("restart")
+        .env("COPILOT_PROXY_RS_PC_SOCKET", scratch.0.join("missing.sock"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("process-compose could not reload process-compose.yaml")
+    );
+    assert!(
+        fs::read_to_string(scratch.0.join("calls"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn restart_reload_is_time_bounded() {
+    let script = read("scripts/proxy-compose.sh");
+    let restart = script.split("    restart)\n").nth(1).unwrap();
+    let restart = restart.split(";;").next().unwrap();
+    assert!(restart.contains("--connect-timeout 1"));
+    assert!(restart.contains("--max-time 60"));
 }
 
 #[test]
