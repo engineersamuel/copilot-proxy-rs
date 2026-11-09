@@ -55,7 +55,7 @@ To manage the native proxy:
 ```bash
 mise run proxy:up       # detached; waits up to 10 minutes for readiness/build
 mise run proxy:status   # Running / Ready
-mise run proxy:restart # restart the existing managed process and wait for Ready
+mise run proxy:restart # reload process-compose.yaml, restart the proxy and wait for Ready
 mise run proxy:logs    # last 100 lines, without following
 mise run proxy:down    # stop this worktree's supervisor and proxy
 ```
@@ -84,14 +84,16 @@ socket is `${TMPDIR:-/tmp}/cpr-<uid>-<worktree-root-hash>.sock`, stable across t
 invocations in the same worktree. `COPILOT_PROXY_RS_PC_SOCKET` overrides it with
 an absolute path shorter than 100 characters; set the same override for every
 task. Inherited `PC_SOCKET_PATH` is ignored. Supervisor/client logs are stored
-beside that socket. Unresponsive control requests are bounded to 10 seconds;
-an unreachable stale socket is cleaned, but a hung socket is left intact.
+beside that socket. Unresponsive control requests are bounded to 10 seconds
+(60 seconds for configuration reload); an unreachable stale socket is cleaned,
+but a hung socket is left intact.
 `mise run proxy:logs -- --tail 20` changes the tail length; `--follow` opts in
 to following logs.
 
 Docker's `compose.yaml` remains separate and unchanged. Native startup always
-passes `-f process-compose.yaml`; process-compose 1.124.0 client commands do not
-accept `-f` and instead address the already-running supervisor by Unix socket.
+passes `-f process-compose.yaml`; later tasks address the already-running
+supervisor by Unix socket, with restart reloading that file using the supervisor's
+environment.
 
 ### Verify
 Check health:

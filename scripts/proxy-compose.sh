@@ -90,7 +90,23 @@ case "$command" in
         fi
         ;;
     restart)
-        bounded "${pc[@]}" process restart proxy
+        # Server-side reload uses the supervisor's env for ${...}; project update -f uses the caller's.
+        curl_result=0
+        response=$(curl --silent --connect-timeout 1 --max-time 60 \
+            --unix-socket "$socket" -X POST http://localhost/project/configuration \
+            -w '\n%{http_code}') || curl_result=$?
+        status=${response##*$'\n'}
+        if ((curl_result != 0)) || [[ "$status" != 200 ]]; then
+            echo "process-compose could not reload process-compose.yaml (HTTP $status; curl exit $curl_result)" >&2
+            exit 1
+        fi
+        body=${response%$'\n'*}
+        if grep -Eq '"proxy":[[:space:]]*"updated"' <<< "$body"; then
+            echo "Reloaded process-compose.yaml; proxy restarted with the new configuration"
+        else
+            echo "Reloaded process-compose.yaml (proxy configuration unchanged)"
+            bounded "${pc[@]}" process restart proxy
+        fi
         wait_ready
         ;;
     status) bounded "${pc[@]}" process list -o wide ;;
