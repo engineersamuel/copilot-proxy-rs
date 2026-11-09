@@ -461,7 +461,12 @@ async fn microsoft_allows_noul_without_instructions_or_criteria() {
     let fixture = support::AppFixture::with_nonchat_models().await;
     fixture
         .mock
-        .respond_json("POST", "/v1/systemone", 200, systemone_noul_answers(1))
+        .respond_json(
+            "POST",
+            "/v1/systemone",
+            200,
+            json!({"answers": {"q": {"type": "noul", "noul": 0.25}}, "usage": {"input_tokens": 9, "output_tokens": 1}}),
+        )
         .await;
 
     let (status, body) = post(
@@ -652,4 +657,77 @@ async fn state_and_instructions_are_not_logged() {
     assert!(!events.is_empty());
     let logged = format!("{events:?}");
     assert!(!logged.contains("SENTINEL"), "{logged}");
+}
+
+#[tokio::test]
+async fn microsoft_incomplete_or_mismatched_results_are_502() {
+    let good = json!({"type": "noul", "noul": 0.25});
+    let usage = json!({"input_tokens": 9, "output_tokens": 1});
+    let cases = [
+        json!({"answers": {}, "usage": usage}),
+        json!({"answers": {"other": good}, "usage": usage}),
+        json!({"answers": {"q": {"type": "choice", "choice": "a"}}, "usage": usage}),
+        json!({"answers": {"q": {"type": "noul"}}, "usage": usage}),
+        json!({"answers": {"q": good}}),
+        json!({"answers": {"q": good}, "usage": {"input_tokens": 9}}),
+    ];
+    for upstream in cases {
+        let fixture = support::AppFixture::with_nonchat_models().await;
+        fixture
+            .mock
+            .respond_json("POST", "/v1/systemone", 200, upstream.clone())
+            .await;
+
+        let (status, body) = post(
+            &fixture,
+            request_for(MICROSOFT, json!({"q": {"type": "noul"}})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{upstream}: {body}");
+        assert_eq!(
+            body["error"]["message"],
+            "Copilot systemone response was malformed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_questions_are_rejected_before_any_catalog_fetch() {
+    let too_many = noul_questions(401);
+    let cases = [
+        json!({"q": {"type": "bogus"}}),
+        json!({}),
+        too_many,
+        json!({"q": {"type": "choice", "criteria": {"only": "one"}}}),
+    ];
+    for model in [LUNA, MICROSOFT] {
+        for questions in &cases {
+            let fixture = support::AppFixture::with_nonchat_models().await;
+
+            let (status, body) = post(&fixture, request_for(model, questions.clone())).await;
+
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{model}: {body}");
+            assert_eq!(fixture.mock.hits("GET", "/models").await, 0, "{model}");
+            assert_eq!(upstream_posts(&fixture).await, (0, 0));
+        }
+    }
+}
+
+#[tokio::test]
+async fn cached_catalog_rejects_wrong_models_and_questions_without_upstream_calls() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let catalog = support::fixture_json("copilot_models_nonchat.json");
+    let models = catalog["data"].as_array().unwrap().clone();
+    fixture.state.models.set_copilot_models(models).await;
+
+    for model in ["claude-sonnet-5.5", "gpt-image-2.5-flare"] {
+        let (status, body) = post(&fixture, request_for(model, noul_questions(1))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{model}: {body}");
+    }
+    let (status, body) = post(&fixture, request_for(LUNA, json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 0);
+    assert_eq!(upstream_posts(&fixture).await, (0, 0));
 }

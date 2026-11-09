@@ -53,7 +53,7 @@ async fn answer(
     reject_multipart(headers)?;
     let body = read_body(state, headers, body)?;
     let public_model = requested_model(&body).map_err(rejection)?;
-    let (endpoint, copilot_model) = resolve(state, &public_model).await?;
+    let (endpoint, copilot_model) = resolve(state, &public_model, &body).await?;
     let questions = parse_questions(endpoint, &public_model, &body).map_err(rejection)?;
     tracing::info!(
         api.family = API_FAMILY,
@@ -65,7 +65,7 @@ async fn answer(
     );
     match endpoint {
         DecisionsEndpoint::SystemOne => {
-            ask_systemone(state, body, &copilot_model, &public_model).await
+            ask_systemone(state, body, &questions, &copilot_model, &public_model).await
         }
         DecisionsEndpoint::Decisions => {
             let input = body.get("state").unwrap_or(&Value::Null);
@@ -77,6 +77,7 @@ async fn answer(
 async fn ask_systemone(
     state: &AppState,
     body: Map<String, Value>,
+    questions: &Questions,
     copilot_model: &str,
     public_model: &str,
 ) -> Result<Value, Failure> {
@@ -86,7 +87,7 @@ async fn ask_systemone(
         .post_systemone(request)
         .await
         .map_err(copilot)?;
-    from_systemone_response(public_model, upstream).map_err(rejection)
+    from_systemone_response(public_model, questions, upstream).map_err(rejection)
 }
 
 async fn ask_decisions(
@@ -138,11 +139,13 @@ fn read_body(
     })
 }
 
-/// Maps a public model to its decision endpoint; local, chat, image and
-/// unknown models are rejected before anything is sent upstream.
+/// Maps a public model to its decision endpoint. Rejections are decided from
+/// cached metadata and question validation alone; the catalog is fetched only
+/// for a model the cache does not know, after the questions already passed.
 async fn resolve(
     state: &AppState,
     public_model: &str,
+    body: &Map<String, Value>,
 ) -> Result<(DecisionsEndpoint, String), Failure> {
     let not_decision = || {
         tracing::warn!(systemone.reject = "model", "systemone request rejected");
@@ -153,13 +156,43 @@ async fn resolve(
     if state.models.configured_local_target(public_model).is_some() {
         return Err(not_decision());
     }
-    state.copilot.refresh_models_if_stale().await;
-    let copilot_model = state.models.get_copilot_openai_model(public_model).await;
-    match state.models.copilot_model_kind(&copilot_model).await {
-        Some(CopilotModelKind::Decisions) => Ok((DecisionsEndpoint::Decisions, copilot_model)),
-        Some(CopilotModelKind::SystemOne) => Ok((DecisionsEndpoint::SystemOne, copilot_model)),
+    let mut kind = cached_kind(state, public_model).await;
+    if kind.1.is_none() {
+        precheck_questions(public_model, body)?;
+        state.copilot.refresh_models_if_stale().await;
+        kind = cached_kind(state, public_model).await;
+    }
+    match kind {
+        (copilot_model, Some(CopilotModelKind::Decisions)) => {
+            Ok((DecisionsEndpoint::Decisions, copilot_model))
+        }
+        (copilot_model, Some(CopilotModelKind::SystemOne)) => {
+            Ok((DecisionsEndpoint::SystemOne, copilot_model))
+        }
         _ => Err(not_decision()),
     }
+}
+
+/// Validates questions for a model the cache does not know yet: the two
+/// published decision models use their own endpoint limits, anything else is
+/// rejected only when invalid for both endpoints.
+fn precheck_questions(public_model: &str, body: &Map<String, Value>) -> Result<(), Failure> {
+    let validate = |endpoint| parse_questions(endpoint, public_model, body);
+    let result = match public_model {
+        "gpt-6-luna-decisions" => validate(DecisionsEndpoint::Decisions),
+        "microsoft-decision-1" => validate(DecisionsEndpoint::SystemOne),
+        _ => validate(DecisionsEndpoint::SystemOne)
+            .or_else(|first| validate(DecisionsEndpoint::Decisions).map_err(|_| first)),
+    };
+    result.map(drop).map_err(rejection)
+}
+
+/// The Copilot model id and its kind from cached metadata; `None` kind means
+/// the cache does not know the model.
+async fn cached_kind(state: &AppState, public_model: &str) -> (String, Option<CopilotModelKind>) {
+    let copilot_model = state.models.get_copilot_openai_model(public_model).await;
+    let kind = state.models.copilot_model_kind(&copilot_model).await;
+    (copilot_model, kind)
 }
 
 fn copilot(error: crate::copilot::errors::CopilotError) -> Failure {

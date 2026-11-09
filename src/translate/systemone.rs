@@ -422,17 +422,55 @@ fn probability_map(answer: &Value, key: impl Fn(&Value) -> Option<String>) -> Op
         .map(Value::Object)
 }
 
-/// Passes a `/v1/systemone` result through with the public model id.
+/// Passes a `/v1/systemone` result through with the public model id after
+/// checking every requested question has a well-formed answer and usage.
 pub fn from_systemone_response(
     public_model: &str,
+    questions: &Questions,
     upstream: Value,
 ) -> Result<Value, SystemOneError> {
+    let malformed = SystemOneError::Malformed(DecisionsEndpoint::SystemOne);
     let Value::Object(mut body) = upstream else {
-        return Err(SystemOneError::Malformed(DecisionsEndpoint::SystemOne));
+        return Err(malformed);
     };
-    if !body.get("answers").is_some_and(Value::is_object) {
-        return Err(SystemOneError::Malformed(DecisionsEndpoint::SystemOne));
+    let answers_ok = body
+        .get("answers")
+        .and_then(Value::as_object)
+        .is_some_and(|answers| {
+            questions.iter().all(|(name, question)| {
+                answers
+                    .get(name)
+                    .is_some_and(|a| answer_matches(question, a))
+            })
+        });
+    let usage_ok = body.get("usage").is_some_and(|usage| {
+        ["input_tokens", "output_tokens"]
+            .iter()
+            .all(|key| usage.get(key).is_some_and(Value::is_number))
+    });
+    if !answers_ok || !usage_ok {
+        return Err(malformed);
     }
     body.insert("model".to_string(), json!(public_model));
     Ok(Value::Object(body))
+}
+
+fn answer_matches(question: &Question, answer: &Value) -> bool {
+    let has = |key: &str, ok: fn(&Value) -> bool| answer.get(key).is_some_and(ok);
+    let kind = answer.get("type").and_then(Value::as_str);
+    match (question, kind) {
+        (Question::Noul { .. }, Some("noul")) => has("noul", Value::is_number),
+        (Question::Choice { .. }, Some("choice")) => {
+            has("choice", Value::is_string)
+                && has("confidence", Value::is_number)
+                && has("probabilities", Value::is_object)
+        }
+        (Question::Score { .. }, Some("score")) => {
+            has("score", Value::is_number)
+                && has("confidence", Value::is_number)
+                && has("legend", Value::is_object)
+                && has("probabilities", Value::is_object)
+        }
+        _ => false,
+    }
 }
