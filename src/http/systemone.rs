@@ -141,7 +141,7 @@ fn read_body(
 
 /// Maps a public model to its decision endpoint. Rejections are decided from
 /// cached metadata and question validation alone; the catalog is fetched only
-/// for a model the cache does not know, after the questions already passed.
+/// for an uncached published decision model whose questions already passed.
 async fn resolve(
     state: &AppState,
     public_model: &str,
@@ -158,7 +158,8 @@ async fn resolve(
     }
     let mut kind = cached_kind(state, public_model).await;
     if kind.1.is_none() {
-        precheck_questions(public_model, body)?;
+        let endpoint = published_endpoint(public_model).ok_or_else(not_decision)?;
+        parse_questions(endpoint, public_model, body).map_err(rejection)?;
         state.copilot.refresh_models_if_stale().await;
         kind = cached_kind(state, public_model).await;
     }
@@ -173,18 +174,14 @@ async fn resolve(
     }
 }
 
-/// Validates questions for a model the cache does not know yet: the two
-/// published decision models use their own endpoint limits, anything else is
-/// rejected only when invalid for both endpoints.
-fn precheck_questions(public_model: &str, body: &Map<String, Value>) -> Result<(), Failure> {
-    let validate = |endpoint| parse_questions(endpoint, public_model, body);
-    let result = match public_model {
-        "gpt-6-luna-decisions" => validate(DecisionsEndpoint::Decisions),
-        "microsoft-decision-1" => validate(DecisionsEndpoint::SystemOne),
-        _ => validate(DecisionsEndpoint::SystemOne)
-            .or_else(|first| validate(DecisionsEndpoint::Decisions).map_err(|_| first)),
-    };
-    result.map(drop).map_err(rejection)
+/// The endpoint of a published decision model, used to validate its questions
+/// before the catalog is fetched; any other uncached model is rejected.
+fn published_endpoint(public_model: &str) -> Option<DecisionsEndpoint> {
+    match public_model {
+        "gpt-6-luna-decisions" => Some(DecisionsEndpoint::Decisions),
+        "microsoft-decision-1" => Some(DecisionsEndpoint::SystemOne),
+        _ => None,
+    }
 }
 
 /// The Copilot model id and its kind from cached metadata; `None` kind means
