@@ -540,7 +540,7 @@ done
 ```
 
 The response is keyed by question name and echoes the requested model:
-`{"model", "answers": {name: {"type":"noul","noul"} | {"type":"choice","choice","confidence","probabilities"} | {"type":"score","score","confidence","legend","probabilities"}}, "usage": {"input_tokens","output_tokens"}}`.
+`{"model", "answers": {name: {"type":"noul","noul"} | {"type":"choice","choice","confidence","probabilities"} | {"type":"score","score","confidence","legend","probabilities"} | {"type":"refusal","refusal"}}, "usage": {"input_tokens","output_tokens"}}`.
 
 - `noul`, `choice` and `score` are supported. `box` and multipart bodies (assets) are rejected with 400.
 - `choice` and `score` are answered natively by both upstreams; no per-option predicate emulation is used.
@@ -550,8 +550,13 @@ The response is keyed by question name and echoes the requested model:
 - Limits checked locally (400, no upstream call): 255 questions for `microsoft-decision-1`, 400 for
   `gpt-6-luna-decisions`, 2-255 choice options, 2-10 score levels, non-empty names and instructions.
   Chat, image, local and unknown models are rejected; there is no fallback.
-- If `gpt-6-luna-decisions` refuses any question, the request fails with 422 naming the refused questions;
-  no answers are fabricated.
+- A question the model declines is returned as `answers.<name> = {"type":"refusal","refusal":"<text>"}`
+  with no `noul`/`choice`/`score` field; the other answers are returned unchanged. This entry is a proxy
+  extension (TypeSafe `@typesafe-ai/sdk` 0.7.0 defines no refusal answer type), so clients should check
+  `answers.<name>.type`. `gpt-6-luna-decisions` refusals carry no text, so their `refusal` is `"declined"`;
+  upstream text, when present, is trimmed and truncated to 200 characters. No answers are fabricated.
+- Only when the model declines **every** question does the request fail with 422
+  (`invalid_request_error`, `model declined to answer question(s): <names>`) and no answers.
 - `zstd` and `gzip` request bodies (the TypeSafe SDK default) are accepted.
 - `/v1/models` lists `/v1/systemone` in `supported_endpoints` for both decision models.
 

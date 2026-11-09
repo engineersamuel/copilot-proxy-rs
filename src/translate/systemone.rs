@@ -12,6 +12,8 @@ use crate::translate::decisions::DecisionsEndpoint;
 const DEFAULT_CHOICE_INSTRUCTIONS: &str = "Which option best fits?";
 const DEFAULT_SCORE_INSTRUCTIONS: &str = "Which level best fits?";
 const MESSAGE_ROLES: [&str; 4] = ["system", "developer", "user", "assistant"];
+const MAX_REFUSAL_CHARS: usize = 200;
+const DEFAULT_REFUSAL: &str = "declined";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemOneError {
@@ -19,7 +21,7 @@ pub enum SystemOneError {
     Invalid(String),
     /// Translated body exceeds the upstream limit (HTTP 413).
     TooLarge(String),
-    /// Decisions refused these questions, in request order (HTTP 422).
+    /// The model declined every question, named in request order (HTTP 422).
     Refused(Vec<String>),
     /// Upstream answered 200 with an unusable body (HTTP 502).
     Malformed(DecisionsEndpoint),
@@ -49,6 +51,14 @@ pub enum Question {
 
 /// Questions in request-map order, each paired with its non-empty name.
 pub type Questions = Vec<(String, Question)>;
+
+/// A TypeSafe result plus the questions the model declined, in request order.
+/// Declined questions appear in `response.answers` as refusal entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Translated {
+    pub response: Value,
+    pub refused: Vec<String>,
+}
 
 pub fn question_limit(endpoint: DecisionsEndpoint) -> usize {
     match endpoint {
@@ -340,22 +350,20 @@ pub fn from_decisions_response(
     public_model: &str,
     questions: &Questions,
     upstream: &Value,
-) -> Result<Value, SystemOneError> {
+) -> Result<Translated, SystemOneError> {
     let malformed = SystemOneError::Malformed(DecisionsEndpoint::Decisions);
     let by_name = answers_by_name(upstream).ok_or(malformed.clone())?;
     let mut answers = Map::new();
     let mut refused = Vec::new();
     for (name, question) in questions {
         let answer = by_name.get(name.as_str()).ok_or(malformed.clone())?;
-        if answer.get("type").and_then(Value::as_str) == Some("refusal") {
+        let answer = if is_refusal(answer) {
             refused.push(name.clone());
-            continue;
-        }
-        let answer = typesafe_answer(question, answer).ok_or(malformed.clone())?;
+            refusal_entry(answer)
+        } else {
+            typesafe_answer(question, answer).ok_or(malformed.clone())?
+        };
         answers.insert(name.clone(), answer);
-    }
-    if !refused.is_empty() {
-        return Err(SystemOneError::Refused(refused));
     }
     let usage = upstream.get("usage");
     let tokens = |key: &str| {
@@ -364,11 +372,41 @@ pub fn from_decisions_response(
             .cloned()
             .unwrap_or(Value::Null)
     };
-    Ok(json!({
+    let response = json!({
         "model": public_model,
         "answers": answers,
         "usage": {"input_tokens": tokens("input_tokens"), "output_tokens": tokens("output_tokens")},
-    }))
+    });
+    settle(questions, response, refused)
+}
+
+/// Rejects the batch only when every question was declined.
+fn settle(
+    questions: &Questions,
+    response: Value,
+    refused: Vec<String>,
+) -> Result<Translated, SystemOneError> {
+    if refused.len() == questions.len() {
+        return Err(SystemOneError::Refused(refused));
+    }
+    Ok(Translated { response, refused })
+}
+
+fn is_refusal(answer: &Value) -> bool {
+    answer.get("type").and_then(Value::as_str) == Some("refusal")
+}
+
+/// `{"type":"refusal","refusal":text}` from an upstream refusal; only its
+/// string `refusal` field is read, trimmed and truncated.
+fn refusal_entry(answer: &Value) -> Value {
+    let text = answer
+        .get("refusal")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(MAX_REFUSAL_CHARS).collect())
+        .unwrap_or_else(|| DEFAULT_REFUSAL.to_string());
+    json!({"type": "refusal", "refusal": text})
 }
 
 /// Answers keyed by name; `None` when the array is missing or names repeat.
@@ -424,35 +462,38 @@ fn probability_map(answer: &Value, key: impl Fn(&Value) -> Option<String>) -> Op
 
 /// Passes a `/v1/systemone` result through with the public model id after
 /// checking every requested question has a well-formed answer and usage.
+/// Refusal answers are normalized to the refusal entry shape.
 pub fn from_systemone_response(
     public_model: &str,
     questions: &Questions,
     upstream: Value,
-) -> Result<Value, SystemOneError> {
+) -> Result<Translated, SystemOneError> {
     let malformed = SystemOneError::Malformed(DecisionsEndpoint::SystemOne);
     let Value::Object(mut body) = upstream else {
         return Err(malformed);
     };
-    let answers_ok = body
-        .get("answers")
-        .and_then(Value::as_object)
-        .is_some_and(|answers| {
-            questions.iter().all(|(name, question)| {
-                answers
-                    .get(name)
-                    .is_some_and(|a| answer_matches(question, a))
-            })
-        });
     let usage_ok = body.get("usage").is_some_and(|usage| {
         ["input_tokens", "output_tokens"]
             .iter()
             .all(|key| usage.get(key).is_some_and(Value::is_number))
     });
-    if !answers_ok || !usage_ok {
-        return Err(malformed);
+    let answers = body
+        .get_mut("answers")
+        .and_then(Value::as_object_mut)
+        .filter(|_| usage_ok)
+        .ok_or(malformed.clone())?;
+    let mut refused = Vec::new();
+    for (name, question) in questions {
+        let answer = answers.get_mut(name).ok_or(malformed.clone())?;
+        if is_refusal(answer) {
+            *answer = refusal_entry(answer);
+            refused.push(name.clone());
+        } else if !answer_matches(question, answer) {
+            return Err(malformed);
+        }
     }
     body.insert("model".to_string(), json!(public_model));
-    Ok(Value::Object(body))
+    settle(questions, Value::Object(body), refused)
 }
 
 fn answer_matches(question: &Question, answer: &Value) -> bool {
