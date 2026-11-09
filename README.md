@@ -192,7 +192,10 @@ Compose runs can reuse the same file without setting `GITHUB_TOKEN`.
 ## Configuration
 
 Copy `config.example.toml` to `~/.config/copilot-proxy-rs/config.toml` and edit
-as needed. Environment variables override file values.
+as needed. Precedence is environment variables over `config.toml` over built-in
+defaults. The process-compose setup (`mise run proxy:up`) no longer forces
+failed-request body logging off: `log_failed_request_bodies` in `config.toml`
+decides unless `COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES` is exported.
 
 Legacy `config.json` is still read, with a `WARN` asking you to move to
 `config.toml`, when `config.toml` is absent. If both files exist, `config.toml`
