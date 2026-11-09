@@ -745,6 +745,21 @@ async fn cold_catalog_rejects_non_decision_models_without_upstream_calls() {
 }
 
 #[tokio::test]
+async fn cold_catalog_accepts_prefixed_decision_model_ids() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/decisions", 200, decisions_predicate_answers(1))
+        .await;
+    let prefixed = format!("github-copilot/{LUNA}");
+
+    let (status, body) = post(&fixture, request_for(&prefixed, noul_questions(1))).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fixture.mock.hits("GET", "/models").await, 1);
+}
+
+#[tokio::test]
 async fn cached_catalog_rejects_wrong_models_and_questions_without_upstream_calls() {
     let fixture = support::AppFixture::with_nonchat_models().await;
     let catalog = support::fixture_json("copilot_models_nonchat.json");

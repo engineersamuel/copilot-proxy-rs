@@ -158,7 +158,7 @@ async fn resolve(
     }
     let mut kind = cached_kind(state, public_model).await;
     if kind.1.is_none() {
-        let endpoint = published_endpoint(public_model).ok_or_else(not_decision)?;
+        let endpoint = published_endpoint(&kind.0).ok_or_else(not_decision)?;
         parse_questions(endpoint, public_model, body).map_err(rejection)?;
         state.copilot.refresh_models_if_stale().await;
         kind = cached_kind(state, public_model).await;
