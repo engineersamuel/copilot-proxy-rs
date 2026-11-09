@@ -1,5 +1,5 @@
 {
-  "notes": "Synthetic values in the real upstream response shapes of /v1/decisions and /v1/systemone (mixed noul/choice/score and per-question refusal cases).",
+  "notes": "Synthetic values in the real upstream response shapes of /v1/decisions and /v1/systemone (mixed noul/choice/score and per-question refusal cases; the /v1/systemone refusal entries are an unverified, synthetic shape).",
   "client_request": {
     "state": "Customer: charged twice for order 7 and wants the money back.",
     "questions": {
@@ -119,6 +119,39 @@
       {"type": "refusal", "name": "severity"}
     ],
     "usage": {"input_tokens": 330, "output_tokens": 0, "total_tokens": 330}
+  },
+  "decisions_all_refused_response": {
+    "model": "gpt-6-luna",
+    "answers": [
+      {"type": "refusal", "name": "intent"},
+      {"type": "refusal", "name": "is_angry"},
+      {"type": "refusal", "name": "is_billing"},
+      {"type": "refusal", "name": "only_criteria"},
+      {"type": "refusal", "name": "severity"}
+    ],
+    "usage": {"input_tokens": 330, "output_tokens": 0, "total_tokens": 330}
+  },
+  "systemone_refusal_response": {
+    "model": "microsoft-decision-1",
+    "answers": {
+      "intent": {"type": "refusal", "refusal": "  Cannot judge intent here.  ", "reason_code": "policy"},
+      "is_angry": {"type": "noul", "noul": 0.1234567},
+      "is_billing": {"type": "noul", "noul": 0.9765432},
+      "only_criteria": {"type": "noul", "noul": 0.8812345},
+      "severity": {"type": "refusal", "refusal": 7}
+    },
+    "usage": {"input_tokens": 139, "output_tokens": 3}
+  },
+  "systemone_all_refused_response": {
+    "model": "microsoft-decision-1",
+    "answers": {
+      "intent": {"type": "refusal"},
+      "is_angry": {"type": "refusal"},
+      "is_billing": {"type": "refusal"},
+      "only_criteria": {"type": "refusal"},
+      "severity": {"type": "refusal"}
+    },
+    "usage": {"input_tokens": 139, "output_tokens": 0}
   },
   "systemone_response": {
     "model": "microsoft-decision-1",

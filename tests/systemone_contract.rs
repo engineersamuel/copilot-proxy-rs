@@ -274,29 +274,123 @@ async fn luna_state_becomes_decisions_input() {
     }
 }
 
-#[tokio::test]
-async fn luna_refusal_is_422_naming_refused_questions() {
+// Partial refusals: declined questions become refusal entries; 422 only when
+// every question is declined.
+
+fn refusal(text: &str) -> Value {
+    json!({"type": "refusal", "refusal": text})
+}
+
+async fn answer_with(model: &str, path: &str, upstream: Value) -> (StatusCode, Value) {
     let fixture = support::AppFixture::with_nonchat_models().await;
-    fixture
-        .mock
-        .respond_json(
-            "POST",
-            "/v1/decisions",
-            200,
-            mixed()["decisions_refusal_response"].clone(),
-        )
-        .await;
+    fixture.mock.respond_json("POST", path, 200, upstream).await;
+    post(&fixture, mixed_request(model)).await
+}
 
-    let (status, body) = post(&fixture, mixed_request(LUNA)).await;
-
+fn assert_all_declined(status: StatusCode, body: &Value) {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(upstream_posts(&fixture).await, (1, 0));
     assert_eq!(body["error"]["type"], "invalid_request_error");
     assert_eq!(
         body["error"]["message"],
-        "model declined to answer question(s): intent, severity"
+        "model declined to answer question(s): intent, is_angry, is_billing, only_criteria, severity"
     );
     assert!(body.get("answers").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn luna_partial_refusal_keeps_answers_and_marks_declined_questions() {
+    let recorded = mixed();
+    let (status, body) = answer_with(
+        LUNA,
+        "/v1/decisions",
+        recorded["decisions_refusal_response"].clone(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut expected = recorded["decisions_answer"].clone();
+    expected["answers"]["intent"] = refusal("declined");
+    expected["answers"]["severity"] = refusal("declined");
+    expected["usage"] = json!({"input_tokens": 330, "output_tokens": 0});
+    assert_eq!(body, expected);
+}
+
+#[tokio::test]
+async fn luna_all_refused_is_422_naming_every_question() {
+    let (status, body) = answer_with(
+        LUNA,
+        "/v1/decisions",
+        mixed()["decisions_all_refused_response"].clone(),
+    )
+    .await;
+
+    assert_all_declined(status, &body);
+}
+
+#[tokio::test]
+async fn microsoft_partial_refusal_keeps_answers_and_marks_declined_questions() {
+    let recorded = mixed();
+    let (status, body) = answer_with(
+        MICROSOFT,
+        "/v1/systemone",
+        recorded["systemone_refusal_response"].clone(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut expected = recorded["systemone_refusal_response"].clone();
+    expected["answers"]["intent"] = refusal("Cannot judge intent here.");
+    expected["answers"]["severity"] = refusal("declined");
+    assert_eq!(body, expected);
+}
+
+#[tokio::test]
+async fn microsoft_refusal_text_is_truncated_to_200_chars() {
+    let long = "é".repeat(250);
+    let upstream = json!({
+        "answers": {
+            "a": {"type": "refusal", "refusal": long},
+            "b": {"type": "refusal", "refusal": "   "},
+            "c": {"type": "noul", "noul": 0.25}
+        },
+        "usage": {"input_tokens": 9, "output_tokens": 1}
+    });
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    fixture
+        .mock
+        .respond_json("POST", "/v1/systemone", 200, upstream)
+        .await;
+
+    let (status, body) = post(
+        &fixture,
+        request_for(MICROSOFT, noul_questions_named(&["a", "b", "c"])),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["answers"]["a"], refusal(&"é".repeat(200)));
+    assert_eq!(body["answers"]["b"], refusal("declined"));
+    assert_eq!(body["answers"]["c"], json!({"type": "noul", "noul": 0.25}));
+}
+
+fn noul_questions_named(names: &[&str]) -> Value {
+    let questions: Map<String, Value> = names
+        .iter()
+        .map(|name| (name.to_string(), json!({"type": "noul"})))
+        .collect();
+    Value::Object(questions)
+}
+
+#[tokio::test]
+async fn microsoft_all_refused_is_422_naming_every_question() {
+    let (status, body) = answer_with(
+        MICROSOFT,
+        "/v1/systemone",
+        mixed()["systemone_all_refused_response"].clone(),
+    )
+    .await;
+
+    assert_all_declined(status, &body);
 }
 
 #[tokio::test]
@@ -655,6 +749,57 @@ async fn state_and_instructions_are_not_logged() {
     .await;
 
     assert!(!events.is_empty());
+    let logged = format!("{events:?}");
+    assert!(!logged.contains("SENTINEL"), "{logged}");
+}
+
+#[tokio::test]
+async fn partial_refusal_logs_count_and_names_only() {
+    let fixture = support::AppFixture::with_nonchat_models().await;
+    let upstream = json!({
+        "answers": {
+            "q_kept": {"type": "noul", "noul": 0.25},
+            "q_declined": {"type": "refusal", "refusal": "SENTINEL-REFUSAL-55aa"}
+        },
+        "usage": {"input_tokens": 9, "output_tokens": 1}
+    });
+    fixture
+        .mock
+        .respond_json("POST", "/v1/systemone", 200, upstream)
+        .await;
+    let request = json!({
+        "model": MICROSOFT,
+        "state": "SENTINEL-STATE-7f3a",
+        "questions": {
+            "q_kept": {"type": "noul", "instructions": "SENTINEL-INSTRUCTIONS-91c2"},
+            "q_declined": {"type": "noul", "instructions": "SENTINEL-INSTRUCTIONS-0b7d"}
+        }
+    });
+
+    let events = with_event_capture(|| async {
+        let (status, body) = post(&fixture, request).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    })
+    .await;
+
+    let field = |event: &support::log_capture::CapturedEvent, key: &str| {
+        event
+            .fields
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    };
+    let refusal_lines: Vec<_> = events
+        .iter()
+        .filter(|event| field(event, "systemone.refused").is_some())
+        .collect();
+    assert_eq!(refusal_lines.len(), 1, "{events:?}");
+    let line = refusal_lines[0];
+    assert_eq!(line.level, Some(tracing::Level::WARN));
+    assert_eq!(field(line, "systemone.refused").as_deref(), Some("1"));
+    let names = field(line, "systemone.refused_questions").unwrap_or_default();
+    assert!(names.contains("q_declined"), "{line:?}");
+    assert!(!names.contains("q_kept"), "{line:?}");
     let logged = format!("{events:?}");
     assert!(!logged.contains("SENTINEL"), "{logged}");
 }
