@@ -559,6 +559,64 @@ fn load_dir(files: &[(&str, &str)]) -> (tempfile::TempDir, EnvSource) {
 }
 
 #[test]
+fn failed_request_body_logging_uses_toml_when_env_unset() {
+    for enabled in [true, false] {
+        let (_temp, env) = load_dir(&[(
+            "config.toml",
+            &format!("log_failed_request_bodies = {enabled}\n"),
+        )]);
+
+        assert_eq!(
+            AppConfig::load_from_env(&env)
+                .unwrap()
+                .log_failed_request_bodies,
+            enabled
+        );
+    }
+}
+
+#[test]
+fn failed_request_body_logging_uses_toml_when_env_empty() {
+    let (temp, _) = load_dir(&[("config.toml", "log_failed_request_bodies = true\n")]);
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES", ""),
+    ]);
+
+    assert!(
+        AppConfig::load_from_env(&env)
+            .unwrap()
+            .log_failed_request_bodies
+    );
+}
+
+#[test]
+fn failed_request_body_logging_env_false_overrides_toml_true() {
+    let (temp, _) = load_dir(&[("config.toml", "log_failed_request_bodies = true\n")]);
+    let env = EnvSource::from_pairs([
+        ("COPILOT_PROXY_RS_CONFIG_DIR", temp.path().to_str().unwrap()),
+        ("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES", "false"),
+    ]);
+
+    assert!(
+        !AppConfig::load_from_env(&env)
+            .unwrap()
+            .log_failed_request_bodies
+    );
+}
+
+#[test]
+fn failed_request_body_logging_defaults_to_true_without_config_file() {
+    let (_temp, env) = load_dir(&[]);
+
+    assert!(
+        AppConfig::load_from_env(&env)
+            .unwrap()
+            .log_failed_request_bodies
+    );
+}
+
+#[test]
 fn toml_parses_scalars_bools_and_local_models() {
     let (_temp, env) = load_dir(&[(
         "config.toml",

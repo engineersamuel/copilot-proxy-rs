@@ -36,7 +36,7 @@ fn mise_pins_process_compose_and_exposes_all_tasks() {
 }
 
 #[test]
-fn proxy_has_loopback_readiness_and_safe_logging_defaults() {
+fn proxy_has_loopback_readiness_and_preserves_logging_configuration() {
     let compose = read("process-compose.yaml");
     for required in [
         "proxy:",
@@ -48,10 +48,10 @@ fn proxy_has_loopback_readiness_and_safe_logging_defaults() {
         "port: ${COPILOT_PROXY_RS_PORT:-8080}",
         "COPILOT_PROXY_RS_PORT=${COPILOT_PROXY_RS_PORT:-8080}",
         "RUST_LOG=${RUST_LOG:-info}",
-        "COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES=false",
     ] {
         assert!(compose.contains(required), "missing {required}");
     }
+    assert!(!compose.contains("COPILOT_PROXY_RS_LOG_FAILED_REQUEST_BODIES"));
 }
 
 #[test]
