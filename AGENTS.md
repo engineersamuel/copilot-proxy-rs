@@ -25,6 +25,13 @@ Keep changes narrow and preserve public API compatibility unless explicitly requ
 ## Deployment
 
 Whenever rebuilding and redeploying the proxy, always target the existing running instance on port `8080`.
+The default runtime is native `process-compose`, managed through the `mise` tasks in `mise.toml`.
+These tasks call `scripts/proxy-compose.sh`; use them instead of invoking `process-compose` directly.
+Run `mise task ls` from the checkout that owns the running service to discover the available `proxy:*` tasks.
+Use `mise run <task>` to manage the service from that checkout, not a different worktree.
+
+Keep the Docker files and `compose.yaml` available as an optional deployment method.
+Do not start Docker or run Docker deployment commands unless the user explicitly requests Docker.
 
 ## Conventions
 
