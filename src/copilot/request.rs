@@ -426,7 +426,10 @@ pub fn adapt_thinking_for_copilot(
         Some("enabled") if is_adaptive_only(model, thinking_support) => {
             thinking.clear();
             thinking.insert("type".to_string(), Value::String("adaptive".to_string()));
-            if !is_claude_five_five_model(model) {
+            // Catalog-validated effort is kept; only legacy models drop it.
+            let keeps_effort = is_claude_five_five_model(model)
+                || (supported_efforts.is_some() && !is_adaptive_only_model(model));
+            if !keeps_effort {
                 body.remove("output_config");
             }
         }

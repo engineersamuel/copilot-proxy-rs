@@ -1959,7 +1959,14 @@ async fn messages_treat_catalog_budget_only_models_as_not_adaptive_capable() {
 
 #[tokio::test]
 async fn messages_use_catalog_adaptive_thinking_capability_for_unknown_models() {
-    for stream in [false, true] {
+    for (stream, thinking) in [false, true].into_iter().flat_map(|stream| {
+        [
+            serde_json::json!({"type": "enabled", "budget_tokens": 10000}),
+            serde_json::json!({"type": "adaptive"}),
+        ]
+        .into_iter()
+        .map(move |thinking| (stream, thinking))
+    }) {
         let fixture = support::AppFixture::with_mock_copilot().await;
         fixture
             .state
@@ -2008,7 +2015,7 @@ async fn messages_use_catalog_adaptive_thinking_capability_for_unknown_models() 
             "model": "claude-future-9",
             "stream": stream,
             "max_tokens": 128000,
-            "thinking": {"type": "enabled", "budget_tokens": 10000},
+            "thinking": thinking,
             "output_config": {"effort": "high"},
             "messages": [{"role": "user", "content": "hi"}]
         });
@@ -2033,6 +2040,11 @@ async fn messages_use_catalog_adaptive_thinking_capability_for_unknown_models() 
         assert_eq!(
             outbound["thinking"],
             serde_json::json!({"type": "adaptive"}),
+            "stream={stream}"
+        );
+        assert_eq!(
+            outbound["output_config"],
+            serde_json::json!({"effort": "high"}),
             "stream={stream}"
         );
         assert_eq!(outbound["max_tokens"], 128000, "stream={stream}");
