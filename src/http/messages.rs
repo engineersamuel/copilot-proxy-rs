@@ -96,6 +96,7 @@ async fn messages_inner(
     }
     let has_web_search = crate::translate::responses_formats::has_anthropic_web_search_tool(&body);
     let supported_efforts = state.models.supported_efforts(&copilot_model).await;
+    let thinking_support = state.models.thinking_support(&copilot_model).await;
     let summary = summarize_effective_request(ApiFamily::Messages, Some(&requested_model), &body);
     tracing::info!(
         api.family = api_family_name(summary.api_family),
@@ -144,6 +145,7 @@ async fn messages_inner(
                 &mut stream_body,
                 &copilot_model,
                 supported_efforts.as_ref(),
+                thinking_support.as_ref(),
             );
             let upstream = state
                 .copilot
@@ -214,7 +216,12 @@ async fn messages_inner(
         .await
     {
         body.insert("model".to_string(), Value::String(copilot_model.clone()));
-        adapt_thinking_for_copilot(&mut body, &copilot_model, supported_efforts.as_ref());
+        adapt_thinking_for_copilot(
+            &mut body,
+            &copilot_model,
+            supported_efforts.as_ref(),
+            thinking_support.as_ref(),
+        );
         state
             .copilot
             .post_messages(body, metadata.clone())

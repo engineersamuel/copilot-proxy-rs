@@ -3,7 +3,7 @@ use copilot_proxy_rs::copilot::request::{
     adapt_responses_tools_for_copilot, adapt_thinking_for_copilot, clamp_effort, compute_initiator,
     filter_anthropic_beta_header, strip_structured_output,
 };
-use copilot_proxy_rs::models::{EffortLevel, SupportedEfforts};
+use copilot_proxy_rs::models::{EffortLevel, SupportedEfforts, ThinkingSupport};
 
 #[test]
 fn initiator_is_agent_for_tool_continuations_and_user_for_plain_user_turns() {
@@ -171,7 +171,7 @@ fn claude_five_five_preserves_adaptive_thinking_and_requested_effort() {
             .as_object()
             .unwrap()
             .clone();
-            adapt_thinking_for_copilot(&mut body, model, Some(&efforts));
+            adapt_thinking_for_copilot(&mut body, model, Some(&efforts), None);
             assert_eq!(body["thinking"]["type"], "adaptive", "{model}");
             assert_eq!(body["output_config"]["effort"], effort, "{model}");
             if kind == "enabled" {
@@ -196,7 +196,7 @@ fn claude_five_five_drops_disabled_thinking() {
         .as_object()
         .unwrap()
         .clone();
-        adapt_thinking_for_copilot(&mut body, model, None);
+        adapt_thinking_for_copilot(&mut body, model, None, None);
         assert!(body.get("thinking").is_none(), "{model}");
         assert_eq!(body["max_tokens"], 64, "{model}");
     }
@@ -214,9 +214,124 @@ fn older_claude_models_keep_disabled_thinking() {
             .as_object()
             .unwrap()
             .clone();
-        adapt_thinking_for_copilot(&mut body, model, None);
+        adapt_thinking_for_copilot(&mut body, model, None, None);
         assert_eq!(body["thinking"]["type"], "disabled", "{model}");
     }
+}
+
+fn adapt(
+    body: serde_json::Value,
+    model: &str,
+    support: Option<ThinkingSupport>,
+) -> serde_json::Value {
+    let efforts = supported(&[
+        EffortLevel::Low,
+        EffortLevel::Medium,
+        EffortLevel::High,
+        EffortLevel::Max,
+    ]);
+    let mut body = body.as_object().unwrap().clone();
+    adapt_thinking_for_copilot(&mut body, model, Some(&efforts), support.as_ref());
+    serde_json::Value::Object(body)
+}
+
+const ADAPTIVE_ONLY: ThinkingSupport = ThinkingSupport {
+    adaptive: true,
+    budget: false,
+};
+const ADAPTIVE_AND_BUDGET: ThinkingSupport = ThinkingSupport {
+    adaptive: true,
+    budget: true,
+};
+const BUDGET_ONLY: ThinkingSupport = ThinkingSupport {
+    adaptive: false,
+    budget: true,
+};
+
+#[test]
+fn claude_haiku_five_five_uses_adaptive_thinking_and_keeps_effort() {
+    for model in ["claude-haiku-5.5", "claude-haiku-5-5"] {
+        for support in [None, Some(ADAPTIVE_ONLY)] {
+            for kind in ["enabled", "adaptive"] {
+                let body = adapt(
+                    serde_json::json!({
+                        "thinking": {"type": kind, "budget_tokens": 10000},
+                        "output_config": {"effort": "high"}
+                    }),
+                    model,
+                    support,
+                );
+                let expected = if kind == "enabled" {
+                    serde_json::json!({"type": "adaptive"})
+                } else {
+                    serde_json::json!({"type": "adaptive", "budget_tokens": 10000})
+                };
+                assert_eq!(body["thinking"], expected, "{model} {kind} {support:?}");
+                assert_eq!(body["output_config"]["effort"], "high", "{model} {kind}");
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_sonnet_five_five_thinking_adaptation_is_unchanged() {
+    let enabled = adapt(
+        serde_json::json!({
+            "thinking": {"type": "enabled", "budget_tokens": 10000},
+            "output_config": {"effort": "max"}
+        }),
+        "claude-sonnet-5.5",
+        Some(ADAPTIVE_ONLY),
+    );
+    assert_eq!(
+        enabled,
+        serde_json::json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}})
+    );
+    let adaptive = adapt(
+        serde_json::json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}),
+        "claude-sonnet-5.5",
+        None,
+    );
+    assert_eq!(
+        adaptive,
+        serde_json::json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}})
+    );
+}
+
+#[test]
+fn catalog_thinking_support_overrides_model_name_lists() {
+    let enabled = serde_json::json!({"thinking": {"type": "enabled", "budget_tokens": 4096}});
+    let adaptive = serde_json::json!({"thinking": {"type": "adaptive"}});
+    let model = "claude-future-9";
+
+    assert_eq!(
+        adapt(enabled.clone(), model, Some(ADAPTIVE_ONLY))["thinking"],
+        serde_json::json!({"type": "adaptive"})
+    );
+    assert_eq!(
+        adapt(adaptive.clone(), model, Some(ADAPTIVE_ONLY))["thinking"],
+        serde_json::json!({"type": "adaptive"})
+    );
+    assert_eq!(
+        adapt(enabled.clone(), model, Some(ADAPTIVE_AND_BUDGET))["thinking"],
+        enabled["thinking"]
+    );
+    assert_eq!(
+        adapt(adaptive.clone(), model, Some(ADAPTIVE_AND_BUDGET))["thinking"],
+        adaptive["thinking"]
+    );
+    assert_eq!(
+        adapt(adaptive.clone(), model, Some(BUDGET_ONLY))["thinking"],
+        serde_json::json!({"type": "enabled", "budget_tokens": 10000})
+    );
+    assert_eq!(
+        adapt(enabled.clone(), model, None)["thinking"],
+        enabled["thinking"]
+    );
+    assert_eq!(
+        adapt(adaptive, model, None)["thinking"],
+        serde_json::json!({"type": "enabled", "budget_tokens": 10000})
+    );
 }
 
 #[test]
@@ -302,7 +417,7 @@ fn anthropic_thinking_adapts_effort_and_mode_for_copilot() {
     .unwrap()
     .clone();
 
-    adapt_thinking_for_copilot(&mut adaptive_only, "claude-opus-4.8", Some(&efforts));
+    adapt_thinking_for_copilot(&mut adaptive_only, "claude-opus-4.8", Some(&efforts), None);
 
     assert_eq!(adaptive_only["thinking"]["type"], "adaptive");
     assert!(adaptive_only.get("output_config").is_none());
@@ -314,7 +429,7 @@ fn anthropic_thinking_adapts_effort_and_mode_for_copilot() {
     .as_object()
     .unwrap()
     .clone();
-    adapt_thinking_for_copilot(&mut non_adaptive, "claude-3.5-sonnet", None);
+    adapt_thinking_for_copilot(&mut non_adaptive, "claude-3.5-sonnet", None, None);
     assert_eq!(non_adaptive["thinking"]["type"], "enabled");
     assert_eq!(non_adaptive["thinking"]["budget_tokens"], 10000);
     assert!(non_adaptive.get("output_config").is_none());
@@ -330,7 +445,7 @@ fn anthropic_thinking_adapts_effort_and_mode_for_copilot() {
     .as_object()
     .unwrap()
     .clone();
-    adapt_thinking_for_copilot(&mut sonnet_five, "claude-sonnet-5", Some(&efforts));
+    adapt_thinking_for_copilot(&mut sonnet_five, "claude-sonnet-5", Some(&efforts), None);
     assert_eq!(sonnet_five["thinking"]["type"], "adaptive");
     assert_eq!(sonnet_five["thinking"]["display"], "omitted");
     assert_eq!(sonnet_five["output_config"]["effort"], "medium");
@@ -346,7 +461,7 @@ fn claude_opus_five_enabled_thinking_becomes_adaptive() {
     .unwrap()
     .clone();
 
-    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None);
+    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None, None);
 
     assert_eq!(body["thinking"], serde_json::json!({"type": "adaptive"}));
 }
@@ -360,7 +475,7 @@ fn claude_opus_five_adaptive_thinking_remains_adaptive() {
     .unwrap()
     .clone();
 
-    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None);
+    adapt_thinking_for_copilot(&mut body, "claude-opus-5", None, None);
 
     assert_eq!(body["thinking"], serde_json::json!({"type": "adaptive"}));
 }

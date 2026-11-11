@@ -1900,6 +1900,157 @@ async fn messages_non_adaptive_models_convert_adaptive_thinking_to_enabled_and_s
     assert!(outbound.get("output_config").is_none());
 }
 
+#[tokio::test]
+async fn messages_treat_catalog_budget_only_models_as_not_adaptive_capable() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": "claude-future-9",
+            "owned_by": "anthropic",
+            "supported_endpoints": ["/v1/messages"],
+            "capabilities": {"supports": {"max_thinking_budget": 32000}}
+        })])
+        .await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/messages",
+            200,
+            serde_json::json!({
+                "id": "msg_budget",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-future-9",
+                "content": [{"type":"text","text":"ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        )
+        .await;
+
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-future-9","max_tokens":64,"thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(
+        outbound["thinking"],
+        serde_json::json!({"type": "enabled", "budget_tokens": 10000})
+    );
+}
+
+#[tokio::test]
+async fn messages_use_catalog_adaptive_thinking_capability_for_unknown_models() {
+    for (stream, thinking) in [false, true].into_iter().flat_map(|stream| {
+        [
+            serde_json::json!({"type": "enabled", "budget_tokens": 10000}),
+            serde_json::json!({"type": "adaptive"}),
+        ]
+        .into_iter()
+        .map(move |thinking| (stream, thinking))
+    }) {
+        let fixture = support::AppFixture::with_mock_copilot().await;
+        fixture
+            .state
+            .models
+            .set_copilot_models(vec![serde_json::json!({
+                "id": "claude-future-9",
+                "owned_by": "anthropic",
+                "supported_endpoints": ["/v1/messages"],
+                "capabilities": {"supports": {
+                    "adaptive_thinking": true,
+                    "reasoning_effort": ["low", "medium", "high", "max"]
+                }}
+            })])
+            .await;
+        if stream {
+            fixture
+                .mock
+                .respond_sse(
+                    "POST",
+                    "/v1/messages",
+                    200,
+                    vec!["event: done\ndata: [DONE]"],
+                )
+                .await;
+        } else {
+            fixture
+                .mock
+                .respond_json(
+                    "POST",
+                    "/v1/messages",
+                    200,
+                    serde_json::json!({
+                        "id": "msg_adaptive",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-future-9",
+                        "content": [{"type":"text","text":"ok"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }),
+                )
+                .await;
+        }
+
+        let request = serde_json::json!({
+            "model": "claude-future-9",
+            "stream": stream,
+            "max_tokens": 128000,
+            "thinking": thinking,
+            "output_config": {"effort": "high"},
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/messages")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "stream={stream}");
+        let outbound = fixture
+            .mock
+            .last_request_body_json("POST", "/v1/messages")
+            .await
+            .unwrap();
+        assert_eq!(
+            outbound["thinking"],
+            serde_json::json!({"type": "adaptive"}),
+            "stream={stream}"
+        );
+        assert_eq!(
+            outbound["output_config"],
+            serde_json::json!({"effort": "high"}),
+            "stream={stream}"
+        );
+        assert_eq!(outbound["max_tokens"], 128000, "stream={stream}");
+    }
+}
+
 // ─── Decisions and image models ──────────────────────────────────────────────
 
 fn sky_messages_request(model: &str, stream: bool) -> Value {
