@@ -1670,3 +1670,303 @@ async fn chat_existing_model_unchanged_with_nonchat_catalog() {
     assert_eq!(upstream["temperature"], 0.2);
     assert!(upstream.get("questions").is_none());
 }
+
+const RESPONSES_USAGE_JSON: &str = include_str!("fixtures/chat_usage_responses.json");
+const RESPONSES_USAGE_SSE: &str = include_str!("fixtures/chat_usage_responses.sse");
+
+fn fixture_json(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
+fn fixture_events(text: &'static str) -> Vec<&'static str> {
+    text.split("\n\n")
+        .filter(|event| !event.trim().is_empty())
+        .collect()
+}
+
+async fn usage_fixture(model: &str, owned_by: &str, endpoint: &str) -> support::AppFixture {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .state
+        .models
+        .set_copilot_models(vec![serde_json::json!({
+            "id": model,
+            "owned_by": owned_by,
+            "supported_endpoints": [endpoint]
+        })])
+        .await;
+    fixture
+}
+
+async fn post_usage_chat(fixture: &support::AppFixture, model: &str, stream: bool) -> String {
+    let mut body = serde_json::json!({
+        "model": model,
+        "stream": stream,
+        "messages": [{"role": "user", "content": "Say hi"}]
+    });
+    if stream {
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    }
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn final_usage_chunk(text: &str) -> Value {
+    chat_sse_chunks(text)
+        .into_iter()
+        .rfind(|chunk| chunk.get("usage").is_some())
+        .unwrap_or_else(|| panic!("no usage chunk: {text}"))
+}
+
+fn assert_translated_usage(body: &Value) {
+    let upstream = fixture_json(RESPONSES_USAGE_JSON);
+    assert_eq!(body["copilot_usage"], upstream["copilot_usage"]);
+    assert_eq!(body["usage"]["prompt_tokens"], 3313);
+    assert_eq!(body["usage"]["completion_tokens"], 5);
+    assert_eq!(body["usage"]["total_tokens"], 3318);
+    assert_eq!(
+        body["usage"]["prompt_tokens_details"],
+        serde_json::json!({"cached_tokens": 3310, "cache_write_tokens": 0})
+    );
+    assert_eq!(
+        body["usage"]["completion_tokens_details"],
+        serde_json::json!({"reasoning_tokens": 0})
+    );
+}
+
+fn assert_no_usage_extras(body: &Value) {
+    assert!(body.get("copilot_usage").is_none(), "{body}");
+    assert!(
+        body["usage"].get("prompt_tokens_details").is_none(),
+        "{body}"
+    );
+    assert!(
+        body["usage"].get("completion_tokens_details").is_none(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_translated_response_carries_copilot_usage_and_details() {
+    let fixture = usage_fixture("gpt-6.1-sol", "openai", "/responses").await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            fixture_json(RESPONSES_USAGE_JSON),
+        )
+        .await;
+
+    let body: Value =
+        serde_json::from_str(&post_usage_chat(&fixture, "gpt-6.1-sol", false).await).unwrap();
+
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    assert_eq!(body["choices"][0]["message"]["content"], "Hi");
+    assert_translated_usage(&body);
+}
+
+#[tokio::test]
+async fn chat_completions_translated_stream_final_chunk_carries_copilot_usage_and_details() {
+    let fixture = usage_fixture("gpt-6.1-sol", "openai", "/responses").await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            fixture_events(RESPONSES_USAGE_SSE),
+        )
+        .await;
+
+    let text = post_usage_chat(&fixture, "gpt-6.1-sol", true).await;
+
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 1);
+    assert_translated_usage(&final_usage_chunk(&text));
+}
+
+#[tokio::test]
+async fn chat_completions_translated_stream_reads_copilot_usage_inside_response() {
+    let fixture = usage_fixture("gpt-6.1-sol", "openai", "/responses").await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3},"copilot_usage":{"total_nano_aiu":42}}}"#,
+            ],
+        )
+        .await;
+
+    let chunk = final_usage_chunk(&post_usage_chat(&fixture, "gpt-6.1-sol", true).await);
+
+    assert_eq!(
+        chunk["copilot_usage"],
+        serde_json::json!({"total_nano_aiu": 42})
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_translated_response_omits_usage_fields_upstream_did_not_report() {
+    let fixture = usage_fixture("gpt-6.1-sol", "openai", "/responses").await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/responses",
+            200,
+            serde_json::json!({
+                "id": "resp_fixture",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hi"}]}],
+                "usage": {"input_tokens": 9, "output_tokens": 1, "total_tokens": 10, "input_tokens_details": {"cached_tokens": 7}}
+            }),
+        )
+        .await;
+
+    let body: Value =
+        serde_json::from_str(&post_usage_chat(&fixture, "gpt-6.1-sol", false).await).unwrap();
+
+    assert_eq!(body["usage"]["prompt_tokens"], 9);
+    assert_eq!(
+        body["usage"]["prompt_tokens_details"],
+        serde_json::json!({"cached_tokens": 7})
+    );
+    assert!(body["usage"].get("completion_tokens_details").is_none());
+    assert!(body.get("copilot_usage").is_none());
+}
+
+#[tokio::test]
+async fn chat_completions_translated_stream_omits_usage_fields_upstream_did_not_report() {
+    let fixture = usage_fixture("gpt-6.1-sol", "openai", "/responses").await;
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/responses",
+            200,
+            vec![
+                r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}"#,
+            ],
+        )
+        .await;
+
+    let chunk = final_usage_chunk(&post_usage_chat(&fixture, "gpt-6.1-sol", true).await);
+
+    assert_eq!(chunk["usage"]["total_tokens"], 3);
+    assert_no_usage_extras(&chunk);
+}
+
+async fn assert_raw_usage_passthrough(
+    model: &str,
+    owned_by: &str,
+    json_fixture: &str,
+    sse_fixture: &'static str,
+) {
+    let fixture = usage_fixture(model, owned_by, "/chat/completions").await;
+    let upstream = fixture_json(json_fixture);
+    fixture
+        .mock
+        .respond_json("POST", "/chat/completions", 200, upstream.clone())
+        .await;
+    let body: Value = serde_json::from_str(&post_usage_chat(&fixture, model, false).await).unwrap();
+    assert_eq!(body["usage"], upstream["usage"], "{model}");
+    assert_eq!(body["copilot_usage"], upstream["copilot_usage"], "{model}");
+
+    fixture
+        .mock
+        .respond_sse(
+            "POST",
+            "/chat/completions",
+            200,
+            fixture_events(sse_fixture),
+        )
+        .await;
+    let text = post_usage_chat(&fixture, model, true).await;
+    let upstream_final = final_usage_chunk(sse_fixture);
+    let chunk = final_usage_chunk(&text);
+    assert_eq!(chunk["usage"], upstream_final["usage"], "{model}");
+    assert_eq!(
+        chunk["copilot_usage"], upstream_final["copilot_usage"],
+        "{model}"
+    );
+    assert_eq!(fixture.mock.hits("POST", "/responses").await, 0);
+}
+
+#[tokio::test]
+async fn chat_completions_raw_gpt_passes_through_copilot_usage_and_details() {
+    let upstream = fixture_json(include_str!("fixtures/chat_usage_gpt_derived.json"));
+    assert!(upstream["usage"]["completion_tokens_details"].is_object());
+    assert_raw_usage_passthrough(
+        "gpt-6.1-sol",
+        "openai",
+        include_str!("fixtures/chat_usage_gpt_derived.json"),
+        include_str!("fixtures/chat_usage_gpt_derived.sse"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chat_completions_raw_claude_passes_through_copilot_usage_and_details() {
+    assert_raw_usage_passthrough(
+        "claude-haiku-5.5",
+        "anthropic",
+        include_str!("fixtures/chat_usage_claude.json"),
+        include_str!("fixtures/chat_usage_claude.sse"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chat_completions_raw_gemini_passes_through_copilot_usage_and_details() {
+    assert_raw_usage_passthrough(
+        "gemini-3.8-flash",
+        "google",
+        include_str!("fixtures/chat_usage_gemini.json"),
+        include_str!("fixtures/chat_usage_gemini.sse"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chat_completions_raw_omits_usage_fields_upstream_did_not_report() {
+    let fixture = usage_fixture("claude-haiku-5.5", "anthropic", "/chat/completions").await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/chat/completions",
+            200,
+            serde_json::json!({
+                "id": "chatcmpl-fixture",
+                "object": "chat.completion",
+                "model": "claude-haiku-5.5",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Hi"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+            }),
+        )
+        .await;
+
+    let body: Value =
+        serde_json::from_str(&post_usage_chat(&fixture, "claude-haiku-5.5", false).await).unwrap();
+
+    assert_no_usage_extras(&body);
+}
