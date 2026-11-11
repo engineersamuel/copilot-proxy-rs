@@ -307,6 +307,15 @@ impl EffortLevel {
     }
 }
 
+/// Thinking modes a Copilot model advertises in its catalog capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThinkingSupport {
+    /// `capabilities.supports.adaptive_thinking` is true.
+    pub adaptive: bool,
+    /// `capabilities.supports.max_thinking_budget` is present.
+    pub budget: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupportedEfforts(Vec<EffortLevel>);
 
@@ -900,6 +909,26 @@ impl ModelRegistry {
             .and_then(dynamic_supported_efforts);
         drop(inner);
         dynamic.or_else(|| static_supported_efforts(model))
+    }
+
+    /// Thinking support from the cached catalog; `None` when the model is
+    /// absent or advertises neither adaptive thinking nor a thinking budget.
+    pub async fn thinking_support(&self, model: &str) -> Option<ThinkingSupport> {
+        let model = canonical_model_id(model);
+        let inner = self.inner.read().await;
+        let supports = inner
+            .models
+            .iter()
+            .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(model))?
+            .pointer("/capabilities/supports")?;
+        let adaptive = supports
+            .get("adaptive_thinking")
+            .and_then(serde_json::Value::as_bool);
+        let budget = supports.get("max_thinking_budget").is_some();
+        (adaptive.is_some() || budget).then(|| ThinkingSupport {
+            adaptive: adaptive.unwrap_or(false),
+            budget,
+        })
     }
 
     /// Kind of a Copilot model from cached metadata; `None` for local targets

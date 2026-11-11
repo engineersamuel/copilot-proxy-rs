@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
-use crate::models::{EffortLevel, SupportedEfforts};
+use crate::models::{EffortLevel, SupportedEfforts, ThinkingSupport};
 
 pub const COPILOT_REQUEST_API_VERSION: &str = "2026-06-01";
 pub const ENCRYPTED_FUNCTION_OUTPUT_DECRYPTION_ERROR: &str =
@@ -408,6 +408,7 @@ pub fn adapt_thinking_for_copilot(
     body: &mut Map<String, Value>,
     model: &str,
     supported_efforts: Option<&SupportedEfforts>,
+    thinking_support: Option<&ThinkingSupport>,
 ) {
     body.remove("context_management");
     strip_structured_output(body);
@@ -422,14 +423,14 @@ pub fn adapt_thinking_for_copilot(
         Some("disabled") if is_claude_five_five_model(model) => {
             body.remove("thinking");
         }
-        Some("enabled") if is_adaptive_only_model(model) => {
+        Some("enabled") if is_adaptive_only(model, thinking_support) => {
             thinking.clear();
             thinking.insert("type".to_string(), Value::String("adaptive".to_string()));
             if !is_claude_five_five_model(model) {
                 body.remove("output_config");
             }
         }
-        Some("adaptive") if !is_adaptive_capable_model(model) => {
+        Some("adaptive") if !is_adaptive_capable(model, thinking_support) => {
             let budget_tokens = thinking
                 .get("budget_tokens")
                 .and_then(Value::as_u64)
@@ -480,7 +481,26 @@ fn adapt_output_config_effort(
 fn is_claude_five_five_model(model: &str) -> bool {
     matches!(
         model,
-        "claude-opus-5.5" | "claude-opus-5-5" | "claude-sonnet-5.5" | "claude-sonnet-5-5"
+        "claude-opus-5.5"
+            | "claude-opus-5-5"
+            | "claude-sonnet-5.5"
+            | "claude-sonnet-5-5"
+            | "claude-haiku-5.5"
+            | "claude-haiku-5-5"
+    )
+}
+
+fn is_adaptive_only(model: &str, support: Option<&ThinkingSupport>) -> bool {
+    support.map_or_else(
+        || is_adaptive_only_model(model),
+        |support| support.adaptive && !support.budget,
+    )
+}
+
+fn is_adaptive_capable(model: &str, support: Option<&ThinkingSupport>) -> bool {
+    support.map_or_else(
+        || is_adaptive_capable_model(model),
+        |support| support.adaptive,
     )
 }
 
@@ -496,6 +516,8 @@ fn is_adaptive_only_model(model: &str) -> bool {
             | "claude-opus-5-5"
             | "claude-sonnet-5.5"
             | "claude-sonnet-5-5"
+            | "claude-haiku-5.5"
+            | "claude-haiku-5-5"
     )
 }
 
