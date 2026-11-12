@@ -33,6 +33,28 @@ pub fn normalize_openai_response(response: &mut Value, streaming: bool) {
             }
         }
     }
+    if let Some(usage) = object.get_mut("usage").and_then(Value::as_object_mut) {
+        mirror_reasoning_tokens(usage);
+    }
+}
+
+// Gemini reports usage.reasoning_tokens instead of completion_tokens_details.reasoning_tokens.
+fn mirror_reasoning_tokens(usage: &mut serde_json::Map<String, Value>) {
+    let Some(reasoning) = usage
+        .get("reasoning_tokens")
+        .filter(|v| v.is_number())
+        .cloned()
+    else {
+        return;
+    };
+    let Some(details) = usage
+        .entry("completion_tokens_details")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+    else {
+        return;
+    };
+    details.entry("reasoning_tokens").or_insert(reasoning);
 }
 
 pub fn normalize_openai_sse_line(line: &str) -> String {

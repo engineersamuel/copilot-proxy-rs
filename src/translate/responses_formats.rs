@@ -168,7 +168,7 @@ pub fn responses_to_openai_chat_response(response: &Value, public_model: &str) -
     if !tool_calls.is_empty() {
         message.insert("tool_calls".to_string(), Value::Array(tool_calls));
     }
-    json!({
+    let mut chat = json!({
         "id": response.get("id").cloned().unwrap_or_else(|| json!("chatcmpl-responses")),
         "object": "chat.completion",
         "created": response
@@ -178,7 +178,9 @@ pub fn responses_to_openai_chat_response(response: &Value, public_model: &str) -
         "model": public_model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": openai_chat_usage(response.get("usage"))
-    })
+    });
+    insert_copilot_usage(&mut chat, copilot_usage_of(Some(response), None));
+    chat
 }
 
 fn openai_chat_tool_to_responses_tool(value: &Value) -> Option<Value> {
@@ -233,11 +235,56 @@ fn openai_chat_usage(usage: Option<&Value>) -> Value {
         .and_then(|value| value.get("total_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(input_tokens + output_tokens);
-    json!({
+    let mut chat_usage = json!({
         "prompt_tokens": input_tokens,
         "completion_tokens": output_tokens,
         "total_tokens": total_tokens
-    })
+    });
+    let details = [
+        (
+            "prompt_tokens_details",
+            "input_tokens_details",
+            &["cached_tokens", "cache_write_tokens"][..],
+        ),
+        (
+            "completion_tokens_details",
+            "output_tokens_details",
+            &["reasoning_tokens"][..],
+        ),
+    ];
+    for (chat_key, responses_key, keys) in details {
+        let source = usage.and_then(|value| value.get(responses_key));
+        if let Some(picked) = numeric_fields(source, keys) {
+            chat_usage[chat_key] = picked;
+        }
+    }
+    chat_usage
+}
+
+/// Copies only the listed numeric fields upstream reported; `None` when none are present.
+fn numeric_fields(source: Option<&Value>, keys: &[&str]) -> Option<Value> {
+    let picked = keys
+        .iter()
+        .filter_map(|key| {
+            let value = source?.get(*key).filter(|value| value.is_number())?;
+            Some((key.to_string(), value.clone()))
+        })
+        .collect::<Map<_, _>>();
+    (!picked.is_empty()).then_some(Value::Object(picked))
+}
+
+/// Upstream puts `copilot_usage` on the response object, or on the `response.completed` event when streaming.
+fn copilot_usage_of(response: Option<&Value>, event: Option<&Value>) -> Option<Value> {
+    response
+        .and_then(|value| value.get("copilot_usage"))
+        .or_else(|| event.and_then(|value| value.get("copilot_usage")))
+        .cloned()
+}
+
+fn insert_copilot_usage(chat: &mut Value, copilot_usage: Option<Value>) {
+    if let (Some(object), Some(copilot_usage)) = (chat.as_object_mut(), copilot_usage) {
+        object.insert("copilot_usage".to_string(), copilot_usage);
+    }
 }
 
 fn unix_timestamp() -> u64 {
@@ -929,7 +976,7 @@ impl ResponsesToChatStream {
                 events.push(chunk);
                 Ok(events)
             }
-            Some("response.completed") => Ok(self.finish(value.get("response"))),
+            Some("response.completed") => Ok(self.finish(Some(&value))),
             _ => Ok(Vec::new()),
         }
     }
@@ -948,7 +995,8 @@ impl ResponsesToChatStream {
         })))
     }
 
-    fn finish(&mut self, response: Option<&Value>) -> Vec<String> {
+    fn finish(&mut self, completed_event: Option<&Value>) -> Vec<String> {
+        let response = completed_event.and_then(|event| event.get("response"));
         if self.completed {
             return Vec::new();
         }
@@ -970,14 +1018,19 @@ impl ResponsesToChatStream {
         let usage = response
             .map(|value| openai_chat_usage(value.get("usage")))
             .unwrap_or_else(|| openai_chat_usage(None));
-        events.push(self.chunk(json!({
+        let mut final_chunk = json!({
             "choices": [{
                 "index": 0,
                 "delta": {},
                 "finish_reason": finish_reason
             }],
             "usage": usage
-        })));
+        });
+        insert_copilot_usage(
+            &mut final_chunk,
+            copilot_usage_of(response, completed_event),
+        );
+        events.push(self.chunk(final_chunk));
         events.push("data: [DONE]".to_string());
         events
     }
