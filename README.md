@@ -393,6 +393,24 @@ curl -fsS http://127.0.0.1:8080/v1/models \
   -d '{"input":"Refactor a large Rust codebase and fix the failing tests"}'
 ```
 
+**Model type.** The optional `type` field limits the candidates to models whose
+`GET /v1/models` entry has that `type`. Allowed values: `chat` (the default when
+`type` is absent), `image` and `decisions`. Any other value, including a
+non-string, returns 400 `type must be one of: chat, image, decisions`. A valid
+type with no listed models returns 503 `no models available to route between`.
+
+```sh
+# chat (same as omitting type)
+curl -fsS http://127.0.0.1:8080/v1/models -H 'Content-Type: application/json' \
+  -d '{"input":"Refactor a large Rust codebase","type":"chat"}'
+# image
+curl -fsS http://127.0.0.1:8080/v1/models -H 'Content-Type: application/json' \
+  -d '{"input":"Draw a watercolor logo of a fox","type":"image"}'
+# decisions
+curl -fsS http://127.0.0.1:8080/v1/models -H 'Content-Type: application/json' \
+  -d '{"input":"Classify whether this ticket is a bug","type":"decisions"}'
+```
+
 `curl -d` sends a POST by default. Add the same auth header you use for
 `GET /v1/models` if inbound auth is on. To build the body from a shell variable
 safely, let `jq` do the quoting:
@@ -410,7 +428,8 @@ jq -nc --arg i "$TASK" '{input:$i}' |
   "confidence": 0.99,
   "ranking": [{"id": "claude-opus-5.5", "probability": 0.99}],
   "jev_model": "jev-preview",
-  "routed_by": "ui-rule"
+  "routed_by": "ui-rule",
+  "type": "chat"
 }
 ```
 
@@ -418,10 +437,13 @@ jq -nc --arg i "$TASK" '{input:$i}' |
 - `confidence` is the probability of the recommended model (0 to 1).
 - `ranking` lists the top 5 models.
 - `routed_by` is `ui-rule` when the UI rule chose the model, otherwise `jev`.
-- UI, frontend, CSS, layout, design and visual tasks always go to the latest
-  listed Opus model. Pick just the id with `jq -r .recommended.id`.
+- `type` is the model type the router chose between (`chat` by default).
+- For `chat` only, UI, frontend, CSS, layout, design and visual tasks always go
+  to the latest listed Opus model. `image` and `decisions` always use the JEV
+  pick. Pick just the id with `jq -r .recommended.id`.
 
-**Errors.** 400 for empty, oversize or invalid input. 503 for a missing key. 502
+**Errors.** 400 for empty, oversize or invalid input or an unknown `type`. 503
+for a missing key or no listed models of the requested type. 502
 for any upstream failure, timeout (20 s) or an unlisted choice. Inputs, keys and
 upstream bodies are never logged.
 
