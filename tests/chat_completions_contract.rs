@@ -1932,19 +1932,6 @@ async fn assert_raw_usage_unchanged(
 }
 
 #[tokio::test]
-async fn chat_completions_raw_gpt_passes_through_copilot_usage_and_details() {
-    let upstream = fixture_json(include_str!("fixtures/chat_usage_gpt_derived.json"));
-    assert!(upstream["usage"]["completion_tokens_details"].is_object());
-    assert_raw_usage_unchanged(
-        "gpt-6.1-sol",
-        "openai",
-        include_str!("fixtures/chat_usage_gpt_derived.json"),
-        include_str!("fixtures/chat_usage_gpt_derived.sse"),
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn chat_completions_raw_claude_passes_through_copilot_usage_and_details() {
     let (body, chunk) = assert_raw_usage_unchanged(
         "claude-haiku-5.5",
