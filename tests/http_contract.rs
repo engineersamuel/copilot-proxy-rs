@@ -1688,6 +1688,160 @@ async fn model_router_error_paths() {
     }
 }
 
+/// Router state listing chat, decisions and image models; returns GET /v1/models id -> type.
+async fn typed_router_state(jev_url: &str) -> (AppState, BTreeMap<String, String>) {
+    let state = router_state("k", jev_url).await;
+    let typed = |id: &str, model_type: &str| serde_json::json!({"id": id, "owned_by": "openai", "capabilities": {"type": model_type}});
+    state
+        .models
+        .set_copilot_models(vec![
+            copilot_model("claude-opus-5.5"),
+            copilot_model("claude-sonnet-5.5"),
+            typed("gpt-6-luna-decisions", "decisions"),
+            typed("microsoft-decision-1", "decisions"),
+            typed("gpt-image-2.5-flare", "image"),
+        ])
+        .await;
+    let response = router(state.clone())
+        .oneshot(Request::get("/v1/models").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let list: Value = serde_json::from_slice(&bytes).unwrap();
+    let types = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["type"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    (state, types)
+}
+
+fn criteria_ids(sent: &Value) -> Vec<String> {
+    sent["questions"]["pick"]["criteria"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn ui_reply(choice: &str) -> Value {
+    serde_json::json!({"answers": {
+        "pick": {"choice": choice, "probabilities": {choice: 0.9}},
+        "is_ui_or_visual": {"choice": "true", "probabilities": {"true": 0.95}, "confidence": 0.95}
+    }})
+}
+
+#[tokio::test]
+async fn model_router_default_type_is_chat() {
+    let (url, seen) = jev_mock(200, ui_reply("claude-sonnet-5.5")).await;
+    let (state, types) = typed_router_state(&url).await;
+    let (status, body) = post_models(state, r#"{"input":"refactor a parser"}"#).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["type"], "chat");
+    let sent = seen.lock().unwrap().clone().unwrap();
+    let ids = criteria_ids(&sent);
+    assert!(ids.contains(&"claude-sonnet-5.5".to_string()));
+    assert!(ids.iter().all(|id| types[id] == "chat"), "{ids:?}");
+    assert!(sent["questions"]["is_ui_or_visual"].is_object());
+    assert_eq!(types[body["recommended"]["id"].as_str().unwrap()], "chat");
+    for r in body["ranking"].as_array().unwrap() {
+        assert_eq!(types[r["id"].as_str().unwrap()], "chat");
+    }
+    // UI rule still applies to chat.
+    assert_eq!(body["routed_by"], "ui-rule");
+    assert_eq!(body["recommended"]["id"], "claude-opus-5.5");
+}
+
+#[tokio::test]
+async fn model_router_type_image_and_decisions_filter_candidates() {
+    for (model_type, choice, expected) in [
+        ("image", "gpt-image-2.5-flare", vec!["gpt-image-2.5-flare"]),
+        (
+            "decisions",
+            "microsoft-decision-1",
+            vec!["gpt-6-luna-decisions", "microsoft-decision-1"],
+        ),
+    ] {
+        let (url, seen) = jev_mock(200, ui_reply(choice)).await;
+        let (state, types) = typed_router_state(&url).await;
+        let request = format!(r#"{{"input":"draw a logo","type":"{model_type}"}}"#);
+        let (status, body) = post_models(state, &request).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["type"], model_type);
+        let sent = seen.lock().unwrap().clone().unwrap();
+        let mut ids = criteria_ids(&sent);
+        ids.sort();
+        assert_eq!(ids, expected, "{model_type}");
+        assert!(sent["questions"].get("is_ui_or_visual").is_none());
+        assert!(
+            !sent["questions"]["pick"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("Opus")
+        );
+        // A confident UI answer does not override non-chat picks.
+        assert_eq!(body["routed_by"], "jev");
+        assert_eq!(body["recommended"]["id"], choice);
+        for r in body["ranking"].as_array().unwrap() {
+            assert_eq!(types[r["id"].as_str().unwrap()], model_type);
+        }
+    }
+}
+
+#[tokio::test]
+async fn model_router_unknown_type_is_400() {
+    for bad in [r#""video""#, r#""""#, r#""Chat""#, "1", "null"] {
+        let (url, seen) = jev_mock(200, ui_reply("claude-opus-5.5")).await;
+        let (state, _) = typed_router_state(&url).await;
+        let request = format!(r#"{{"input":"x","type":{bad}}}"#);
+        let (status, body) = post_models(state, &request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(body["error"]["type"], "invalid_request_error", "{bad}");
+        assert!(
+            body.to_string()
+                .contains("type must be one of: chat, image, decisions"),
+            "{bad}: {body}"
+        );
+        assert!(seen.lock().unwrap().is_none(), "{bad}");
+    }
+    // Validated before the key check.
+    let (url, _) = jev_mock(200, ui_reply("claude-opus-5.5")).await;
+    let (status, _) = post_models(
+        router_state("", &url).await,
+        r#"{"input":"x","type":"video"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn model_router_no_models_of_type_is_503() {
+    let (url, seen) = jev_mock(200, ui_reply("claude-opus-5.5")).await;
+    let state = router_state("k", &url).await;
+    let (status, body) = post_models(state, r#"{"input":"x","type":"image"}"#).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        body.to_string()
+            .contains("no models available to route between")
+    );
+    assert!(seen.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn model_router_rejects_choice_of_other_type() {
+    let (url, _) = jev_mock(200, ui_reply("claude-opus-5.5")).await;
+    let (state, _) = typed_router_state(&url).await;
+    let (status, _) = post_models(state, r#"{"input":"x","type":"image"}"#).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
 fn pick_reply(choice: &str, probs: Value) -> Value {
     serde_json::json!({"answers": {"pick": {"choice": choice, "probabilities": probs}}})
 }
