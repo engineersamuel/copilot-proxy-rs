@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/v1/chat/completions` for Copilot chat models (e.g. Gemini) that report
+  `usage.reasoning_tokens` also sets
+  `usage.completion_tokens_details.reasoning_tokens` when upstream did not;
+  the original key is kept and no value is invented.
 - Configuration moves to `config.toml` (same keys and validation); see
   `config.example.toml`. A legacy `config.json` is still loaded when
   `config.toml` is absent, with a `WARN` (visible at `RUST_LOG=warn`); if both
