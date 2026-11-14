@@ -1200,6 +1200,78 @@ async fn messages_moves_message_level_system_blocks_to_top_level() {
 }
 
 #[tokio::test]
+async fn messages_moves_tool_addition_system_blocks_to_tools() {
+    let fixture = support::AppFixture::with_mock_copilot().await;
+    fixture
+        .mock
+        .respond_json(
+            "POST",
+            "/v1/messages",
+            200,
+            serde_json::json!({
+                "id": "msg_tool_addition",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-5.5",
+                "content": [{"type": "text", "text": "OK"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        )
+        .await;
+
+    let schema = serde_json::json!({"type": "object", "properties": {}});
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "claude-opus-5.5",
+                        "max_tokens": 16,
+                        "tools": [{"name": "Bash", "description": "run", "input_schema": schema}],
+                        "messages": [
+                            {"role": "user", "content": "hi"},
+                            {"role": "system", "content": [
+                                {"type": "text", "text": "Tools became available."},
+                                {"type": "tool_addition", "tool": {"type": "tool_reference", "name": "Artifact"}},
+                                {"type": "tool_addition", "tool": {"type": "tool_definition", "definition":
+                                    {"name": "Artifact", "description": "publish", "input_schema": schema}}},
+                                {"type": "tool_addition", "tool": {"type": "tool_definition", "definition":
+                                    {"name": "Bash", "description": "dup", "input_schema": schema}}}
+                            ]},
+                            {"role": "user", "content": "continue"}
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let outbound = fixture
+        .mock
+        .last_request_body_json("POST", "/v1/messages")
+        .await
+        .unwrap();
+    assert_eq!(outbound["system"].as_array().unwrap().len(), 1);
+    assert_eq!(outbound["system"][0]["text"], "Tools became available.");
+    let names: Vec<&str> = outbound["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Bash", "Artifact"]);
+    assert_eq!(outbound["tools"][0]["description"], "run");
+    assert_eq!(outbound["messages"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn messages_logs_rejected_system_blocks_without_sending_upstream() {
     use support::log_capture::{field, with_event_capture};
 
