@@ -286,8 +286,9 @@ fn normalize_message_level_system(
     }
 
     let mut system_blocks = Vec::new();
+    let mut added_tools = Vec::new();
     if let Some(system) = body.remove("system") {
-        append_system_blocks(&mut system_blocks, system)?;
+        append_system_blocks(&mut system_blocks, &mut added_tools, system)?;
     }
 
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
@@ -307,17 +308,43 @@ fn normalize_message_level_system(
                     "system message content is required",
                 )
             })?;
-            append_system_blocks(&mut system_blocks, content)?;
+            append_system_blocks(&mut system_blocks, &mut added_tools, content)?;
         } else {
             messages.push(message);
         }
     }
     body.insert("system".to_string(), Value::Array(system_blocks));
+    append_added_tools(body, added_tools);
     Ok(())
+}
+
+/// Moves tool definitions from Claude Code `tool_addition` system blocks into
+/// top-level `tools`, skipping names that are already defined.
+fn append_added_tools(body: &mut Map<String, Value>, added_tools: Vec<Value>) {
+    if added_tools.is_empty() {
+        return;
+    }
+    let tools = body
+        .entry("tools")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(tools) = tools.as_array_mut() else {
+        return;
+    };
+    for tool in added_tools {
+        let name = tool.get("name").and_then(Value::as_str);
+        if tools
+            .iter()
+            .any(|existing| existing.get("name").and_then(Value::as_str) == name)
+        {
+            continue;
+        }
+        tools.push(tool);
+    }
 }
 
 fn append_system_blocks(
     blocks: &mut Vec<Value>,
+    added_tools: &mut Vec<Value>,
     content: Value,
 ) -> Result<(), (StatusCode, Json<crate::errors::AnthropicErrorResponse>)> {
     match content {
@@ -325,7 +352,24 @@ fn append_system_blocks(
             blocks.push(serde_json::json!({"type": "text", "text": text}));
             Ok(())
         }
-        Value::Array(content_blocks) => {
+        Value::Array(mut content_blocks) => {
+            content_blocks.retain(|block| {
+                if block.get("type").and_then(Value::as_str) != Some("tool_addition") {
+                    return true;
+                }
+                // `tool_reference` carries only a name; `tool_definition` carries the schema.
+                if let Some(definition) = block
+                    .get("tool")
+                    .filter(|tool| {
+                        tool.get("type").and_then(Value::as_str) == Some("tool_definition")
+                    })
+                    .and_then(|tool| tool.get("definition"))
+                    .filter(|definition| definition.get("name").and_then(Value::as_str).is_some())
+                {
+                    added_tools.push(definition.clone());
+                }
+                false
+            });
             if content_blocks.iter().any(|block| {
                 block.get("type").and_then(Value::as_str) != Some("text")
                     || block.get("text").and_then(Value::as_str).is_none()
