@@ -152,8 +152,9 @@ const CURATED: &[CuratedEntry] = &[
     },
     CuratedEntry {
         id: "claude-haiku-5-5",
-        description: "Fast help with simple or repetitive tasks. Fast, reliable answers to lightweight coding questions.",
-        excels_at: &["quick-tasks", "lightweight-coding-questions"],
+        // Not the Copilot page's text: measured in the software factory (docs/model-stats.md).
+        description: "Fast, low-cost coding agent with full tool use. Reliable on well-specified implementation, test, docs and verification tasks with clear acceptance checks.",
+        excels_at: &["quick-tasks", "tool-use", "well-specified-agent-tasks"],
     },
     CuratedEntry {
         id: "claude-opus-4-8",
@@ -1104,6 +1105,20 @@ mod tests {
         let insights = store.insights_for("gpt-6.1-sol").unwrap();
         assert!(insights.stats.is_none());
         assert!(insights.excels_at.contains(&"complex-coding".to_string()));
+    }
+
+    #[test]
+    fn haiku_5_5_is_described_as_a_tool_using_agent() {
+        let store = ModelStatsStore::new(String::new());
+        let insights = store.insights_for("claude-haiku-5.5").unwrap();
+        let description = insights.description.unwrap();
+        assert!(description.contains("full tool use"));
+        assert!(!description.contains("lightweight coding questions"));
+        assert!(
+            insights
+                .excels_at
+                .contains(&"well-specified-agent-tasks".to_string())
+        );
     }
 
     #[test]
