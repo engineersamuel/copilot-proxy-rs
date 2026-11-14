@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Describe `claude-haiku-5.5` as a tool-using coding agent for well-specified
+  tasks in `GET /v1/models` and the `POST /v1/models` router input.
 - `/v1/chat/completions` for Copilot chat models (e.g. Gemini) that report
   `usage.reasoning_tokens` also sets
   `usage.completion_tokens_details.reasoning_tokens` when upstream did not;

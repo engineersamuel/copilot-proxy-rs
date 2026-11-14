@@ -32,6 +32,14 @@ Legacy, non-chat (embedding etc.) and unknown-family ids get none (field omitted
   >= 4) without a curated row get "Frontier model for complex work", or
   "Frontier model for quick and fast work" when the id contains haiku, flash,
   mini, nano, luna, lite or fast. All other ids get no description.
+- Exception, `claude-haiku-5.5`: its row is our own text, not the Copilot
+  page's ("Fast, reliable answers to lightweight coding questions"). The page's
+  text made the `POST /v1/models` router rule Haiku out of agent work. Measured
+  2026-11-14 in the trellage software factory (same harness, hidden tests): on
+  33 well-specified implement, debug and verify jobs Haiku 5.5 passed like the
+  frontier models at about 1/30 of Opus's cost. Replaying 53 real factory tasks
+  through the router: 8 of 30 well-specified tasks moved to Haiku, 0 of 23
+  open-ended tasks (security, research, design, review) did.
 - The earlier "GPT-6.1 Sol strict spec adherence" and "Opus UI design" claims
   were dropped: the Copilot page does not support them.
 - Derived tags are added only for curated or current-generation ids (legacy and
