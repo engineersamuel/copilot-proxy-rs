@@ -35,7 +35,7 @@ docker run -d --name copilot-proxy-rs \
 
 ### Native supervision with mise
 
-With Rust 1.85+ installed, bootstrap the pinned process-compose tool:
+With Rust 1.85+ installed, bootstrap the pinned process-compose tool on macOS/Linux:
 
 ```bash
 ./scripts/bootstrap.sh
@@ -49,6 +49,18 @@ current shell (the script cannot do this for its caller):
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+On Windows, install Rust and mise, then run these commands from PowerShell in
+the checkout (no Bash or WSL required):
+
+```powershell
+mise trust
+mise install
+```
+
+The same `proxy:*` tasks below work on Windows using the built-in Windows
+PowerShell launcher. Set environment overrides with PowerShell syntax, for
+example `$env:RUST_LOG = 'debug'`, before running a task.
 
 To manage the native proxy:
 
@@ -79,7 +91,7 @@ prompts and tool output. Turn it off with
 share logs that contain bodies. Authenticate interactively
 with `cargo run` first if needed; the detached process cannot prompt for login.
 
-The control API uses **only a Unix socket**, never a TCP control port. The default
+On macOS/Linux, the control API uses **only a Unix socket**, never a TCP control port. The default
 socket is `${TMPDIR:-/tmp}/cpr-<uid>-<worktree-root-hash>.sock`, stable across task
 invocations in the same worktree. `COPILOT_PROXY_RS_PC_SOCKET` overrides it with
 an absolute path shorter than 100 characters; set the same override for every
@@ -90,9 +102,20 @@ but a hung socket is left intact.
 `mise run proxy:logs -- --tail 20` changes the tail length; `--follow` opts in
 to following logs.
 
+On Windows, process-compose does not support Unix sockets or its `-D` flag.
+The PowerShell launcher starts it in a hidden background process and uses a
+**token-authenticated control API bound only to `127.0.0.1`**. Its stable,
+worktree-specific control port is in the range 49152-65535, separate from the
+proxy's port 8080. If that port is occupied, set
+`$env:COPILOT_PROXY_RS_PC_PORT = '19090'` for every task invocation.
+The API token and supervisor/client logs live under
+`%LOCALAPPDATA%\copilot-proxy-rs\process-compose\<worktree-root-hash>`, with
+access restricted to the current Windows user. Inherited supervisor credentials
+are ignored. `COPILOT_PROXY_RS_PC_SOCKET` applies only to macOS/Linux.
+
 Docker's `compose.yaml` remains separate and unchanged. Native startup always
 passes `-f process-compose.yaml`; later tasks address the already-running
-supervisor by Unix socket, with restart reloading that file using the supervisor's
+supervisor by its isolated control endpoint, with restart reloading that file using the supervisor's
 environment.
 
 ### Verify

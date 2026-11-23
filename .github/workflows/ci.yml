@@ -6,6 +6,13 @@ on:
     branches: [main]
 
 jobs:
+  windows-supervision:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\proxy-compose.windows.ps1
+
   rust:
     runs-on: ubuntu-latest
     steps:
